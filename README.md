@@ -57,6 +57,16 @@ The following table details which integrations with Binary Ninja are currently s
 | `retype_variable` | Retype variable inside a given function. |
 | `define_types` | Add type definitions from a C string type definition. |
 | `edit_function_signature` | Edit signature of a given function, given as a type string. |
+| `get_logs` | Get Binary Ninja log messages with filtering options. |
+| `get_log_stats` | Get statistics about captured Binary Ninja logs. |
+| `get_log_errors` | Get the most recent error logs from Binary Ninja. |
+| `get_log_warnings` | Get the most recent warning logs from Binary Ninja. |
+| `clear_logs` | Clear all captured Binary Ninja logs. |
+| `get_console_output` | Get Python console output from Binary Ninja. |
+| `get_console_stats` | Get statistics about captured console output. |
+| `get_console_errors` | Get the most recent error output from the Python console. |
+| `execute_python_command` | Execute a Python command in Binary Ninja's console. |
+| `clear_console` | Clear all captured console output. |
 
 ## Prerequisites
 
