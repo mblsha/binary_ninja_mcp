@@ -7,6 +7,7 @@ class ServerConfig:
     host: str = "localhost"
     port: int = 9009
     debug: bool = False
+    auto_start: bool = True  # Add auto-start configuration
 
 
 @dataclass
