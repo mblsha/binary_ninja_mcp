@@ -23,3 +23,6 @@ Desktop.ini
 *.log
 *.tmp
 *.bak
+
+# Binary Ninja API reference (for development only)
+binaryninja-api/
