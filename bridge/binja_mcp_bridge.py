@@ -29,6 +29,29 @@ def safe_get(endpoint: str, params: dict = None) -> list:
         return [f"Request failed: {str(e)}"]
 
 
+def safe_get_json(endpoint: str, params: dict = None) -> str:
+    """
+    Perform a GET request and return the raw response text (for JSON endpoints).
+    """
+    if params is None:
+        params = {}
+    qs = [f"{k}={v}" for k, v in params.items()]
+    query_string = "&".join(qs)
+    url = f"{binja_server_url}/{endpoint}"
+    if query_string:
+        url += "?" + query_string
+
+    try:
+        response = requests.get(url, timeout=5)
+        response.encoding = "utf-8"
+        if response.ok:
+            return response.text.strip()
+        else:
+            return f"Error {response.status_code}: {response.text.strip()}"
+    except Exception as e:
+        return f"Request failed: {str(e)}"
+
+
 def safe_post(endpoint: str, data: dict | str) -> str:
     try:
         if isinstance(data, dict):
@@ -60,28 +83,28 @@ def retype_variable(function_name: str, variable_name: str, type_str: str) -> st
     """
     Retype a variable in a function.
     """
-    return safe_get("retypeVariable", {"functionName": function_name, "variableName": variable_name, "type": type_str})
+    return safe_get_json("retypeVariable", {"functionName": function_name, "variableName": variable_name, "type": type_str})
 
 @mcp.tool()
 def rename_variable(function_name: str, variable_name: str, new_name: str) -> str:
     """
     Rename a variable in a function.
     """
-    return safe_get("renameVariable", {"functionName": function_name, "variableName": variable_name, "newName": new_name})
+    return safe_get_json("renameVariable", {"functionName": function_name, "variableName": variable_name, "newName": new_name})
 
 @mcp.tool()
 def define_types(c_code: str) -> str:
     """
     Define types from a C code string.
     """
-    return safe_get("defineTypes", {"cCode": c_code})
+    return safe_get_json("defineTypes", {"cCode": c_code})
 
 @mcp.tool()
 def edit_function_signature(function_name: str, signature: str) -> str:
     """
     Edit the signature of a function.
     """
-    return safe_get("editFunctionSignature", {"functionName": function_name, "signature": signature})
+    return safe_get_json("editFunctionSignature", {"functionName": function_name, "signature": signature})
 
 @mcp.tool()
 def list_classes(offset: int = 0, limit: int = 100) -> list:
@@ -96,14 +119,14 @@ def decompile_function(name: str) -> str:
     """
     Decompile a specific function by name and return the decompiled C code.
     """
-    return safe_get("decompile", {"name": name})
+    return safe_get_json("decompile", {"name": name})
 
 @mcp.tool()
 def fetch_disassembly(name: str) -> str:
     """
     Retrive the disassembled code of a function with a given name as assemby mnemonic instructions.
     """
-    return safe_get("assembly", {"name": name})
+    return safe_get_json("assembly", {"name": name})
 
 @mcp.tool()
 def rename_function(old_name: str, new_name: str) -> str:
@@ -142,7 +165,7 @@ def get_comment(address: str) -> str:
     """
     Get the comment at a specific address.
     """
-    return safe_get("comment", {"address": address})[0]
+    return safe_get_json("comment", {"address": address})
 
 
 @mcp.tool()
@@ -150,7 +173,7 @@ def get_function_comment(function_name: str) -> str:
     """
     Get the comment for a function.
     """
-    return safe_get("comment/function", {"name": function_name})[0]
+    return safe_get_json("comment/function", {"name": function_name})
 
 
 @mcp.tool()
@@ -210,7 +233,7 @@ def get_binary_status() -> str:
     """
     Get the current status of the loaded binary.
     """
-    return safe_get("status")[0]
+    return safe_get_json("status")
 
 
 @mcp.tool()
@@ -233,21 +256,21 @@ def function_at(address: str) -> str:
     """
     Retrive the name of the function the address belongs to. Address must be in hexadecimal format 0x00001
     """
-    return safe_get("functionAt", {"address": address})
+    return safe_get_json("functionAt", {"address": address})
 
 @mcp.tool()
 def code_references(function_name: str) -> str:
     """
     Retrive names and addresses of functions that call the given function_name
     """
-    return safe_get("codeReferences", {"function": function_name})
+    return safe_get_json("codeReferences", {"function": function_name})
     
 @mcp.tool()
 def get_user_defined_type(type_name: str) -> str:
     """
     Retrive definition of a user defined type (struct, enumeration, typedef, union)
     """
-    return safe_get("getUserDefinedType", {"name": type_name})
+    return safe_get_json("getUserDefinedType", {"name": type_name})
 
 
 @mcp.tool()
@@ -276,7 +299,7 @@ def get_log_stats() -> str:
     """
     Get statistics about captured Binary Ninja logs (counts by level, total logs, etc).
     """
-    return safe_get("logs/stats")[0]
+    return safe_get_json("logs/stats")
 
 
 @mcp.tool()
@@ -335,7 +358,7 @@ def get_console_stats() -> str:
     """
     Get statistics about captured console output (counts by type, total entries, etc).
     """
-    return safe_get("console/stats")[0]
+    return safe_get_json("console/stats")
 
 
 @mcp.tool()
