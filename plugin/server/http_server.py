@@ -8,6 +8,8 @@ from ..core.binary_operations import BinaryOperations
 from ..core.config import Config
 from ..api.endpoints import BinaryNinjaEndpoints
 from ..utils.string_utils import parse_int_or_default
+from ..core.log_capture import get_log_capture
+from ..core.console_capture import get_console_capture
 
 
 class MCPRequestHandler(BaseHTTPRequestHandler):
@@ -739,6 +741,57 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         {"error": str(e)},
                         500,
                     )
+                    
+            elif path == "/logs":
+                # Get log capture parameters
+                count = parse_int_or_default(params.get("count"), 100)
+                level_filter = params.get("level")
+                search_text = params.get("search")
+                start_id = parse_int_or_default(params.get("start_id"), None)
+                
+                log_capture = get_log_capture()
+                logs = log_capture.get_logs(count, level_filter, search_text, start_id)
+                self._send_json_response({"logs": logs})
+                
+            elif path == "/logs/stats":
+                log_capture = get_log_capture()
+                stats = log_capture.get_log_stats()
+                self._send_json_response(stats)
+                
+            elif path == "/logs/errors":
+                count = parse_int_or_default(params.get("count"), 10)
+                log_capture = get_log_capture()
+                errors = log_capture.get_latest_errors(count)
+                self._send_json_response({"errors": errors})
+                
+            elif path == "/logs/warnings":
+                count = parse_int_or_default(params.get("count"), 10)
+                log_capture = get_log_capture()
+                warnings = log_capture.get_latest_warnings(count)
+                self._send_json_response({"warnings": warnings})
+                
+            elif path == "/console":
+                # Get console capture parameters
+                count = parse_int_or_default(params.get("count"), 100)
+                type_filter = params.get("type")
+                search_text = params.get("search")
+                start_id = parse_int_or_default(params.get("start_id"), None)
+                
+                console_capture = get_console_capture()
+                output = console_capture.get_output(count, type_filter, search_text, start_id)
+                self._send_json_response({"output": output})
+                
+            elif path == "/console/stats":
+                console_capture = get_console_capture()
+                stats = console_capture.get_console_stats()
+                self._send_json_response(stats)
+                
+            elif path == "/console/errors":
+                count = parse_int_or_default(params.get("count"), 10)
+                console_capture = get_console_capture()
+                errors = console_capture.get_latest_errors(count)
+                self._send_json_response({"errors": errors})
+                
             else:
                 self._send_json_response({"error": "Not found"}, 404)
 
@@ -1171,6 +1224,28 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                             "message": "No comment found for this function",
                         }
                     )
+                    
+            elif path == "/logs/clear":
+                log_capture = get_log_capture()
+                log_capture.clear_logs()
+                self._send_json_response({"success": True, "message": "Logs cleared"})
+                
+            elif path == "/console/clear":
+                console_capture = get_console_capture()
+                console_capture.clear_output()
+                self._send_json_response({"success": True, "message": "Console output cleared"})
+                
+            elif path == "/console/execute":
+                command = params.get("command")
+                if not command:
+                    self._send_json_response(
+                        {"error": "Missing command parameter"}, 400
+                    )
+                    return
+                    
+                console_capture = get_console_capture()
+                result = console_capture.execute_command(command)
+                self._send_json_response(result)
 
             else:
                 self._send_json_response({"error": "Not found"}, 404)
@@ -1199,6 +1274,13 @@ class MCPServer:
         """Start the HTTP server in a background thread."""
         server_address = (self.config.server.host, self.config.server.port)
 
+        # Start log and console capture
+        log_capture = get_log_capture()
+        log_capture.start()
+        
+        console_capture = get_console_capture()
+        console_capture.start()
+
         # Create handler with access to binary operations
         handler_class = type(
             "MCPRequestHandlerWithOps",
@@ -1221,4 +1303,12 @@ class MCPServer:
             self.server.server_close()
             if self.thread:
                 self.thread.join()
+                
+            # Stop log and console capture
+            log_capture = get_log_capture()
+            log_capture.stop()
+            
+            console_capture = get_console_capture()
+            console_capture.stop()
+            
             bn.log_info("Server stopped")
