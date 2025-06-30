@@ -248,6 +248,125 @@ def get_user_defined_type(type_name: str) -> str:
     Retrive definition of a user defined type (struct, enumeration, typedef, union)
     """
     return safe_get("getUserDefinedType", {"name": type_name})
+
+
+@mcp.tool()
+def get_logs(count: int = 100, level: str = None, search: str = None, start_id: int = None) -> list:
+    """
+    Get Binary Ninja log messages.
+    
+    Args:
+        count: Maximum number of logs to return (default: 100)
+        level: Filter by log level (DebugLog, InfoLog, WarningLog, ErrorLog, AlertLog)
+        search: Search for text in log messages
+        start_id: Return logs with ID greater than this value (for pagination)
+    """
+    params = {"count": count}
+    if level:
+        params["level"] = level
+    if search:
+        params["search"] = search
+    if start_id is not None:
+        params["start_id"] = start_id
+    return safe_get("logs", params)
+
+
+@mcp.tool()
+def get_log_stats() -> str:
+    """
+    Get statistics about captured Binary Ninja logs (counts by level, total logs, etc).
+    """
+    return safe_get("logs/stats")[0]
+
+
+@mcp.tool()
+def get_log_errors(count: int = 10) -> list:
+    """
+    Get the most recent error logs from Binary Ninja.
+    
+    Args:
+        count: Maximum number of errors to return (default: 10)
+    """
+    return safe_get("logs/errors", {"count": count})
+
+
+@mcp.tool()
+def get_log_warnings(count: int = 10) -> list:
+    """
+    Get the most recent warning logs from Binary Ninja.
+    
+    Args:
+        count: Maximum number of warnings to return (default: 10)
+    """
+    return safe_get("logs/warnings", {"count": count})
+
+
+@mcp.tool()
+def clear_logs() -> str:
+    """
+    Clear all captured Binary Ninja logs.
+    """
+    return safe_post("logs/clear", {})
+
+
+@mcp.tool()
+def get_console_output(count: int = 100, type_filter: str = None, search: str = None, start_id: int = None) -> list:
+    """
+    Get Python console output from Binary Ninja.
+    
+    Args:
+        count: Maximum number of entries to return (default: 100)
+        type_filter: Filter by output type (output, error, warning, input)
+        search: Search for text in console output
+        start_id: Return entries with ID greater than this value (for pagination)
+    """
+    params = {"count": count}
+    if type_filter:
+        params["type"] = type_filter
+    if search:
+        params["search"] = search
+    if start_id is not None:
+        params["start_id"] = start_id
+    return safe_get("console", params)
+
+
+@mcp.tool()
+def get_console_stats() -> str:
+    """
+    Get statistics about captured console output (counts by type, total entries, etc).
+    """
+    return safe_get("console/stats")[0]
+
+
+@mcp.tool()
+def get_console_errors(count: int = 10) -> list:
+    """
+    Get the most recent error output from the Python console.
+    
+    Args:
+        count: Maximum number of errors to return (default: 10)
+    """
+    return safe_get("console/errors", {"count": count})
+
+
+@mcp.tool()
+def execute_python_command(command: str) -> str:
+    """
+    Execute a Python command in Binary Ninja's console and return the result.
+    
+    Args:
+        command: Python code to execute
+    """
+    return safe_post("console/execute", {"command": command})
+
+
+@mcp.tool()
+def clear_console() -> str:
+    """
+    Clear all captured console output.
+    """
+    return safe_post("console/clear", {})
+    
     
 if __name__ == "__main__":
     print("Starting MCP bridge service...")
