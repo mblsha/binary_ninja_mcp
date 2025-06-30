@@ -1,9 +1,12 @@
 """
 Binary Ninja Log Capture for MCP Server
-Captures Binary Ninja log messages using the LogListener API
+Captures Binary Ninja log messages using file redirection
 """
 
 import threading
+import os
+import tempfile
+import time
 from collections import deque
 from datetime import datetime
 from typing import List, Dict, Optional, Any
@@ -17,23 +20,56 @@ class MCPLogCapture:
         self.max_entries = max_entries
         self.logs = deque(maxlen=max_entries)
         self.lock = threading.RLock()
-        self.listener = None
         self.is_registered = False
+        self.log_file_path = None
+        self.monitor_thread = None
+        self.stop_monitoring = threading.Event()
         
     def start(self):
         """Start capturing logs"""
         if not self.is_registered:
-            self.listener = LogListenerImpl(self)
-            bn.log.register_log_listener(self.listener)
-            self.is_registered = True
-            bn.log_info("[MCP] Log capture started")
+            try:
+                # Create a temporary log file
+                fd, self.log_file_path = tempfile.mkstemp(suffix='.log', prefix='binja_mcp_')
+                os.close(fd)  # Close the file descriptor, we'll open it separately
+                
+                # Redirect Binary Ninja logs to our file
+                bn.log_to_file(bn.LogLevel.DebugLog, self.log_file_path, append=True)
+                
+                # Start monitoring thread
+                self.stop_monitoring.clear()
+                self.monitor_thread = threading.Thread(target=self._monitor_log_file)
+                self.monitor_thread.daemon = True
+                self.monitor_thread.start()
+                
+                self.is_registered = True
+                bn.log_info("[MCP] Log capture started")
+                
+            except Exception as e:
+                bn.log_error(f"[MCP] Failed to start log capture: {str(e)}")
+                if self.log_file_path and os.path.exists(self.log_file_path):
+                    os.unlink(self.log_file_path)
+                self.log_file_path = None
             
     def stop(self):
         """Stop capturing logs"""
-        if self.is_registered and self.listener:
-            bn.log.unregister_log_listener(self.listener)
+        if self.is_registered:
             self.is_registered = False
-            self.listener = None
+            
+            # Stop monitoring thread
+            if self.monitor_thread:
+                self.stop_monitoring.set()
+                self.monitor_thread.join(timeout=1.0)
+                self.monitor_thread = None
+            
+            # Clean up log file
+            if self.log_file_path and os.path.exists(self.log_file_path):
+                try:
+                    os.unlink(self.log_file_path)
+                except:
+                    pass
+                self.log_file_path = None
+                
             bn.log_info("[MCP] Log capture stopped")
             
     def add_log(self, session: int, level: str, message: str, logger_name: str = "", tid: int = 0):
@@ -125,32 +161,66 @@ class MCPLogCapture:
     def get_latest_warnings(self, count: int = 10) -> List[Dict[str, Any]]:
         """Get the most recent warning logs"""
         return self.get_logs(count=count, level_filter="WarningLog")
-
-
-class LogListenerImpl(bn.LogListener):
-    """Implementation of Binary Ninja's LogListener interface"""
     
-    def __init__(self, capture: MCPLogCapture):
-        super().__init__()
-        self.capture = capture
-        
-    def log_message(self, session: int, level: bn.LogLevel, msg: str, logger_name: str = "", tid: int = 0):
-        """Called by Binary Ninja when a log message is generated"""
-        # Convert LogLevel enum to string
-        level_str = level.name if hasattr(level, 'name') else str(level)
-        
-        # Don't capture our own log messages to avoid recursion
-        if "[MCP]" not in msg:
-            self.capture.add_log(session, level_str, msg, logger_name, tid)
+    def _monitor_log_file(self):
+        """Monitor the log file for new entries"""
+        if not self.log_file_path:
+            return
             
-    def close_log(self):
-        """Called when the log is being closed"""
-        self.capture.add_log(0, "InfoLog", "[MCP] Log listener closed", "mcp", 0)
+        # Wait a bit for file to be created
+        time.sleep(0.1)
         
-    def get_log_level(self) -> bn.LogLevel:
-        """Return the minimum log level we want to capture"""
-        # Capture all log levels
-        return bn.LogLevel.DebugLog
+        try:
+            # Open file in read mode
+            with open(self.log_file_path, 'r') as f:
+                # Move to end of file
+                f.seek(0, 2)
+                
+                while not self.stop_monitoring.is_set():
+                    # Read new lines
+                    line = f.readline()
+                    if line:
+                        # Parse log line
+                        self._parse_log_line(line.strip())
+                    else:
+                        # No new data, wait a bit
+                        time.sleep(0.1)
+                        
+        except Exception as e:
+            bn.log_error(f"[MCP] Error monitoring log file: {str(e)}")
+            
+    def _parse_log_line(self, line: str):
+        """Parse a log line and add it to the buffer"""
+        if not line or "[MCP]" in line:  # Skip our own logs
+            return
+            
+        # Binary Ninja log format is typically: [LEVEL] message
+        # or sometimes includes thread/session info
+        
+        level = "InfoLog"  # Default
+        message = line
+        
+        # Try to extract log level
+        if line.startswith('['):
+            end = line.find(']')
+            if end > 0:
+                level_str = line[1:end].upper()
+                message = line[end+1:].strip()
+                
+                # Map to Binary Ninja log levels
+                if 'DEBUG' in level_str:
+                    level = "DebugLog"
+                elif 'INFO' in level_str:
+                    level = "InfoLog"
+                elif 'WARN' in level_str:
+                    level = "WarningLog"
+                elif 'ERROR' in level_str:
+                    level = "ErrorLog"
+                elif 'ALERT' in level_str:
+                    level = "AlertLog"
+        
+        # Add to buffer
+        self.add_log(0, level, message, "", threading.current_thread().ident)
 
 
 # Global instance

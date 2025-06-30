@@ -8,8 +8,52 @@ from ..core.binary_operations import BinaryOperations
 from ..core.config import Config
 from ..api.endpoints import BinaryNinjaEndpoints
 from ..utils.string_utils import parse_int_or_default
-from ..core.log_capture import get_log_capture
-from ..core.console_capture import get_console_capture
+try:
+    from ..core.log_capture import get_log_capture
+except:
+    # Fallback if main log capture fails
+    from ..core.log_capture_simple import SimpleLogCapture
+    _simple_log_capture = None
+    def get_log_capture():
+        global _simple_log_capture
+        if _simple_log_capture is None:
+            _simple_log_capture = SimpleLogCapture()
+        return _simple_log_capture
+
+try:
+    from ..core.console_capture import get_console_capture
+except:
+    # Fallback if console capture fails
+    from ..core.console_capture_simple import SimpleConsoleCapture
+    _simple_console_capture = None
+    def get_console_capture():
+        global _simple_console_capture
+        if _simple_console_capture is None:
+            _simple_console_capture = SimpleConsoleCapture()
+        return _simple_console_capture
+
+
+# Global variable to track which log capture we're using
+_active_log_capture = None
+
+def get_active_log_capture():
+    """Get the active log capture instance (file-based or simple)"""
+    global _active_log_capture
+    if _active_log_capture is None:
+        try:
+            # Try to use file-based capture first
+            from ..core.log_capture import get_log_capture
+            _active_log_capture = get_log_capture()
+        except Exception as e:
+            # Fall back to simple capture
+            try:
+                from ..core.log_capture_simple import SimpleLogCapture
+                _active_log_capture = SimpleLogCapture()
+                print(f"[MCP] Using simple log capture due to: {e}")
+            except Exception as e2:
+                print(f"[MCP] Failed to initialize any log capture: {e2}")
+                _active_log_capture = None
+    return _active_log_capture
 
 
 class MCPRequestHandler(BaseHTTPRequestHandler):
@@ -749,26 +793,38 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 search_text = params.get("search")
                 start_id = parse_int_or_default(params.get("start_id"), None)
                 
-                log_capture = get_log_capture()
-                logs = log_capture.get_logs(count, level_filter, search_text, start_id)
-                self._send_json_response({"logs": logs})
+                log_capture = get_active_log_capture()
+                if log_capture:
+                    logs = log_capture.get_logs(count, level_filter, search_text, start_id)
+                    self._send_json_response({"logs": logs})
+                else:
+                    self._send_json_response({"error": "Log capture not available", "logs": []}, 200)
                 
             elif path == "/logs/stats":
-                log_capture = get_log_capture()
-                stats = log_capture.get_log_stats()
-                self._send_json_response(stats)
+                log_capture = get_active_log_capture()
+                if log_capture:
+                    stats = log_capture.get_log_stats()
+                    self._send_json_response(stats)
+                else:
+                    self._send_json_response({"total_logs": 0, "levels": {}, "loggers": {}})
                 
             elif path == "/logs/errors":
                 count = parse_int_or_default(params.get("count"), 10)
-                log_capture = get_log_capture()
-                errors = log_capture.get_latest_errors(count)
-                self._send_json_response({"errors": errors})
+                log_capture = get_active_log_capture()
+                if log_capture:
+                    errors = log_capture.get_latest_errors(count)
+                    self._send_json_response({"errors": errors})
+                else:
+                    self._send_json_response({"errors": []})
                 
             elif path == "/logs/warnings":
                 count = parse_int_or_default(params.get("count"), 10)
-                log_capture = get_log_capture()
-                warnings = log_capture.get_latest_warnings(count)
-                self._send_json_response({"warnings": warnings})
+                log_capture = get_active_log_capture()
+                if log_capture:
+                    warnings = log_capture.get_latest_warnings(count)
+                    self._send_json_response({"warnings": warnings})
+                else:
+                    self._send_json_response({"warnings": []})
                 
             elif path == "/console":
                 # Get console capture parameters
@@ -1226,9 +1282,12 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     )
                     
             elif path == "/logs/clear":
-                log_capture = get_log_capture()
-                log_capture.clear_logs()
-                self._send_json_response({"success": True, "message": "Logs cleared"})
+                log_capture = get_active_log_capture()
+                if log_capture:
+                    log_capture.clear_logs()
+                    self._send_json_response({"success": True, "message": "Logs cleared"})
+                else:
+                    self._send_json_response({"success": False, "message": "Log capture not available"})
                 
             elif path == "/console/clear":
                 console_capture = get_console_capture()
@@ -1275,11 +1334,19 @@ class MCPServer:
         server_address = (self.config.server.host, self.config.server.port)
 
         # Start log and console capture
-        log_capture = get_log_capture()
-        log_capture.start()
+        log_capture = get_active_log_capture()
+        if log_capture:
+            try:
+                log_capture.start()
+            except Exception as e:
+                bn.log_error(f"[MCP] Failed to start log capture: {e}")
         
         console_capture = get_console_capture()
-        console_capture.start()
+        if console_capture:
+            try:
+                console_capture.start()
+            except Exception as e:
+                bn.log_error(f"[MCP] Failed to start console capture: {e}")
 
         # Create handler with access to binary operations
         handler_class = type(
@@ -1305,10 +1372,18 @@ class MCPServer:
                 self.thread.join()
                 
             # Stop log and console capture
-            log_capture = get_log_capture()
-            log_capture.stop()
+            log_capture = get_active_log_capture()
+            if log_capture:
+                try:
+                    log_capture.stop()
+                except Exception as e:
+                    bn.log_error(f"[MCP] Failed to stop log capture: {e}")
             
             console_capture = get_console_capture()
-            console_capture.stop()
+            if console_capture:
+                try:
+                    console_capture.stop()
+                except Exception as e:
+                    bn.log_error(f"[MCP] Failed to stop console capture: {e}")
             
             bn.log_info("Server stopped")
