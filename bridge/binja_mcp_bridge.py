@@ -56,7 +56,7 @@ def safe_post(endpoint: str, data: dict | str) -> str:
     try:
         if isinstance(data, dict):
             response = requests.post(
-                f"{binja_server_url}/{endpoint}", data=data, timeout=5
+                f"{binja_server_url}/{endpoint}", json=data, timeout=5
             )
         else:
             response = requests.post(
@@ -379,8 +379,28 @@ def execute_python_command(command: str) -> str:
     
     Args:
         command: Python code to execute
+    
+    Returns JSON with:
+        - success: bool indicating if execution succeeded
+        - stdout: captured standard output
+        - stderr: captured standard error
+        - return_value: JSON-serialized return value
+        - return_type: type name of return value
+        - variables: dict of created/modified variables
+        - error: error details if execution failed
+        - execution_time: time taken in seconds
     """
-    return safe_post("console/execute", {"command": command})
+    result = safe_post("console/execute", {"command": command})
+    
+    # If it's a string response, try to parse as JSON
+    if isinstance(result, str):
+        try:
+            import json
+            return json.dumps(json.loads(result), indent=2)
+        except:
+            return result
+    
+    return result
 
 
 @mcp.tool()

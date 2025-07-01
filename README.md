@@ -7,6 +7,9 @@ This repository contains a Binary Ninja plugin, MCP server, and bridge that enab
 - Seamless, real-time integration between Binary Ninja and MCP clients
 - Enhanced reverse engineering workflow with AI assistance
 - Primary support for Claude Desktop as the MCP client, but extensible for other integrations
+- **Enhanced Python Execution**: Execute Python code in Binary Ninja's context with comprehensive JSON result capture
+- **Command-Line Interface**: Full-featured CLI with interactive Python console
+- **Logging and Debugging**: Capture and search Binary Ninja logs and console output
 
 ## Examples
 
@@ -65,7 +68,7 @@ The following table details which integrations with Binary Ninja are currently s
 | `get_console_output` | Get Python console output from Binary Ninja. |
 | `get_console_stats` | Get statistics about captured console output. |
 | `get_console_errors` | Get the most recent error output from the Python console. |
-| `execute_python_command` | Execute a Python command in Binary Ninja's console. |
+| `execute_python_command` | Execute Python code in Binary Ninja context with comprehensive result capture (stdout, stderr, return values, variables) in JSON format. |
 | `clear_console` | Clear all captured console output. |
 
 ## Prerequisites

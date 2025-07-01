@@ -144,6 +144,23 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 ./cli.py logs --stats
 ```
 
+### Python Execution
+
+```bash
+# Execute Python code directly
+./cli.py python "len(list(bv.functions))"
+./cli.py python "print('Functions:', len(list(bv.functions)))"
+
+# Execute from file
+./cli.py python -f analyze_binary.py
+
+# Interactive Python console
+./cli.py python -i
+
+# With JSON output
+./cli.py --json python "{'functions': len(list(bv.functions))}"
+```
+
 ### Batch Operations
 
 ```bash
@@ -154,6 +171,13 @@ done
 
 # Export all function names
 ./cli.py --json functions --limit 10000 | jq -r '.functions[]' > all_functions.txt
+
+# Use Python for complex analysis
+./cli.py python "
+funcs = [f for f in bv.functions if 'crypt' in f.name.lower()]
+for f in funcs[:5]:
+    print(f'{f.name} at {hex(f.start)}')
+"
 ```
 
 ## Server Requirements

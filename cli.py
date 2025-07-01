@@ -473,5 +473,134 @@ class Exports(cli.Application):
                 print("No exports found")
 
 
+@BinaryNinjaCLI.subcommand("python")
+class Python(cli.Application):
+    """Execute Python code in Binary Ninja context"""
+    
+    file = cli.SwitchAttr(
+        ["-f", "--file"],
+        str,
+        help="Execute Python code from file"
+    )
+    
+    interactive = cli.Flag(
+        ["-i", "--interactive"],
+        help="Start interactive Python session"
+    )
+    
+    def main(self, *code_parts):
+        if self.file:
+            # Execute from file
+            try:
+                with open(self.file, 'r') as f:
+                    code = f.read()
+            except Exception as e:
+                print(colors.red | f"Error reading file: {e}")
+                return 1
+        elif self.interactive:
+            # Interactive mode
+            self._interactive_mode()
+            return 0
+        elif code_parts:
+            # Execute command line code
+            code = " ".join(code_parts)
+        else:
+            print("Usage: python [options] <code>")
+            print("       python -f script.py")
+            print("       python -i")
+            return 1
+        
+        # Execute the code
+        data = self.parent._request("POST", "console/execute", data={"command": code})
+        
+        if self.parent.json_output:
+            self.parent._output(data)
+        else:
+            if data.get("success"):
+                # Show output
+                if data.get("stdout"):
+                    print(data["stdout"], end="")
+                if data.get("stderr"):
+                    print(colors.red | data["stderr"], end="")
+                
+                # Show return value if present
+                if data.get("return_value") is not None:
+                    if not data.get("stdout", "").strip().endswith(str(data["return_value"])):
+                        print(colors.cyan | f"→ {data['return_value']}")
+                
+                # Show variables if any were created/modified
+                if data.get("variables"):
+                    print(colors.green | f"\nVariables: {', '.join(data['variables'].keys())}")
+                
+                # Show execution time if verbose
+                if self.parent.verbose and "execution_time" in data:
+                    print(colors.dim | f"Execution time: {data['execution_time']:.3f}s")
+            else:
+                # Show error
+                error = data.get("error", {})
+                if isinstance(error, dict):
+                    print(colors.red | f"Error: {error.get('type', 'Unknown')}: {error.get('message', 'Unknown error')}")
+                    if self.parent.verbose and error.get("traceback"):
+                        print(colors.dim | error["traceback"])
+                else:
+                    print(colors.red | f"Error: {error}")
+    
+    def _interactive_mode(self):
+        """Interactive Python session"""
+        print("Binary Ninja Python Console (type 'exit()' to quit)")
+        print("=" * 50)
+        
+        import readline  # Enable history and editing
+        
+        while True:
+            try:
+                # Get input
+                code = input(colors.cyan | ">>> ")
+                if code.strip() in ["exit()", "quit()", "exit", "quit"]:
+                    break
+                
+                if not code.strip():
+                    continue
+                
+                # Handle multi-line input
+                if code.rstrip().endswith(":"):
+                    lines = [code]
+                    while True:
+                        line = input(colors.cyan | "... ")
+                        lines.append(line)
+                        if not line.strip():
+                            break
+                    code = "\n".join(lines)
+                
+                # Execute
+                data = self.parent._request("POST", "console/execute", data={"command": code})
+                
+                # Display results
+                if data.get("success"):
+                    if data.get("stdout"):
+                        print(data["stdout"], end="")
+                    if data.get("stderr"):
+                        print(colors.yellow | data["stderr"], end="")
+                    if data.get("return_value") is not None:
+                        # Don't duplicate if already in stdout
+                        stdout = data.get("stdout", "")
+                        if not stdout.strip().endswith(str(data["return_value"])):
+                            print(colors.green | data["return_value"])
+                else:
+                    error = data.get("error", {})
+                    if isinstance(error, dict):
+                        print(colors.red | f"{error.get('type', 'Unknown')}: {error.get('message', 'Unknown error')}")
+                    else:
+                        print(colors.red | str(error))
+                        
+            except KeyboardInterrupt:
+                print("\nKeyboardInterrupt")
+            except EOFError:
+                print()
+                break
+            except Exception as e:
+                print(colors.red | f"Client error: {e}")
+
+
 if __name__ == "__main__":
     BinaryNinjaCLI.run()
