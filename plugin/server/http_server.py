@@ -21,16 +21,22 @@ except:
         return _simple_log_capture
 
 try:
-    from ..core.console_capture import get_console_capture
-except:
-    # Fallback if console capture fails
-    from ..core.console_capture_simple import SimpleConsoleCapture
-    _simple_console_capture = None
-    def get_console_capture():
-        global _simple_console_capture
-        if _simple_console_capture is None:
-            _simple_console_capture = SimpleConsoleCapture()
-        return _simple_console_capture
+    from ..core.python_executor import get_console_capture
+    bn.log_info("Using enhanced Python executor for console")
+except Exception as e:
+    bn.log_warn(f"Failed to import enhanced Python executor: {e}")
+    # Try original console capture
+    try:
+        from ..core.console_capture import get_console_capture
+    except:
+        # Fallback if console capture fails
+        from ..core.console_capture_simple import SimpleConsoleCapture
+        _simple_console_capture = None
+        def get_console_capture():
+            global _simple_console_capture
+            if _simple_console_capture is None:
+                _simple_console_capture = SimpleConsoleCapture()
+            return _simple_console_capture
 
 
 # Global variable to track which log capture we're using

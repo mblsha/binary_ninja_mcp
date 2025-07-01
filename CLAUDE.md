@@ -135,3 +135,45 @@ All endpoints are on `http://localhost:9009/`:
 - All core functionality works on Windows, Linux, and macOS
 - Avoid platform-specific features in core implementation
 - Use Binary Ninja's APIs for file paths (handles platform differences)
+
+### Python Code Execution (NEW)
+
+**Enhanced Python Executor:**
+- Implemented in `/plugin/core/python_executor.py`
+- Provides reliable Python code execution without ScriptingProvider dependency
+- Direct access to Binary Ninja's Python API (bv, bn, functions, etc.)
+- Comprehensive result capture:
+  - Return values (last expression or `_result` variable)
+  - Standard output/error streams
+  - Created/modified variables
+  - Execution time tracking
+- JSON serialization of all Python objects for integration
+- Thread-safe execution with 30-second timeout
+- Maintains execution history and context between calls
+
+**Key Features:**
+- Automatic Binary Ninja object serialization (Functions, BinaryView, etc.)
+- Error handling with full traceback capture
+- Support for multi-line scripts and function definitions
+- Auto-completion support (get_completions method)
+- Console output stored in deque buffer for retrieval
+
+**Usage:**
+```python
+# Execute via HTTP API
+POST /console/execute
+{"command": "len(list(bv.functions))"}
+
+# Returns:
+{
+    "success": true,
+    "stdout": "",
+    "stderr": "",
+    "return_value": 150,
+    "return_type": "int",
+    "variables": {},
+    "execution_time": 0.002
+}
+```
+
+See `/docs/PYTHON_EXECUTOR.md` for detailed documentation and examples.
