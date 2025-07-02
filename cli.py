@@ -60,9 +60,46 @@ class BinaryNinjaCLI(cli.Application):
             print("Make sure the MCP server is running in Binary Ninja", file=sys.stderr)
             sys.exit(1)
         except requests.exceptions.HTTPError as e:
-            print(colors.red | f"HTTP Error: {e}", file=sys.stderr)
-            if hasattr(e.response, 'text'):
-                print(e.response.text, file=sys.stderr)
+            # Try to parse JSON error response for structured error info
+            try:
+                error_data = e.response.json()
+                if isinstance(error_data, dict) and 'error' in error_data:
+                    # Display main error
+                    print(colors.red | f"Error: {error_data['error']}", file=sys.stderr)
+                    
+                    # Display additional context if available
+                    if 'help' in error_data:
+                        print(colors.yellow | f"Help: {error_data['help']}", file=sys.stderr)
+                    
+                    if 'received' in error_data:
+                        print(f"Received: {error_data['received']}", file=sys.stderr)
+                    
+                    if 'requested_name' in error_data:
+                        print(f"Requested: {error_data['requested_name']}", file=sys.stderr)
+                    
+                    # Show available functions if provided (e.g., for function not found errors)
+                    if 'available_functions' in error_data and error_data['available_functions']:
+                        funcs = error_data['available_functions'][:5]  # Show first 5
+                        print("\nAvailable functions:", file=sys.stderr)
+                        for func in funcs:
+                            print(f"  • {func}", file=sys.stderr)
+                        if len(error_data['available_functions']) > 5:
+                            remaining = len(error_data['available_functions']) - 5
+                            print(f"  ... and {remaining} more", file=sys.stderr)
+                    
+                    # Show exception details if available (for debugging)
+                    if 'exception' in error_data and self.verbose:
+                        print(f"\nException details: {error_data['exception']}", file=sys.stderr)
+                else:
+                    # Not a structured error, show raw response
+                    print(colors.red | f"HTTP Error: {e}", file=sys.stderr)
+                    if hasattr(e.response, 'text'):
+                        print(e.response.text, file=sys.stderr)
+            except (json.JSONDecodeError, AttributeError):
+                # Failed to parse JSON, fall back to showing raw error
+                print(colors.red | f"HTTP Error: {e}", file=sys.stderr)
+                if hasattr(e.response, 'text'):
+                    print(e.response.text, file=sys.stderr)
             sys.exit(1)
         except Exception as e:
             print(colors.red | f"Error: {e}", file=sys.stderr)
@@ -76,6 +113,21 @@ class BinaryNinjaCLI(cli.Application):
             # Custom formatting based on data type
             if "error" in data:
                 print(colors.red | f"Error: {data['error']}")
+                # Display additional error context if available
+                if isinstance(data, dict):
+                    if 'help' in data:
+                        print(colors.yellow | f"Help: {data['help']}")
+                    if 'received' in data:
+                        print(f"Received: {data['received']}")
+                    if 'requested_name' in data:
+                        print(f"Requested: {data['requested_name']}")
+                    if 'available_functions' in data and data['available_functions']:
+                        funcs = data['available_functions'][:5]
+                        print("\nAvailable functions:")
+                        for func in funcs:
+                            print(f"  • {func}")
+                        if len(data['available_functions']) > 5:
+                            print(f"  ... and {len(data['available_functions']) - 5} more")
             elif "success" in data and data.get("success"):
                 print(colors.green | "Success!")
                 if "message" in data:
