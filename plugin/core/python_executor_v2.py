@@ -9,6 +9,7 @@ import traceback
 import ast
 import time
 import threading
+import queue
 from contextlib import redirect_stdout, redirect_stderr
 from collections import deque
 from datetime import datetime
@@ -50,10 +51,11 @@ class BinaryViewRegistry:
             try:
                 # Check if we're in UI context
                 import binaryninjaui
-                view = binaryninjaui.UIContext.currentBinaryView()
-                if view:
-                    return view
-            except ImportError:
+                if hasattr(binaryninjaui, 'UIContext') and hasattr(binaryninjaui.UIContext, 'currentBinaryView'):
+                    view = binaryninjaui.UIContext.currentBinaryView()
+                    if view:
+                        return view
+            except (ImportError, AttributeError):
                 pass
             
             # Check for any loaded views
@@ -260,7 +262,7 @@ Examples:
         return help_text
     
     def execute(self, code: str, timeout: float = 30.0) -> Dict[str, Any]:
-        """Execute Python code with automatic context injection"""
+        """Execute Python code with automatic context injection and timeout"""
         start_time = time.time()
         
         # Auto-inject binary view
@@ -295,70 +297,110 @@ Examples:
             }
         }
         
-        with self._lock:
-            try:
-                # Parse and execute code
-                tree = ast.parse(code, mode='exec')
-                
-                is_expression = False
-                if tree.body:
-                    last_stmt = tree.body[-1]
-                    if isinstance(last_stmt, ast.Expr):
-                        is_expression = True
-                        expr_code = compile(ast.Expression(last_stmt.value), '<console>', 'eval')
-                        tree.body = tree.body[:-1]
-                        stmt_code = compile(tree, '<console>', 'exec') if tree.body else None
-                    else:
-                        stmt_code = compile(tree, '<console>', 'exec')
-                        expr_code = None
-                else:
-                    stmt_code = None
-                    expr_code = None
-                
-                with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                    if stmt_code:
-                        exec(stmt_code, self.globals_dict, self.locals_dict)
+        # Use a queue to communicate between threads
+        result_queue = queue.Queue()
+        exception_queue = queue.Queue()
+        
+        def execute_code():
+            """Execute the code in a separate thread"""
+            with self._lock:
+                try:
+                    # Parse and execute code
+                    tree = ast.parse(code, mode='exec')
                     
-                    if expr_code:
-                        value = eval(expr_code, self.globals_dict, self.locals_dict)
-                        if value is not None:
+                    is_expression = False
+                    if tree.body:
+                        last_stmt = tree.body[-1]
+                        if isinstance(last_stmt, ast.Expr):
+                            is_expression = True
+                            expr_code = compile(ast.Expression(last_stmt.value), '<console>', 'eval')
+                            tree.body = tree.body[:-1]
+                            stmt_code = compile(tree, '<console>', 'exec') if tree.body else None
+                        else:
+                            stmt_code = compile(tree, '<console>', 'exec')
+                            expr_code = None
+                    else:
+                        stmt_code = None
+                        expr_code = None
+                    
+                    with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                        if stmt_code:
+                            exec(stmt_code, self.globals_dict, self.locals_dict)
+                        
+                        if expr_code:
+                            value = eval(expr_code, self.globals_dict, self.locals_dict)
+                            if value is not None:
+                                result['return_value'] = self._serialize_value(value)
+                                result['return_type'] = type(value).__name__
+                                print(repr(value))
+                        
+                        elif '_result' in self.locals_dict:
+                            value = self.locals_dict['_result']
                             result['return_value'] = self._serialize_value(value)
                             result['return_type'] = type(value).__name__
-                            print(repr(value))
                     
-                    elif '_result' in self.locals_dict:
-                        value = self.locals_dict['_result']
-                        result['return_value'] = self._serialize_value(value)
-                        result['return_type'] = type(value).__name__
+                    result['success'] = True
+                    
+                except Exception as e:
+                    exception_queue.put(e)
                 
-                result['success'] = True
-                
-            except Exception as e:
+                finally:
+                    result['stdout'] = stdout_capture.getvalue()
+                    result['stderr'] += stderr_capture.getvalue()
+                    result['variables'] = self._capture_variables()
+                    result_queue.put(result)
+        
+        # Execute in a separate thread
+        exec_thread = threading.Thread(target=execute_code, daemon=True)
+        exec_thread.start()
+        
+        # Wait for completion or timeout
+        exec_thread.join(timeout=timeout)
+        
+        if exec_thread.is_alive():
+            # Timeout occurred
+            result['error'] = {
+                'type': 'TimeoutError',
+                'message': f'Execution timed out after {timeout} seconds',
+                'traceback': ''
+            }
+            result['stderr'] = f'TimeoutError: Execution timed out after {timeout} seconds\n'
+            # Note: We can't forcefully stop the thread in Python, it will continue running
+        else:
+            # Get the result from the queue
+            try:
+                result = result_queue.get_nowait()
+                # Check if there was an exception
+                if not exception_queue.empty():
+                    e = exception_queue.get_nowait()
+                    result['error'] = {
+                        'type': type(e).__name__,
+                        'message': str(e),
+                        'traceback': traceback.format_exc()
+                    }
+                    
+                    # Add helpful suggestions for common errors
+                    if isinstance(e, NameError):
+                        result['error']['suggestions'] = self._get_name_suggestions(str(e))
+                    elif isinstance(e, AttributeError) and "'NoneType'" in str(e):
+                        result['error']['hint'] = "Binary view is None. Make sure a binary is loaded."
+                    
+                    result['stderr'] += traceback.format_exc()
+            except queue.Empty:
+                # This shouldn't happen, but handle it gracefully
                 result['error'] = {
-                    'type': type(e).__name__,
-                    'message': str(e),
-                    'traceback': traceback.format_exc()
+                    'type': 'InternalError',
+                    'message': 'Failed to retrieve execution result',
+                    'traceback': ''
                 }
-                
-                # Add helpful suggestions for common errors
-                if isinstance(e, NameError):
-                    result['error']['suggestions'] = self._get_name_suggestions(str(e))
-                elif isinstance(e, AttributeError) and "'NoneType'" in str(e):
-                    result['error']['hint'] = "Binary view is None. Make sure a binary is loaded."
-                
-                result['stderr'] += traceback.format_exc()
-            
-            finally:
-                result['stdout'] = stdout_capture.getvalue()
-                result['stderr'] += stderr_capture.getvalue()
-                result['variables'] = self._capture_variables()
-                result['execution_time'] = time.time() - start_time
-                
-                self.execution_history.append({
-                    'timestamp': datetime.now().isoformat(),
-                    'code': code,
-                    'result': result
-                })
+        
+        result['execution_time'] = time.time() - start_time
+        
+        self.execution_history.append({
+            'timestamp': datetime.now().isoformat(),
+            'code': code,
+            'result': result
+        })
         
         return result
     
