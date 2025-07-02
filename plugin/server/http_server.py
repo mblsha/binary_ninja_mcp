@@ -21,22 +21,28 @@ except:
         return _simple_log_capture
 
 try:
-    from ..core.python_executor import get_console_capture
-    bn.log_info("Using enhanced Python executor for console")
+    from ..core.python_executor_v2 import get_console_capture
+    bn.log_info("Using enhanced Python executor V2 for console")
 except Exception as e:
-    bn.log_warn(f"Failed to import enhanced Python executor: {e}")
-    # Try original console capture
+    bn.log_warn(f"Failed to import enhanced Python executor V2: {e}")
+    # Try v1 Python executor
     try:
-        from ..core.console_capture import get_console_capture
-    except:
-        # Fallback if console capture fails
-        from ..core.console_capture_simple import SimpleConsoleCapture
-        _simple_console_capture = None
-        def get_console_capture():
-            global _simple_console_capture
-            if _simple_console_capture is None:
-                _simple_console_capture = SimpleConsoleCapture()
-            return _simple_console_capture
+        from ..core.python_executor import get_console_capture
+        bn.log_info("Using enhanced Python executor V1 for console")
+    except Exception as e2:
+        bn.log_warn(f"Failed to import enhanced Python executor: {e2}")
+        # Try original console capture
+        try:
+            from ..core.console_capture import get_console_capture
+        except:
+            # Fallback if console capture fails
+            from ..core.console_capture_simple import SimpleConsoleCapture
+            _simple_console_capture = None
+            def get_console_capture():
+                global _simple_console_capture
+                if _simple_console_capture is None:
+                    _simple_console_capture = SimpleConsoleCapture()
+                return _simple_console_capture
 
 
 # Global variable to track which log capture we're using
@@ -157,9 +163,14 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            # For all endpoints except /status, check if binary is loaded
-            if not self.path.startswith("/status") and not self._check_binary_loaded():
-                return
+            # Endpoints that don't require a binary to be loaded
+            no_binary_required = ["/status", "/logs", "/console"]
+            path = urllib.parse.urlparse(self.path).path
+            
+            # For most endpoints, check if binary is loaded
+            if not any(path.startswith(prefix) for prefix in no_binary_required):
+                if not self._check_binary_loaded():
+                    return
 
             params = self._parse_query_params()
             path = urllib.parse.urlparse(self.path).path
@@ -854,6 +865,12 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 errors = console_capture.get_latest_errors(count)
                 self._send_json_response({"errors": errors})
                 
+            elif path == "/console/complete":
+                partial = params.get("partial", "")
+                console_capture = get_console_capture()
+                completions = console_capture.get_completions(partial)
+                self._send_json_response({"completions": completions})
+                
             else:
                 self._send_json_response({"error": "Not found"}, 404)
 
@@ -915,8 +932,14 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            if not self._check_binary_loaded():
-                return
+            # Endpoints that don't require a binary to be loaded
+            no_binary_required = ["/logs", "/console"]
+            path = urllib.parse.urlparse(self.path).path
+            
+            # For most endpoints, check if binary is loaded
+            if not any(path.startswith(prefix) for prefix in no_binary_required):
+                if not self._check_binary_loaded():
+                    return
 
             params = self._parse_post_params()
             path = urllib.parse.urlparse(self.path).path
@@ -1309,7 +1332,19 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     return
                     
                 console_capture = get_console_capture()
-                result = console_capture.execute_command(command)
+                
+                # Pass server context for binary view access if using V2
+                if hasattr(console_capture, 'set_server_context'):
+                    console_capture.set_server_context(self)
+                
+                # Pass binary view directly if available
+                binary_view = self.binary_ops.current_view if self.binary_ops else None
+                if hasattr(console_capture, 'execute_command'):
+                    result = console_capture.execute_command(command, binary_view)
+                else:
+                    # Fallback for older implementations
+                    result = console_capture.execute_command(command)
+                    
                 self._send_json_response(result)
 
             else:

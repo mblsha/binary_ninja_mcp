@@ -231,7 +231,7 @@ class PythonExecutor:
                 return {
                     'type': 'BinaryNinja.BinaryView',
                     'filename': value.file.filename if value.file else None,
-                    'type_name': value.type_name,
+                    'type_name': value.view_type,
                     'arch': str(value.arch) if value.arch else None,
                     'platform': str(value.platform) if value.platform else None,
                     'functions': len(list(value.functions)),

@@ -75,7 +75,7 @@ _result = hashlib.sha256(data).hexdigest()
             "code": """
 result = {
     'functions': len(list(bv.functions)) if bv else 0,
-    'binary_type': bv.type_name if bv else None,
+    'binary_type': bv.view_type if bv else None,
     'arch': str(bv.arch) if bv and bv.arch else None,
     'entry_point': hex(bv.entry_point) if bv else None
 }

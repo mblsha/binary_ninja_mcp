@@ -138,25 +138,35 @@ All endpoints are on `http://localhost:9009/`:
 
 ### Python Code Execution (NEW)
 
-**Enhanced Python Executor:**
-- Implemented in `/plugin/core/python_executor.py`
-- Provides reliable Python code execution without ScriptingProvider dependency
-- Direct access to Binary Ninja's Python API (bv, bn, functions, etc.)
+**Enhanced Python Executor V2:**
+- Implemented in `/plugin/core/python_executor_v2.py` (with V1 fallback)
+- Provides reliable Python code execution with automatic binary view injection
+- Solves the "bv is None" issue through smart context management
+- Direct access to Binary Ninja's Python API with helper functions
+
+**Key V2 Enhancements:**
+- **Automatic Binary View Injection**: `bv` is always available
+- **Global Registry**: Manages binary views across contexts
+- **Helper Functions**:
+  - `get_current_view()` - Get current binary view
+  - `get_func(name_or_addr)` - Get function by name or address
+  - `find_functions(pattern)` - Find functions matching pattern
+  - `get_strings(min_length)` - Get strings from binary
+  - `hex_dump(addr, size)` - Get hex dump at address
+  - `info()` or `quick_info()` - Get binary overview
+- **Smart Error Messages**: Suggestions for typos and common mistakes
+- **Context-Aware Help**: `help()` shows current binary state
+
+**Core Features (V1 & V2):**
 - Comprehensive result capture:
   - Return values (last expression or `_result` variable)
   - Standard output/error streams
   - Created/modified variables
   - Execution time tracking
+  - Binary context information (V2)
 - JSON serialization of all Python objects for integration
 - Thread-safe execution with 30-second timeout
 - Maintains execution history and context between calls
-
-**Key Features:**
-- Automatic Binary Ninja object serialization (Functions, BinaryView, etc.)
-- Error handling with full traceback capture
-- Support for multi-line scripts and function definitions
-- Auto-completion support (get_completions method)
-- Console output stored in deque buffer for retrieval
 
 **Usage:**
 ```python
@@ -164,7 +174,7 @@ All endpoints are on `http://localhost:9009/`:
 POST /console/execute
 {"command": "len(list(bv.functions))"}
 
-# Returns:
+# V2 Returns (with context):
 {
     "success": true,
     "stdout": "",
@@ -172,8 +182,23 @@ POST /console/execute
     "return_value": 150,
     "return_type": "int",
     "variables": {},
-    "execution_time": 0.002
+    "execution_time": 0.002,
+    "context": {
+        "binary_loaded": true,
+        "binary_name": "example.exe"
+    }
 }
+
+# Helper function example
+POST /console/execute  
+{"command": "find_functions('crypt')"}
+
+# Interactive help
+POST /console/execute
+{"command": "help()"}
 ```
 
-See `/docs/PYTHON_EXECUTOR.md` for detailed documentation and examples.
+**Testing:**
+- Run `test_python_v2.py` to verify V2 functionality
+- Check `PYTHON_V2_IMPLEMENTATION_REPORT.md` for implementation details
+- See `/docs/PYTHON_EXECUTOR.md` for general documentation

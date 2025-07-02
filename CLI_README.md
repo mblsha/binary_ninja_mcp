@@ -147,19 +147,33 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 ### Python Execution
 
 ```bash
-# Execute Python code directly
-./cli.py python "len(list(bv.functions))"
-./cli.py python "print('Functions:', len(list(bv.functions)))"
+# Execute Python code - multiple input methods
+./cli.py python "print('Hello')"                    # Inline code
+./cli.py python script.py                           # From file (auto-detected)
+./cli.py python -f script.py                        # From file (explicit)
+echo "print('Hi')" | ./cli.py python                # From stdin (piped)
+./cli.py python --stdin < script.py                 # From stdin (redirect)
 
-# Execute from file
-./cli.py python -f analyze_binary.py
+# Complex strings without escaping (use files or stdin)
+cat << 'EOF' | ./cli.py python
+print('''No escaping needed:
+- Quotes: "double" and 'single'
+- Paths: C:\Windows\System32
+- JSON: {"key": "value"}
+''')
+EOF
 
 # Interactive Python console
 ./cli.py python -i
 
-# With JSON output
-./cli.py --json python "{'functions': len(list(bv.functions))}"
+# Code completion
+./cli.py python -c "find_f"                         # Shows: find_funcs, find_functions
+
+# With JSON output for automation
+./cli.py --json python "{'count': len(list(bv.functions))}"
 ```
+
+See [Python CLI Guide](docs/PYTHON_CLI_GUIDE.md) for detailed examples.
 
 ### Batch Operations
 

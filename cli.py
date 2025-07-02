@@ -475,11 +475,21 @@ class Exports(cli.Application):
 
 @BinaryNinjaCLI.subcommand("python")
 class Python(cli.Application):
-    """Execute Python code in Binary Ninja context"""
+    """Execute Python code in Binary Ninja context
+    
+    Examples:
+        python "print('Hello')"          # Execute inline code
+        python < script.py               # Execute from stdin
+        python script.py                 # Execute from file
+        python -f script.py              # Execute from file (explicit)
+        python -                         # Read from stdin
+        python -i                        # Interactive mode
+        echo "2+2" | python -            # Pipe code to execute
+    """
     
     file = cli.SwitchAttr(
         ["-f", "--file"],
-        str,
+        cli.ExistingFile,
         help="Execute Python code from file"
     )
     
@@ -488,26 +498,108 @@ class Python(cli.Application):
         help="Start interactive Python session"
     )
     
-    def main(self, *code_parts):
-        if self.file:
-            # Execute from file
-            try:
-                with open(self.file, 'r') as f:
-                    code = f.read()
-            except Exception as e:
-                print(colors.red | f"Error reading file: {e}")
-                return 1
-        elif self.interactive:
+    stdin = cli.Flag(
+        ["--stdin"],
+        help="Read code from stdin (can also use '-' as argument)"
+    )
+    
+    complete = cli.SwitchAttr(
+        ["-c", "--complete"],
+        str,
+        help="Get code completions for partial input"
+    )
+    
+    def main(self, *args):
+        code = None
+        
+        # Handle completion request
+        if self.complete is not None:
+            data = self.parent._request("GET", "console/complete", params={"partial": self.complete})
+            completions = data.get("completions", [])
+            if self.parent.json_output:
+                self.parent._output(data)
+            else:
+                if completions:
+                    for comp in completions:
+                        print(comp)
+                else:
+                    print(f"No completions for '{self.complete}'")
+            return 0
+        
+        # Determine source of code
+        if self.interactive:
             # Interactive mode
             self._interactive_mode()
             return 0
-        elif code_parts:
-            # Execute command line code
-            code = " ".join(code_parts)
+            
+        elif self.file:
+            # Explicit file flag
+            try:
+                code = self.file.read()
+            except Exception as e:
+                print(colors.red | f"Error reading file: {e}")
+                return 1
+                
+        elif self.stdin or (args and args[0] == "-"):
+            # Read from stdin
+            try:
+                import sys
+                code = sys.stdin.read()
+                if not code.strip():
+                    print(colors.red | "No input received from stdin")
+                    return 1
+            except KeyboardInterrupt:
+                print("\nCancelled")
+                return 1
+            except Exception as e:
+                print(colors.red | f"Error reading stdin: {e}")
+                return 1
+                
+        elif args:
+            # Check if first argument is a file
+            if len(args) == 1 and not args[0].startswith("-"):
+                from pathlib import Path
+                file_path = Path(args[0])
+                if file_path.exists() and file_path.is_file():
+                    # It's a file, read it
+                    try:
+                        code = file_path.read_text()
+                    except Exception as e:
+                        print(colors.red | f"Error reading file '{args[0]}': {e}")
+                        return 1
+                else:
+                    # Not a file, treat as inline code
+                    code = " ".join(args)
+            else:
+                # Multiple arguments or starts with -, treat as inline code
+                code = " ".join(args)
+                
         else:
-            print("Usage: python [options] <code>")
-            print("       python -f script.py")
-            print("       python -i")
+            # No arguments, check if stdin is piped
+            import sys
+            import select
+            
+            # Check if stdin has data (works on Unix-like systems)
+            if sys.stdin.isatty():
+                # No piped input, show usage
+                print("Usage: python [options] <code|file|->")
+                print("       python script.py              # Execute file")
+                print("       python 'print(42)'            # Execute inline code")
+                print("       python -                      # Read from stdin")
+                print("       echo 'print(42)' | python     # Pipe to stdin")
+                print("       python -i                     # Interactive mode")
+                print("       python -f script.py           # Explicit file")
+                return 1
+            else:
+                # Data is piped to stdin
+                try:
+                    code = sys.stdin.read()
+                except Exception as e:
+                    print(colors.red | f"Error reading piped input: {e}")
+                    return 1
+        
+        if not code:
+            print(colors.red | "No code to execute")
             return 1
         
         # Execute the code

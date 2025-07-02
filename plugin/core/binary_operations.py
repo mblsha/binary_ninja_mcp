@@ -47,14 +47,8 @@ class BinaryOperations:
                     self._current_view = bn.BinaryViewType.get_view_of_file(filepath)
             else:
                 bn.log_info("Using legacy method")
-                file_metadata = bn.FileMetadata()
-                binary_view_type = bn.BinaryViewType.get_view_of_file_with_options(
-                    filepath, file_metadata
-                )
-                if binary_view_type:
-                    self._current_view = binary_view_type.open()
-                else:
-                    raise Exception("No view type available for this file")
+                # Try the simplest approach that should work
+                self._current_view = bn.BinaryViewType.get_view_of_file(filepath)
 
             return self._current_view
         except Exception as e:

@@ -156,7 +156,7 @@ report = {
     'timestamp': datetime.now().isoformat(),
     'binary': {
         'filename': bv.file.filename if bv.file else 'Unknown',
-        'type': bv.type_name,
+        'type': bv.view_type,
         'arch': str(bv.arch) if bv.arch else 'Unknown',
         'platform': str(bv.platform) if bv.platform else 'Unknown',
         'size': len(bv),
