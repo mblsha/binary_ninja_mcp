@@ -15,6 +15,8 @@ Command-line interface for interacting with Binary Ninja MCP server. Provides ac
 ./binja-cli.py python -c "print(bv.functions)"
 ```
 
+**Note:** When checking how Binary Ninja Python API functions should work, reference the `binaryninja-api` directory for the actual implementation details and correct usage patterns.
+
 ### binja-restart.py
 Advanced Binary Ninja restart utility with monitoring capabilities. Gracefully restarts Binary Ninja, optionally loading specified files.
 
