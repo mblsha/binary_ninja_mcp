@@ -1,7 +1,8 @@
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 import urllib.parse
-from typing import Dict, Any
+import errno
+from typing import Dict, Any, Optional
 import binaryninja as bn
 import threading
 from ..core.binary_operations import BinaryOperations
@@ -161,10 +162,47 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _maybe_refresh_current_view(self, params: Optional[Dict[str, Any]] = None):
+        """Best-effort refresh of current BinaryView for multi-tab UI workflows.
+
+        - If `filename` (or `file`) is provided, attempt to select a previously-seen view.
+        - Otherwise (or as fallback), use `binaryninjaui.UIContext.currentBinaryView()` when available.
+        """
+        if not self.binary_ops:
+            return
+
+        requested_filename = None
+        if params:
+            requested_filename = (
+                params.get("filename")
+                or params.get("file")
+            )
+
+        if requested_filename:
+            try:
+                selected = self.binary_ops.select_view_by_filename(str(requested_filename))
+                if selected:
+                    return
+            except Exception:
+                pass
+
+        try:
+            import binaryninjaui  # type: ignore
+
+            if hasattr(binaryninjaui, "UIContext") and hasattr(binaryninjaui.UIContext, "currentBinaryView"):
+                view = binaryninjaui.UIContext.currentBinaryView()
+                if view:
+                    self.binary_ops.current_view = view
+        except Exception:
+            # UI not available (headless) or API mismatch; ignore.
+            pass
+
     def do_GET(self):
         try:
             # Endpoints that don't require a binary to be loaded
             no_binary_required = ["/status", "/logs", "/console"]
+            params = self._parse_query_params()
+            self._maybe_refresh_current_view(params)
             path = urllib.parse.urlparse(self.path).path
             
             # For most endpoints, check if binary is loaded
@@ -172,8 +210,6 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 if not self._check_binary_loaded():
                     return
 
-            params = self._parse_query_params()
-            path = urllib.parse.urlparse(self.path).path
             offset = parse_int_or_default(params.get("offset"), 0)
             limit = parse_int_or_default(params.get("limit"), 100)
 
@@ -935,13 +971,15 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             # Endpoints that don't require a binary to be loaded
             no_binary_required = ["/logs", "/console"]
             path = urllib.parse.urlparse(self.path).path
-            
+
+            params = self._parse_post_params()
+            self._maybe_refresh_current_view(params)
+
             # For most endpoints, check if binary is loaded
             if not any(path.startswith(prefix) for prefix in no_binary_required):
                 if not self._check_binary_loaded():
                     return
 
-            params = self._parse_post_params()
             path = urllib.parse.urlparse(self.path).path
 
             bn.log_info(f"POST {path} with params: {params}")
@@ -1369,62 +1407,125 @@ class MCPServer:
         self.server = None
         self.thread = None
         self.binary_ops = BinaryOperations(config.binary_ninja)
+        self._lock = threading.Lock()
+
+    def is_running(self) -> bool:
+        return (
+            self.server is not None
+            and self.thread is not None
+            and self.thread.is_alive()
+        )
 
     def start(self):
         """Start the HTTP server in a background thread."""
-        server_address = (self.config.server.host, self.config.server.port)
+        with self._lock:
+            if self.is_running():
+                bn.log_info(
+                    f"[MCP] Server already running on http://{self.config.server.host}:{self.config.server.port}"
+                )
+                return False
 
-        # Start log and console capture
-        log_capture = get_active_log_capture()
-        if log_capture:
+            # Clean up any stale state from a previous run.
+            if self.server is not None:
+                try:
+                    self.server.server_close()
+                except Exception:
+                    pass
+                self.server = None
+                self.thread = None
+
+            server_address = (self.config.server.host, self.config.server.port)
+
+            # Create handler with access to binary operations
+            handler_class = type(
+                "MCPRequestHandlerWithOps",
+                (MCPRequestHandler,),
+                {"binary_ops": self.binary_ops},
+            )
+
             try:
-                log_capture.start()
+                self.server = HTTPServer(server_address, handler_class)
+            except OSError as e:
+                if e.errno == errno.EADDRINUSE:
+                    bn.log_error(
+                        f"[MCP] Failed to start server: http://{self.config.server.host}:{self.config.server.port} is already in use"
+                    )
+                else:
+                    bn.log_error(
+                        f"[MCP] Failed to start server on http://{self.config.server.host}:{self.config.server.port}: {e}"
+                    )
+                self.server = None
+                self.thread = None
+                return False
             except Exception as e:
-                bn.log_error(f"[MCP] Failed to start log capture: {e}")
-        
-        console_capture = get_console_capture()
-        if console_capture:
-            try:
-                console_capture.start()
-            except Exception as e:
-                bn.log_error(f"[MCP] Failed to start console capture: {e}")
+                bn.log_error(
+                    f"[MCP] Failed to start server on http://{self.config.server.host}:{self.config.server.port}: {e}"
+                )
+                self.server = None
+                self.thread = None
+                return False
 
-        # Create handler with access to binary operations
-        handler_class = type(
-            "MCPRequestHandlerWithOps",
-            (MCPRequestHandler,),
-            {"binary_ops": self.binary_ops},
-        )
-
-        self.server = HTTPServer(server_address, handler_class)
-        self.thread = threading.Thread(target=self.server.serve_forever)
-        self.thread.daemon = True
-        self.thread.start()
-        bn.log_info(
-            f"Server started on {self.config.server.host}:{self.config.server.port}"
-        )
-
-    def stop(self):
-        """Stop the HTTP server and clean up resources."""
-        if self.server:
-            self.server.shutdown()
-            self.server.server_close()
-            if self.thread:
-                self.thread.join()
-                
-            # Stop log and console capture
+            # Start log and console capture (best-effort).
             log_capture = get_active_log_capture()
             if log_capture:
                 try:
-                    log_capture.stop()
+                    log_capture.start()
                 except Exception as e:
-                    bn.log_error(f"[MCP] Failed to stop log capture: {e}")
-            
+                    bn.log_error(f"[MCP] Failed to start log capture: {e}")
+
             console_capture = get_console_capture()
             if console_capture:
                 try:
-                    console_capture.stop()
+                    console_capture.start()
                 except Exception as e:
-                    bn.log_error(f"[MCP] Failed to stop console capture: {e}")
-            
-            bn.log_info("Server stopped")
+                    bn.log_error(f"[MCP] Failed to start console capture: {e}")
+
+            self.thread = threading.Thread(target=self.server.serve_forever)
+            self.thread.daemon = True
+            self.thread.start()
+            bn.log_info(
+                f"[MCP] Server started on http://{self.config.server.host}:{self.config.server.port}"
+            )
+            return True
+
+    def stop(self):
+        """Stop the HTTP server and clean up resources."""
+        with self._lock:
+            if self.server is None:
+                bn.log_info("[MCP] Server already stopped")
+                return False
+
+            server = self.server
+            thread = self.thread
+            self.server = None
+            self.thread = None
+
+        try:
+            server.shutdown()
+        except Exception as e:
+            bn.log_error(f"[MCP] Failed to shutdown server cleanly: {e}")
+        try:
+            server.server_close()
+        except Exception as e:
+            bn.log_error(f"[MCP] Failed to close server socket: {e}")
+
+        if thread and thread.is_alive():
+            thread.join(timeout=5)
+
+        # Stop log and console capture (best-effort).
+        log_capture = get_active_log_capture()
+        if log_capture:
+            try:
+                log_capture.stop()
+            except Exception as e:
+                bn.log_error(f"[MCP] Failed to stop log capture: {e}")
+
+        console_capture = get_console_capture()
+        if console_capture:
+            try:
+                console_capture.stop()
+            except Exception as e:
+                bn.log_error(f"[MCP] Failed to stop console capture: {e}")
+
+        bn.log_info("[MCP] Server stopped")
+        return True
