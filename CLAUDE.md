@@ -11,15 +11,11 @@ This is a Binary Ninja plugin that exposes binary analysis functionality through
 ## Development Commands
 
 ```bash
-# Set up development environment
-python3 -m venv .venv
-source .venv/bin/activate  # macOS/Linux
-
-# Install bridge dependencies
-pip install -r bridge/requirements.txt
+# Create/sync local environment (creates `.venv/`)
+uv sync
 
 # Run the MCP bridge (after starting server in Binary Ninja)
-python bridge/binja_mcp_bridge.py
+uv run python bridge/binja_mcp_bridge.py
 ```
 
 ## Architecture

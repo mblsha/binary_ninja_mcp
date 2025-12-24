@@ -75,6 +75,7 @@ The following table details which integrations with Binary Ninja are currently s
 
 - [Binary Ninja](https://binary.ninja/)
 - Python 3.12+
+- [uv](https://github.com/astral-sh/uv) (recommended)
 - [Claude Desktop](https://claude.ai/download) (or your preferred integration)
 
 ## Installation
@@ -95,10 +96,8 @@ This is only needed if you want to use Claude Desktop as your MCP client.  Make 
 git clone git@github.com:fosdickio/binary_ninja_mcp.git
 cd binary_ninja_mcp
 
-python3 -m venv .venv
-source .venv/bin/activate   # On macOS/Linux
-
-pip install -r bridge/requirements.txt
+# Create/sync local environment (creates `.venv/`)
+uv sync
 ```
 
 #### Automated Configuration (Mac)
@@ -169,4 +168,3 @@ binary_ninja_mcp/
 ## Contributing
 
 Contributions are welcome. Please feel free to submit a pull request.
-
