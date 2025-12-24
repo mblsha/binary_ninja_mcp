@@ -17,13 +17,7 @@ def check_os():
 def get_config_path():
     """Get the path to the Claude Desktop config file."""
     home = Path.home()
-    return (
-        home
-        / "Library"
-        / "Application Support"
-        / "Claude"
-        / "claude_desktop_config.json"
-    )
+    return home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
 
 
 def setup_claude_desktop():

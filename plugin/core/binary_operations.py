@@ -6,7 +6,6 @@ from .config import BinaryNinjaConfig
 from binaryninja.enums import TypeClass, StructureVariant
 
 
-
 class BinaryOperations:
     def __init__(self, config: BinaryNinjaConfig):
         self.config = config
@@ -104,9 +103,7 @@ class BinaryOperations:
             if hasattr(bn, "open_view"):
                 bn.log_info("Using bn.open_view method")
                 self._current_view = bn.open_view(filepath)
-            elif hasattr(bn, "BinaryViewType") and hasattr(
-                bn.BinaryViewType, "get_view_of_file"
-            ):
+            elif hasattr(bn, "BinaryViewType") and hasattr(bn.BinaryViewType, "get_view_of_file"):
                 bn.log_info("Using BinaryViewType.get_view_of_file method")
                 file_metadata = bn.FileMetadata()
                 try:
@@ -131,9 +128,7 @@ class BinaryOperations:
             bn.log_error(f"Failed to load binary: {e}")
             raise
 
-    def get_function_by_name_or_address(
-        self, identifier: Union[str, int]
-    ) -> Optional[bn.Function]:
+    def get_function_by_name_or_address(self, identifier: Union[str, int]) -> Optional[bn.Function]:
         """Get a function by either its name or address.
 
         Args:
@@ -182,9 +177,7 @@ class BinaryOperations:
         bn.log_error(f"Could not find function: {identifier}")
         return None
 
-    def get_function_names(
-        self, offset: int = 0, limit: int = 100
-    ) -> List[Dict[str, str]]:
+    def get_function_names(self, offset: int = 0, limit: int = 100) -> List[Dict[str, str]]:
         """Get list of function names with addresses"""
         if not self._current_view:
             raise RuntimeError("No binary loaded")
@@ -195,9 +188,7 @@ class BinaryOperations:
                 {
                     "name": func.name,
                     "address": hex(func.start),
-                    "raw_name": func.raw_name
-                    if hasattr(func, "raw_name")
-                    else func.name,
+                    "raw_name": func.raw_name if hasattr(func, "raw_name") else func.name,
                 }
             )
 
@@ -338,9 +329,7 @@ class BinaryOperations:
                 func.name = new_name
 
                 if func.name == new_name:
-                    bn.log_info(
-                        f"Successfully renamed function from {old_name} to {new_name}"
-                    )
+                    bn.log_info(f"Successfully renamed function from {old_name} to {new_name}")
                     return True
 
                 # Try symbol-based renaming if direct assignment fails
@@ -371,9 +360,7 @@ class BinaryOperations:
                     except Exception as e:
                         bn.log_error(f"Function update rename failed: {e}")
 
-                bn.log_error(
-                    f"All rename methods failed - function name unchanged: {func.name}"
-                )
+                bn.log_error(f"All rename methods failed - function name unchanged: {func.name}")
                 return False
 
             except Exception as e:
@@ -384,9 +371,7 @@ class BinaryOperations:
             bn.log_error(f"Error in rename_function: {e}")
             return False
 
-    def get_function_info(
-        self, identifier: Union[str, int]
-    ) -> Optional[Dict[str, Any]]:
+    def get_function_info(self, identifier: Union[str, int]) -> Optional[Dict[str, Any]]:
         """Get detailed information about a function"""
         if not self._current_view:
             raise RuntimeError("No binary loaded")
@@ -463,9 +448,7 @@ class BinaryOperations:
             bn.log_error(f"Failed to rename data: {e}")
         return False
 
-    def get_defined_data(
-        self, offset: int = 0, limit: int = 100
-    ) -> List[Dict[str, Any]]:
+    def get_defined_data(self, offset: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
         """Get list of defined data variables"""
         if not self._current_view:
             raise RuntimeError("No binary loaded")
@@ -500,9 +483,7 @@ class BinaryOperations:
                 {
                     "address": hex(var),
                     "name": sym.name if sym else "(unnamed)",
-                    "raw_name": sym.raw_name
-                    if sym and hasattr(sym, "raw_name")
-                    else None,
+                    "raw_name": sym.raw_name if sym and hasattr(sym, "raw_name") else None,
                     "value": value,
                     "type": str(data_type) if data_type else None,
                 }
@@ -630,13 +611,12 @@ class BinaryOperations:
             func = self.get_function_by_name_or_address(identifier)
             if not func:
                 return False
-                
+
             func.comment = None
             return True
         except Exception as e:
             bn.log_error(f"Failed to delete function comment: {e}")
         return False
-        
 
     def get_assembly_function(self, identifier: Union[str, int]) -> Optional[str]:
         """Get the assembly representation of a function with practical annotations.
@@ -655,12 +635,12 @@ class BinaryOperations:
             if not func:
                 bn.log_error(f"Function not found: {identifier}")
                 return None
-                
+
             bn.log_info(f"Found function: {func.name} at {hex(func.start)}")
-            
-            var_map = {}    # TODO: Implement this functionality (issues with var.storage not returning the correst sp offset)
+
+            var_map = {}  # TODO: Implement this functionality (issues with var.storage not returning the correst sp offset)
             assembly_blocks = {}
-            
+
             if not hasattr(func, "basic_blocks") or not func.basic_blocks:
                 bn.log_error(f"Function {func.name} has no basic blocks")
                 # Try alternate approach with linear disassembly
@@ -669,35 +649,39 @@ class BinaryOperations:
                     func_length = func.total_bytes
                     if func_length <= 0:
                         func_length = 1024  # Use a reasonable default if length not available
-                except:
+                except Exception:
                     func_length = 1024  # Use a reasonable default if error
-                    
+
                 try:
                     # Create one big block for the entire function
                     block_lines = []
                     current_addr = start_addr
                     end_addr = start_addr + func_length
-                    
+
                     while current_addr < end_addr:
                         try:
                             # Get instruction length
                             instr_len = self._current_view.get_instruction_length(current_addr)
                             if instr_len <= 0:
                                 instr_len = 4  # Default to a reasonable instruction length
-                                
+
                             # Get disassembly for this instruction
-                            line = self._get_instruction_with_annotations(current_addr, instr_len, var_map)
+                            line = self._get_instruction_with_annotations(
+                                current_addr, instr_len, var_map
+                            )
                             if line:
                                 block_lines.append(line)
-                                
+
                             current_addr += instr_len
                         except Exception as e:
                             bn.log_error(f"Error processing address {hex(current_addr)}: {str(e)}")
                             block_lines.append(f"# Error at {hex(current_addr)}: {str(e)}")
                             current_addr += 1  # Skip to next byte
-                    
-                    assembly_blocks[start_addr] = [f"# Block at {hex(start_addr)}"] + block_lines + [""]
-                    
+
+                    assembly_blocks[start_addr] = (
+                        [f"# Block at {hex(start_addr)}"] + block_lines + [""]
+                    )
+
                 except Exception as e:
                     bn.log_error(f"Linear disassembly failed: {str(e)}")
                     return None
@@ -705,7 +689,7 @@ class BinaryOperations:
                 for i, block in enumerate(func.basic_blocks):
                     try:
                         block_lines = []
-                        
+
                         # Process each address in the block
                         addr = block.start
                         while addr < block.end:
@@ -713,59 +697,71 @@ class BinaryOperations:
                                 instr_len = self._current_view.get_instruction_length(addr)
                                 if instr_len <= 0:
                                     instr_len = 4  # Default to a reasonable instruction length
-                                
+
                                 # Get disassembly for this instruction
-                                line = self._get_instruction_with_annotations(addr, instr_len, var_map)
+                                line = self._get_instruction_with_annotations(
+                                    addr, instr_len, var_map
+                                )
                                 if line:
                                     block_lines.append(line)
-                                    
+
                                 addr += instr_len
                             except Exception as e:
                                 bn.log_error(f"Error processing address {hex(addr)}: {str(e)}")
                                 block_lines.append(f"# Error at {hex(addr)}: {str(e)}")
                                 addr += 1  # Skip to next byte
-                        
+
                         # Store block with its starting address as key
-                        assembly_blocks[block.start] = [f"# Block {i+1} at {hex(block.start)}"] + block_lines + [""]
-                        
+                        assembly_blocks[block.start] = (
+                            [f"# Block {i + 1} at {hex(block.start)}"] + block_lines + [""]
+                        )
+
                     except Exception as e:
-                        bn.log_error(f"Error processing block {i+1} at {hex(block.start)}: {str(e)}")
-                        assembly_blocks[block.start] = [f"# Error processing block {i+1} at {hex(block.start)}: {str(e)}", ""]
-            
+                        bn.log_error(
+                            f"Error processing block {i + 1} at {hex(block.start)}: {str(e)}"
+                        )
+                        assembly_blocks[block.start] = [
+                            f"# Error processing block {i + 1} at {hex(block.start)}: {str(e)}",
+                            "",
+                        ]
+
             # Sort blocks by address and concatenate them
             sorted_blocks = []
             for addr in sorted(assembly_blocks.keys()):
                 sorted_blocks.extend(assembly_blocks[addr])
-            
+
             return "\n".join(sorted_blocks)
         except Exception as e:
             bn.log_error(f"Error getting assembly for function {identifier}: {str(e)}")
             import traceback
+
             bn.log_error(traceback.format_exc())
             return None
 
-    def _get_instruction_with_annotations(self, addr: int, instr_len: int, var_map: Dict[int, str]) -> Optional[str]:
+    def _get_instruction_with_annotations(
+        self, addr: int, instr_len: int, var_map: Dict[int, str]
+    ) -> Optional[str]:
         """Get a single instruction with practical annotations.
-        
+
         Args:
             addr: Address of the instruction
             instr_len: Length of the instruction
             var_map: Dictionary mapping offsets to variable names
-            
+
         Returns:
             Formatted instruction string with annotations
         """
         if not self._current_view:
             return None
-            
+
         try:
             # Get raw bytes for fallback
             try:
                 raw_bytes = self._current_view.read(addr, instr_len)
-                hex_bytes = ' '.join(f'{b:02x}' for b in raw_bytes)
-            except:
+                hex_bytes = " ".join(f"{b:02x}" for b in raw_bytes)
+            except Exception:
                 hex_bytes = "??"
-                
+
             # Get basic disassembly
             disasm_text = ""
             try:
@@ -773,180 +769,187 @@ class BinaryOperations:
                     disasm = self._current_view.get_disassembly(addr)
                     if disasm:
                         disasm_text = disasm
-            except:
+            except Exception:
                 disasm_text = hex_bytes + " ; [Raw bytes]"
-                
+
             if not disasm_text:
                 disasm_text = hex_bytes + " ; [Raw bytes]"
-                
+
             # Check if this is a call instruction and try to get target function name
             if "call" in disasm_text.lower():
                 try:
                     # Extract the address from the call instruction
                     import re
-                    addr_pattern = r'0x[0-9a-fA-F]+'
+
+                    addr_pattern = r"0x[0-9a-fA-F]+"
                     match = re.search(addr_pattern, disasm_text)
                     if match:
                         call_addr_str = match.group(0)
                         call_addr = int(call_addr_str, 16)
-                        
+
                         # Look up the target function name
                         sym = self._current_view.get_symbol_at(call_addr)
                         if sym and hasattr(sym, "name"):
                             # Replace the address with the function name
                             disasm_text = disasm_text.replace(call_addr_str, sym.name)
-                except:
+                except Exception:
                     pass
-                    
+
             # Try to annotate memory references with variable names
             try:
                 # Look for memory references like [reg+offset]
                 import re
-                mem_ref_pattern = r'\[([^\]]+)\]'
+
+                mem_ref_pattern = r"\[([^\]]+)\]"
                 mem_refs = re.findall(mem_ref_pattern, disasm_text)
-                
+
                 # For each memory reference, check if it's a known variable
                 for mem_ref in mem_refs:
                     # Parse for ebp relative references
-                    offset_pattern = r'(ebp|rbp)(([+-]0x[0-9a-fA-F]+)|([+-]\d+))'
+                    offset_pattern = r"(ebp|rbp)(([+-]0x[0-9a-fA-F]+)|([+-]\d+))"
                     offset_match = re.search(offset_pattern, mem_ref)
                     if offset_match:
                         # Extract base register and offset
-                        base_reg = offset_match.group(1)
                         offset_str = offset_match.group(2)
-                        
+
                         # Convert offset to integer
                         try:
-                            offset = int(offset_str, 16) if offset_str.startswith('0x') or offset_str.startswith('-0x') else int(offset_str)      
-                            
+                            offset = (
+                                int(offset_str, 16)
+                                if offset_str.startswith("0x") or offset_str.startswith("-0x")
+                                else int(offset_str)
+                            )
+
                             # Try to find variable name
                             var_name = var_map.get(offset)
-                            
+
                             # If found, add it to the memory reference
                             if var_name:
                                 old_ref = f"[{mem_ref}]"
                                 new_ref = f"[{mem_ref} {{{var_name}}}]"
                                 disasm_text = disasm_text.replace(old_ref, new_ref)
-                        except:
+                        except ValueError:
                             pass
-            except:
+            except Exception:
                 pass
-                
+
             # Get comment if any
             comment = None
             try:
                 comment = self._current_view.get_comment_at(addr)
-            except:
+            except Exception:
                 pass
-                
+
             # Format the final line
             addr_str = f"{addr:08x}"
             line = f"0x{addr_str}  {disasm_text}"
-            
+
             # Add comment at the end if any
             if comment:
                 line += f"  ; {comment}"
-                
+
             return line
         except Exception as e:
             bn.log_error(f"Error annotating instruction at {hex(addr)}: {str(e)}")
             return f"0x{addr:08x}  {hex_bytes} ; [Error: {str(e)}]"
-            
+
     def get_functions_containing_address(self, address: int) -> list:
         """Get functions containing a specific address.
-        
+
         Args:
             address: The instruction address to find containing functions for
-            
+
         Returns:
             List of function names containing the address
         """
         if not self.current_view:
             raise RuntimeError("No binary loaded")
-            
+
         try:
             functions = list(self.current_view.get_functions_containing(address))
             return [func.name for func in functions]
         except Exception as e:
             bn.log_error(f"Error getting functions containing address {hex(address)}: {e}")
             return []
-            
+
     def get_function_code_references(self, function_name: str) -> list:
         """Get all code references to a function.
-        
+
         Args:
             function_name: Name of the function to find references to
-            
+
         Returns:
             List of dictionaries containing function names and addresses that reference the target function
         """
         if not self._current_view:
             raise RuntimeError("No binary loaded")
-            
+
         try:
             # First, get the function by name
             func = self.get_function_by_name_or_address(function_name)
             if not func:
                 bn.log_error(f"Function not found: {function_name}")
                 return []
-                
+
             # Get all code references to the function's start address
             code_refs = []
             for ref in list(self._current_view.get_code_refs(func.start)):
                 try:
                     # For each reference, get the containing function and address
                     if ref.function:
-                        code_refs.append({
-                            "function": ref.function.name,
-                            "address": hex(ref.address)
-                        })
+                        code_refs.append(
+                            {"function": ref.function.name, "address": hex(ref.address)}
+                        )
                 except Exception as e:
                     bn.log_error(f"Error processing reference at {hex(ref.address)}: {e}")
-                    
+
             return code_refs
         except Exception as e:
             bn.log_error(f"Error getting code references for function {function_name}: {e}")
             return []
-            
+
     def get_user_defined_type(self, type_name: str) -> Optional[Dict[str, Any]]:
         """Get the definition of a user-defined type (struct, enum, etc.)
-        
+
         Args:
             type_name: Name of the user-defined type to retrieve
-            
+
         Returns:
             Dictionary with type information and definition, or None if not found
         """
         if not self._current_view:
             raise RuntimeError("No binary loaded")
-            
+
         try:
             # Check if we have a user type container
-            if not hasattr(self._current_view, "user_type_container") or not self._current_view.user_type_container:
-                bn.log_info(f"No user type container available")
+            if (
+                not hasattr(self._current_view, "user_type_container")
+                or not self._current_view.user_type_container
+            ):
+                bn.log_info("No user type container available")
                 return None
-                
+
             # Search for the requested type by name
             found_type = None
             found_type_id = None
-            
+
             for type_id in self._current_view.user_type_container.types.keys():
                 current_type = self._current_view.user_type_container.types[type_id]
                 type_name_from_container = current_type[0]
-                
+
                 if type_name_from_container == type_name:
                     found_type = current_type
                     found_type_id = type_id
                     break
-                    
+
             if not found_type or not found_type_id:
                 bn.log_info(f"Type not found: {type_name}")
                 return None
-                
+
             # Determine the type category (struct, enum, etc.)
             type_category = "unknown"
             type_object = found_type[1]
-            bn.log_info(f"Stage1")
+            bn.log_info("Stage1")
             bn.log_info(f"Stage1.5 {type_object.type_class} {StructureVariant.StructStructureType}")
             if type_object.type_class == TypeClass.EnumerationTypeClass:
                 type_category = "enum"
@@ -962,9 +965,13 @@ class BinaryOperations:
 
             # Generate the C++ style definition
             definition_lines = []
-            
+
             try:
-                if type_category == "struct" or type_category == "class" or type_category == "union":
+                if (
+                    type_category == "struct"
+                    or type_category == "class"
+                    or type_category == "union"
+                ):
                     definition_lines.append(f"{type_category} {type_name} {{")
                     for member in type_object.members:
                         if hasattr(member, "name") and hasattr(member, "type"):
@@ -984,12 +991,8 @@ class BinaryOperations:
 
             # Construct the final definition string
             definition = "\n".join(definition_lines)
-            
-            return {
-                "name": type_name,
-                "type": type_category,
-                "definition": definition
-            }
+
+            return {"name": type_name, "type": type_category, "definition": definition}
         except Exception as e:
             bn.log_error(f"Error getting user-defined type {type_name}: {e}")
             return None
