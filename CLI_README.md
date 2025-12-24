@@ -175,6 +175,84 @@ EOF
 
 See [Python CLI Guide](docs/PYTHON_CLI_GUIDE.md) for detailed examples.
 
+### Working with Tags
+
+Binary Ninja tags are annotations attached to addresses (e.g., warnings, notes, unimplemented instructions). Access them via the Python interface:
+
+```bash
+# Count total tags in the binary
+./cli.py python "
+total = sum(len(f.tags) for f in bv.functions if hasattr(f, 'tags'))
+print(f'Total tags: {total}')
+"
+
+# Find tags with specific text (e.g., unimplemented instructions)
+./cli.py python "
+unimplemented = []
+for func in bv.functions:
+    if hasattr(func, 'tags'):
+        for tag_tuple in func.tags:
+            # Tag format: (arch, address, tag_object)
+            if len(tag_tuple) >= 3:
+                addr, tag_obj = tag_tuple[1], tag_tuple[2]
+                tag_text = str(tag_obj)
+                if 'unimplemented' in tag_text.lower():
+                    unimplemented.append((addr, tag_text, func.name))
+
+print(f'Found {len(unimplemented)} unimplemented instruction tags')
+for addr, text, func_name in sorted(unimplemented)[:10]:
+    print(f'  0x{addr:X} in {func_name}: {text[:60]}')
+"
+
+# Get tags at a specific address
+./cli.py python "
+addr = 0xC04AE
+for func in bv.functions:
+    if hasattr(func, 'tags'):
+        for tag_tuple in func.tags:
+            if len(tag_tuple) >= 3 and tag_tuple[1] == addr:
+                print(f'Tag at 0x{addr:X}: {tag_tuple[2]}')
+"
+
+# Group tags by type
+./cli.py python "
+tag_types = {}
+for func in bv.functions:
+    if hasattr(func, 'tags'):
+        for tag_tuple in func.tags:
+            if len(tag_tuple) >= 3:
+                tag_obj = tag_tuple[2]
+                tag_type = tag_obj.type.name if hasattr(tag_obj, 'type') else 'Unknown'
+                tag_types[tag_type] = tag_types.get(tag_type, 0) + 1
+
+for tag_type, count in sorted(tag_types.items(), key=lambda x: x[1], reverse=True):
+    print(f'{tag_type}: {count}')
+"
+
+# Save tags to a file
+./cli.py python "
+import json
+tags_list = []
+for func in bv.functions:
+    if hasattr(func, 'tags'):
+        for tag_tuple in func.tags:
+            if len(tag_tuple) >= 3:
+                addr = tag_tuple[1]
+                tag_text = str(tag_tuple[2])
+                tags_list.append({'address': hex(addr), 'tag': tag_text, 'function': func.name})
+
+with open('/tmp/tags.json', 'w') as f:
+    json.dump(tags_list, f, indent=2)
+print(f'Saved {len(tags_list)} tags to /tmp/tags.json')
+"
+```
+
+**Tag Structure:**
+- Tags are stored per-function in `func.tags`
+- Each tag is a tuple: `(architecture, address, tag_object)`
+- Access tag text via `str(tag_object)` or `tag_object.data`
+- Tag types accessed via `tag_object.type.name`
+
 ### Batch Operations
 
 ```bash
