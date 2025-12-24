@@ -1,170 +1,87 @@
 # Binary Ninja MCP <img src="images/binja.png" height="24" style="margin-left: 5px; vertical-align: middle;">
 
-This repository contains a Binary Ninja plugin, MCP server, and bridge that enables seamless integration of Binary Ninja's capabilities with your favorite LLM client.
+This repository provides a Binary Ninja plugin that starts a local HTTP server and a CLI to drive analysis from your terminal. The CLI is the preferred interface.
 
-## Features
+## Quickstart (CLI)
 
-- Seamless, real-time integration between Binary Ninja and MCP clients
-- Enhanced reverse engineering workflow with AI assistance
-- Primary support for Claude Desktop as the MCP client, but extensible for other integrations
-- **Enhanced Python Execution**: Execute Python code in Binary Ninja's context with comprehensive JSON result capture
-- **Command-Line Interface**: Full-featured CLI with interactive Python console
-- **Logging and Debugging**: Capture and search Binary Ninja logs and console output
-
-## Examples
-
-### Generating a Binary Analysis Report
-
-![Binary Analysis Report Generation](images/mcp-demo-report.png)
-
-### Renaming Functions
-
-![Rename Function Demo](images/mcp-demo-rename.gif)
-
-## Components
-
-This repository contains two separate components:
-
-1. A Binary Ninja plugin that provides an MCP server that exposes Binary Ninja's capabilities through HTTP endpoints.  This can be used with any client that implements the MCP protocol.
-2. A separate MCP bridge component that connects your favorite MCP client to the Binary Ninja MCP server.  While Claude Desktop is the primary integration path, the MCP server can be used with other clients.
-
-## Supported Integrations
-
-The following table details which integrations with Binary Ninja are currently supported.
-
-| Function | Description |
-|----------|-------------|
-| `get_binary_status` | Get the current status of the loaded binary. |
-| `list_classes` | List all namespace/class names in the program. |
-| `list_data_items` | List defined data labels and their values. |
-| `list_exports` | List exported functions/symbols. |
-| `list_imports` | List imported symbols in the program. |
-| `list_methods` | List all function names in the program. |
-| `list_namespaces` | List all non-global namespaces in the program. |
-| `list_segments` | List all memory segments in the program. |
-| `rename_data` | Rename a data label at the specified address. |
-| `rename_function` | Rename a function by its current name to a new user-defined name. |
-| `search_functions_by_name` | Search for functions whose name contains the given substring. |
-| `decompile_function` | Decompile a specific function by name and return the decompiled C code. |
-| `set_comment` | Set a comment at a specific address. |
-| `set_function_comment` | Set a comment for a function. |
-| `get_comment` | Get the comment at a specific address. |
-| `get_function_comment` | Get the comment for a function. |
-| `delete_comment` | Delete the comment at a specific address. |
-| `delete_function_comment` | Delete the comment for a function. |
-| `get_assembly_function` | Get the assembly representation of a function by name or address. |
-| `function_at` | Retrive the name of the function the address belongs to. |
-| `code_references` | Retrive names and addresses of functions that call the given function. |
-| `get_user_defined_type` | Retrive definition of a user defined type (struct, enumeration, typedef, union). |
-| `rename_variable` | Rename variable inside a given function. |
-| `retype_variable` | Retype variable inside a given function. |
-| `define_types` | Add type definitions from a C string type definition. |
-| `edit_function_signature` | Edit signature of a given function, given as a type string. |
-| `get_logs` | Get Binary Ninja log messages with filtering options. |
-| `get_log_stats` | Get statistics about captured Binary Ninja logs. |
-| `get_log_errors` | Get the most recent error logs from Binary Ninja. |
-| `get_log_warnings` | Get the most recent warning logs from Binary Ninja. |
-| `clear_logs` | Clear all captured Binary Ninja logs. |
-| `get_console_output` | Get Python console output from Binary Ninja. |
-| `get_console_stats` | Get statistics about captured console output. |
-| `get_console_errors` | Get the most recent error output from the Python console. |
-| `execute_python_command` | Execute Python code in Binary Ninja context with comprehensive result capture (stdout, stderr, return values, variables) in JSON format. |
-| `clear_console` | Clear all captured console output. |
-
-## Prerequisites
-
-- [Binary Ninja](https://binary.ninja/)
-- Python 3.12+
-- [uv](https://github.com/astral-sh/uv) (recommended)
-- [Claude Desktop](https://claude.ai/download) (or your preferred integration)
-
-## Installation
-
-### Binary Ninja Plugin
-
-You may install the plugin through Binary Ninja's Plugin Manager (`Plugins > Manage Plugins`).
-
-![Plugin Manager Listing](images/plugin-manager-listing.png)
-
-To manually configure the plugin, this repository can be copied into the Binary Ninja plugins folder.
-
-### Claude Desktop Bridge (Optional)
-
-This is only needed if you want to use Claude Desktop as your MCP client.  Make sure that you have your virtual environment configured first:
+### 0) Clone into your Binary Ninja plugins directory (recommended)
 
 ```bash
-git clone git@github.com:fosdickio/binary_ninja_mcp.git
+cd "$HOME/Library/Application Support/Binary Ninja/plugins"  # macOS
+git clone https://github.com/mblsha/binary_ninja_mcp.git
 cd binary_ninja_mcp
+```
 
-# Create/sync local environment (creates `.venv/`)
+On Linux/Windows, use the plugins directory paths listed below.
+
+### 1) Install the Binary Ninja plugin
+
+- Preferred: install via Binary Ninja Plugin Manager (`Plugins → Manage Plugins`).
+- Manual: copy (or symlink) this repo into your Binary Ninja plugins directory.
+  - macOS: `~/Library/Application Support/Binary Ninja/plugins/`
+  - Linux: `~/.binaryninja/plugins/`
+  - Windows: `%APPDATA%\\Binary Ninja\\plugins\\`
+
+Restart Binary Ninja after installing.
+
+### 2) Install CLI dependencies (uv)
+
+```bash
 uv sync
 ```
 
-#### Automated Configuration (Mac)
+### 3) Start the server in Binary Ninja
 
-On a Mac, you can automate the setup by running:
+1. Open a binary in Binary Ninja and wait for analysis to finish.
+2. Start the server: `Plugins → MCP Server → Start MCP Server`
+
+Verify from your terminal:
 
 ```bash
-./scripts/setup_claude_desktop.py
+uv run python scripts/binja-cli.py status
 ```
 
-#### Manual Configuration
+### 4) Use the CLI
 
-On other operating systems or to manually configure the Claude Desktop integration:
+```bash
+# List functions
+uv run python scripts/binja-cli.py functions --limit 50
 
-1. Navigate to `Settings > Developer > Edit Config`
-2. Add the following configuration:
+# Decompile a function
+uv run python scripts/binja-cli.py decompile main
 
-```json
-{
-  "mcpServers": {
-    "binary_ninja_mcp": {
-      "command": "/ABSOLUTE/PATH/TO/binary_ninja_mcp/.venv/bin/python",
-      "args": [
-        "/ABSOLUTE/PATH/TO/binary_ninja_mcp/bridge/binja_mcp_bridge.py"
-      ]
-    }
-  }
-}
+# Get annotated assembly
+uv run python scripts/binja-cli.py assembly main
+
+# Count functions (via in-process Python)
+uv run python scripts/binja-cli.py python "len(list(bv.functions))"
+
+# View recent errors from Binary Ninja logs
+uv run python scripts/binja-cli.py logs --errors --count 50
 ```
 
-Note: Replace `/ABSOLUTE/PATH/TO` with the actual absolute path to your project directory. The virtual environment's Python interpreter must be used to access the installed dependencies.
+## Common Tasks
 
-## Usage
+- Rename a function: `uv run python scripts/binja-cli.py rename function <old> <new>`
+- Add a comment: `uv run python scripts/binja-cli.py comment <addr> "text"`
+- Work in Python: `uv run python scripts/binja-cli.py python -i` (interactive), or `... python -f script.py`
 
-### Claude Desktop
+## Troubleshooting
 
-1. Open Binary Ninja and install the `Binary Ninja MCP` plugin
-2. Restart Binary Ninja and then open a binary
-3. Start the MCP server (`Plugins > MCP Server > Start MCP Server`)
-4. Launch Claude Desktop
+- **Cannot connect to server**: ensure Binary Ninja is running and the server is started; check `uv run python scripts/binja-cli.py --server http://localhost:9009 status`.
+- **“No binary loaded”**: open a binary and wait for initial analysis; then re-run `status`.
+- **Wrong file when multiple tabs are open**: click the desired Binary Ninja tab and re-run the CLI command.
 
-The integration will be automatically available after you open Claude Desktop.
-
-![Claude Integration](images/claude-desktop-integration.png)
-
-You may now start prompting Claude about the currently open binary.  Example prompts:
-
-- "Generate a binary analysis report for the current binary."
-- "Rename function X to Y in the current binary."
-- "List all functions in the current binary."
-- "What is the status of the loaded binary?"
-
-### Other MCP Client Integrations
-
-The bridge can be used with other MCP clients by implementing the appropriate integration layer.
-
-## Development
-
-The project structure is organized as follows:
+## Repository Layout
 
 ```
 binary_ninja_mcp/
-├── bridge/                      # MCP client integration
-├── plugin/                      # Binary Ninja plugin
-├── scripts/
-│   └── setup_claude_desktop.py  # Setup script for Claude Desktop
+├── plugin/    # Binary Ninja plugin (HTTP server + analysis operations)
+├── scripts/   # CLI entrypoints (recommended: scripts/binja-cli.py)
+├── docs/      # Additional documentation
+└── examples/  # Example scripts
 ```
+
 ## Contributing
 
-Contributions are welcome. Please feel free to submit a pull request.
+Open PRs against `mblsha/binary_ninja_mcp`.
