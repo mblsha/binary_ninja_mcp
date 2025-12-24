@@ -256,11 +256,8 @@ print(f'Saved {len(tags_list)} tags to /tmp/tags.json')
 ### Working with Comments
 
 ```bash
-# Add a comment at an address
-./cli.py python "
-func = bv.get_function_at(0xC0074)
-func.set_comment_at(0xC0074, 'Initializes IMR')
-"
+# Add a comment at an address (works for any address, not just functions)
+./cli.py python "bv.set_comment_at(0xC0074, 'Initializes IMR')"
 
 # Batch apply from JSON (format: {'0xC0074': 'comment', ...})
 ./cli.py python "
@@ -268,16 +265,15 @@ import json
 data = json.load(open('/path/to/comments.json'))
 for addr_str, desc in data.items():
     if desc:
-        func = bv.get_function_at(int(addr_str, 16))
-        if func: func.set_comment_at(int(addr_str, 16), desc)
+        bv.set_comment_at(int(addr_str, 16), desc)
 "
 
 # Read comment at address
-./cli.py python "print(bv.get_function_at(0xC0074).get_comment_at(0xC0074))"
+./cli.py python "print(bv.get_comment_at(0xC0074))"
 ```
 
-- `func.set_comment_at(addr, text)` - Set comment
-- `func.get_comment_at(addr)` - Get comment (returns None if absent)
+- `bv.set_comment_at(addr, text)` - Set comment at any address
+- `bv.get_comment_at(addr)` - Get comment (returns None if absent)
 
 ### Batch Operations
 
