@@ -11,18 +11,20 @@ class BinaryNinjaMCP:
     def start_server(self, bv):
         try:
             self.server.binary_ops.current_view = bv
-            self.server.start()
-            bn.log_info(
-                f"MCP server started successfully on http://{self.config.server.host}:{self.config.server.port}"
-            )
+            started = self.server.start()
+            if started:
+                bn.log_info(
+                    f"MCP server started successfully on http://{self.config.server.host}:{self.config.server.port}"
+                )
         except Exception as e:
             bn.log_error(f"Failed to start MCP server: {str(e)}")
 
     def stop_server(self, bv):
         try:
             self.server.binary_ops.current_view = None
-            self.server.stop()
-            bn.log_info("Binary Ninja MCP plugin stopped successfully")
+            stopped = self.server.stop()
+            if stopped:
+                bn.log_info("Binary Ninja MCP plugin stopped successfully")
         except Exception as e:
             bn.log_error(f"Failed to stop server: {str(e)}")
 
@@ -33,8 +35,9 @@ plugin = BinaryNinjaMCP()
 if plugin.config.server.auto_start:
     try:
         # Start server without a specific binary view
-        plugin.server.start()
-        bn.log_info(f"MCP server auto-started on http://{plugin.config.server.host}:{plugin.config.server.port}")
+        started = plugin.server.start()
+        if started:
+            bn.log_info(f"MCP server auto-started on http://{plugin.config.server.host}:{plugin.config.server.port}")
     except Exception as e:
         bn.log_error(f"Failed to auto-start MCP server: {str(e)}")
 else:

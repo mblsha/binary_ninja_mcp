@@ -1,4 +1,6 @@
 import binaryninja as bn
+import weakref
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 from .config import BinaryNinjaConfig
 from binaryninja.enums import TypeClass, StructureVariant
@@ -9,6 +11,76 @@ class BinaryOperations:
     def __init__(self, config: BinaryNinjaConfig):
         self.config = config
         self._current_view: Optional[bn.BinaryView] = None
+        # Prefer weak refs to avoid holding binaries open; fall back to strong refs
+        # if the underlying BinaryView type doesn't support weakref.
+        self._views_by_path: Dict[str, object] = {}
+        self._views_by_basename: Dict[str, object] = {}
+
+    def register_view(self, bv: bn.BinaryView):
+        """Register a BinaryView for later selection (e.g., via ?filename=...)."""
+        try:
+            filename = getattr(getattr(bv, "file", None), "filename", None)
+            if not filename:
+                return
+
+            filename_str = str(filename)
+            try:
+                view_ref: object = weakref.ref(bv)
+            except TypeError:
+                view_ref = bv
+
+            # Prefer exact path matches, but keep case-insensitive fallbacks too.
+            self._views_by_path[filename_str] = view_ref
+            self._views_by_path[filename_str.lower()] = view_ref
+
+            base = Path(filename_str).name
+            self._views_by_basename[base] = view_ref
+            self._views_by_basename[base.lower()] = view_ref
+        except Exception:
+            # Best-effort only; view registration should never break core operations.
+            return
+
+    @staticmethod
+    def _deref_view(ref: object) -> Optional[bn.BinaryView]:
+        if isinstance(ref, weakref.ReferenceType):
+            return ref()
+        return ref  # type: ignore[return-value]
+
+    def get_registered_view(self, filename: str) -> Optional[bn.BinaryView]:
+        if not filename:
+            return None
+
+        filename_str = str(filename)
+        for key, mapping in (
+            (filename_str, self._views_by_path),
+            (filename_str.lower(), self._views_by_path),
+        ):
+            ref = mapping.get(key)
+            if ref:
+                view = self._deref_view(ref)
+                if view:
+                    return view
+                mapping.pop(key, None)
+
+        base = Path(filename_str).name
+        for key, mapping in (
+            (base, self._views_by_basename),
+            (base.lower(), self._views_by_basename),
+        ):
+            ref = mapping.get(key)
+            if ref:
+                view = self._deref_view(ref)
+                if view:
+                    return view
+                mapping.pop(key, None)
+
+        return None
+
+    def select_view_by_filename(self, filename: str) -> Optional[bn.BinaryView]:
+        view = self.get_registered_view(filename)
+        if view:
+            self.current_view = view
+        return view
 
     @property
     def current_view(self) -> Optional[bn.BinaryView]:
@@ -16,8 +88,12 @@ class BinaryOperations:
 
     @current_view.setter
     def current_view(self, bv: Optional[bn.BinaryView]):
+        if bv is self._current_view:
+            return
+
         self._current_view = bv
         if bv:
+            self.register_view(bv)
             bn.log_info(f"Set current binary view: {bv.file.filename}")
         else:
             bn.log_info("Cleared current binary view")
