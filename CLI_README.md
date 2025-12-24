@@ -5,8 +5,8 @@ A command-line interface for interacting with the Binary Ninja MCP server.
 ## Installation
 
 ```bash
-# Install dependencies
-pip install -r bridge/requirements.txt
+# Create/sync local environment (creates `.venv/`)
+uv sync
 ```
 
 ## Usage
