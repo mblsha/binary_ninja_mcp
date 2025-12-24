@@ -62,6 +62,7 @@ All endpoints are on `http://localhost:9009/`:
 - Plugin loads automatically from Binary Ninja's plugins directory
 - Server must be started from Binary Ninja's plugin menu before using bridge
 - Binary view state is managed by the HTTP server, not the bridge
+- PRs for this workspace should target `mblsha/binary_ninja_mcp` unless explicitly instructed otherwise
 
 ### Important Implementation Details
 

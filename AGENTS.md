@@ -30,6 +30,7 @@
 
 ## Commit & Pull Request Guidelines
 - No formal commit convention is documented; use clear, imperative summaries (e.g., "Add log filtering options").
+- Open PRs against `mblsha/binary_ninja_mcp` (this repo) unless explicitly instructed otherwise.
 - PRs should describe Binary Ninja version used, steps to reproduce, and manual test results.
 - Include screenshots or GIFs for UI-facing changes (e.g., new CLI output or plugin UI).
 
