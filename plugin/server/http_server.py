@@ -9,36 +9,44 @@ from ..core.binary_operations import BinaryOperations
 from ..core.config import Config
 from ..api.endpoints import BinaryNinjaEndpoints
 from ..utils.string_utils import parse_int_or_default
+
 try:
     from ..core.log_capture import get_log_capture
-except:
+except Exception:
     # Fallback if main log capture fails
     from ..core.log_capture_simple import SimpleLogCapture
+
     _simple_log_capture = None
+
     def get_log_capture():
         global _simple_log_capture
         if _simple_log_capture is None:
             _simple_log_capture = SimpleLogCapture()
         return _simple_log_capture
 
+
 try:
     from ..core.python_executor_v2 import get_console_capture
+
     bn.log_info("Using enhanced Python executor V2 for console")
 except Exception as e:
     bn.log_warn(f"Failed to import enhanced Python executor V2: {e}")
     # Try v1 Python executor
     try:
         from ..core.python_executor import get_console_capture
+
         bn.log_info("Using enhanced Python executor V1 for console")
     except Exception as e2:
         bn.log_warn(f"Failed to import enhanced Python executor: {e2}")
         # Try original console capture
         try:
             from ..core.console_capture import get_console_capture
-        except:
+        except Exception:
             # Fallback if console capture fails
             from ..core.console_capture_simple import SimpleConsoleCapture
+
             _simple_console_capture = None
+
             def get_console_capture():
                 global _simple_console_capture
                 if _simple_console_capture is None:
@@ -49,6 +57,7 @@ except Exception as e:
 # Global variable to track which log capture we're using
 _active_log_capture = None
 
+
 def get_active_log_capture():
     """Get the active log capture instance (file-based or simple)"""
     global _active_log_capture
@@ -56,11 +65,13 @@ def get_active_log_capture():
         try:
             # Try to use file-based capture first
             from ..core.log_capture import get_log_capture
+
             _active_log_capture = get_log_capture()
         except Exception as e:
             # Fall back to simple capture
             try:
                 from ..core.log_capture_simple import SimpleLogCapture
+
                 _active_log_capture = SimpleLogCapture()
                 print(f"[MCP] Using simple log capture due to: {e}")
             except Exception as e2:
@@ -173,10 +184,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
         requested_filename = None
         if params:
-            requested_filename = (
-                params.get("filename")
-                or params.get("file")
-            )
+            requested_filename = params.get("filename") or params.get("file")
 
         if requested_filename:
             try:
@@ -189,7 +197,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         try:
             import binaryninjaui  # type: ignore
 
-            if hasattr(binaryninjaui, "UIContext") and hasattr(binaryninjaui.UIContext, "currentBinaryView"):
+            if hasattr(binaryninjaui, "UIContext") and hasattr(
+                binaryninjaui.UIContext, "currentBinaryView"
+            ):
                 view = binaryninjaui.UIContext.currentBinaryView()
                 if view:
                     self.binary_ops.current_view = view
@@ -204,7 +214,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             params = self._parse_query_params()
             self._maybe_refresh_current_view(params)
             path = urllib.parse.urlparse(self.path).path
-            
+
             # For most endpoints, check if binary is loaded
             if not any(path.startswith(prefix) for prefix in no_binary_required):
                 if not self._check_binary_loaded():
@@ -215,8 +225,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/status":
                 status = {
-                    "loaded": self.binary_ops
-                    and self.binary_ops.current_view is not None,
+                    "loaded": self.binary_ops and self.binary_ops.current_view is not None,
                     "filename": self.binary_ops.current_view.file.filename
                     if self.binary_ops and self.binary_ops.current_view
                     else None,
@@ -293,9 +302,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                             {
                                 "error": "Function not found",
                                 "requested_name": function_name,
-                                "available_functions": self.binary_ops.get_function_names(
-                                    0, 10
-                                ),
+                                "available_functions": self.binary_ops.get_function_names(0, 10),
                             },
                             404,
                         )
@@ -314,12 +321,11 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                             500,
                         )
                     else:
-                        self._send_json_response(
-                            {"assembly": assembly, "function": func_info}
-                        )
+                        self._send_json_response({"assembly": assembly, "function": func_info})
                 except Exception as e:
                     bn.log_error(f"Error handling assembly request: {str(e)}")
                     import traceback
+
                     bn.log_error(traceback.format_exc())
                     self._send_json_response(
                         {
@@ -342,23 +348,18 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         400,
                     )
                     return
-                    
+
                 try:
                     # Convert hex string to integer
                     if isinstance(address_str, str) and address_str.startswith("0x"):
                         offset = int(address_str, 16)
                     else:
                         offset = int(address_str)
-                        
+
                     # Add function to binary_operations.py
                     function_names = self.binary_ops.get_functions_containing_address(offset)
-                    
-                    self._send_json_response(
-                        {
-                            "address": hex(offset),
-                            "functions": function_names
-                        }
-                    )
+
+                    self._send_json_response({"address": hex(offset), "functions": function_names})
                 except ValueError:
                     self._send_json_response(
                         {
@@ -377,7 +378,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         },
                         500,
                     )
-                    
+
             elif path == "/codeReferences":
                 function_name = params.get("function")
                 if not function_name:
@@ -390,28 +391,22 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         400,
                     )
                     return
-                    
+
                 try:
                     # Get function information first to confirm it exists
                     func_info = self.binary_ops.get_function_info(function_name)
                     if not func_info:
                         self._send_json_response(
-                            {
-                                "error": "Function not found",
-                                "requested_function": function_name
-                            },
+                            {"error": "Function not found", "requested_function": function_name},
                             404,
                         )
                         return
-                        
+
                     # Get all code references to this function
                     code_refs = self.binary_ops.get_function_code_references(function_name)
-                    
+
                     self._send_json_response(
-                        {
-                            "function": function_name,
-                            "code_references": code_refs
-                        }
+                        {"function": function_name, "code_references": code_refs}
                     )
                 except Exception as e:
                     bn.log_error(f"Error handling code_references request: {e}")
@@ -422,7 +417,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         },
                         500,
                     )
-                    
+
             elif path == "/getUserDefinedType":
                 type_name = params.get("name")
                 if not type_name:
@@ -435,31 +430,43 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         400,
                     )
                     return
-                    
+
                 try:
                     # Get the user-defined type definition
                     type_info = self.binary_ops.get_user_defined_type(type_name)
-                    
+
                     if type_info:
                         self._send_json_response(type_info)
                     else:
                         # If type not found, list available types for reference
                         available_types = {}
-                        
+
                         try:
-                            if (hasattr(self.binary_ops._current_view, "user_type_container") and 
-                                self.binary_ops._current_view.user_type_container):
-                                for type_id in self.binary_ops._current_view.user_type_container.types.keys():
-                                    current_type = self.binary_ops._current_view.user_type_container.types[type_id]
-                                    available_types[current_type[0]] = str(current_type[1].type) if hasattr(current_type[1], "type") else "unknown"
+                            if (
+                                hasattr(self.binary_ops._current_view, "user_type_container")
+                                and self.binary_ops._current_view.user_type_container
+                            ):
+                                for (
+                                    type_id
+                                ) in self.binary_ops._current_view.user_type_container.types.keys():
+                                    current_type = (
+                                        self.binary_ops._current_view.user_type_container.types[
+                                            type_id
+                                        ]
+                                    )
+                                    available_types[current_type[0]] = (
+                                        str(current_type[1].type)
+                                        if hasattr(current_type[1], "type")
+                                        else "unknown"
+                                    )
                         except Exception as e:
                             bn.log_error(f"Error listing available types: {e}")
-                            
+
                         self._send_json_response(
                             {
                                 "error": "Type not found",
                                 "requested_type": type_name,
-                                "available_types": available_types
+                                "available_types": available_types,
                             },
                             404,
                         )
@@ -472,7 +479,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         },
                         500,
                     )
-                    
+
             elif path == "/comment":
                 if self.command == "GET":
                     address = params.get("address")
@@ -741,20 +748,18 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             elif path == "/editFunctionSignature":
                 function_name = params.get("functionName")
                 if not function_name:
-                    self._send_json_response(
-                        {"error": "Missing function name parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing function name parameter"}, 400)
                     return
-                
+
                 signature = params.get("signature")
                 if not signature:
-                    self._send_json_response(
-                        {"error": "Missing signature parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing signature parameter"}, 400)
                     return
-                
+
                 try:
-                    self._send_json_response(self.endpoints.edit_function_signature(function_name, signature))
+                    self._send_json_response(
+                        self.endpoints.edit_function_signature(function_name, signature)
+                    )
                 except Exception as e:
                     bn.log_error(f"Error handling editFunctionSignature request: {e}")
                     self._send_json_response(
@@ -762,29 +767,25 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         500,
                     )
             elif path == "/retypeVariable":
-                function_name =  params.get("functionName")
+                function_name = params.get("functionName")
                 if not function_name:
-                    self._send_json_response(
-                        {"error": "Missing function name parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing function name parameter"}, 400)
                     return
-                
+
                 variable_name = params.get("variableName")
                 if not variable_name:
-                    self._send_json_response(
-                        {"error": "Missing variable name parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing variable name parameter"}, 400)
                     return
-                
+
                 type_str = params.get("type")
                 if not type_str:
-                    self._send_json_response(
-                        {"error": "Missing type parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing type parameter"}, 400)
                     return
-                
+
                 try:
-                    self._send_json_response(self.endpoints.retype_variable(function_name, variable_name, type_str))
+                    self._send_json_response(
+                        self.endpoints.retype_variable(function_name, variable_name, type_str)
+                    )
                 except Exception as e:
                     bn.log_error(f"Error handling retypeVariable request: {e}")
                     self._send_json_response(
@@ -794,27 +795,23 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             elif path == "/renameVariable":
                 function_name = params.get("functionName")
                 if not function_name:
-                    self._send_json_response(
-                        {"error": "Missing function name parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing function name parameter"}, 400)
                     return
-                
+
                 variable_name = params.get("variableName")
                 if not variable_name:
-                    self._send_json_response(
-                        {"error": "Missing variable name parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing variable name parameter"}, 400)
                     return
-                
+
                 new_name = params.get("newName")
                 if not new_name:
-                    self._send_json_response(
-                        {"error": "Missing new name parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing new name parameter"}, 400)
                     return
-                
+
                 try:
-                    self._send_json_response(self.endpoints.rename_variable(function_name, variable_name, new_name))
+                    self._send_json_response(
+                        self.endpoints.rename_variable(function_name, variable_name, new_name)
+                    )
                 except Exception as e:
                     bn.log_error(f"Error handling renameVariable request: {e}")
                     self._send_json_response(
@@ -825,11 +822,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             elif path == "/defineTypes":
                 c_code = params.get("cCode")
                 if not c_code:
-                    self._send_json_response(
-                        {"error": "Missing cCode parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing cCode parameter"}, 400)
                     return
-                
+
                 try:
                     self._send_json_response(self.endpoints.define_types(c_code))
                 except Exception as e:
@@ -838,21 +833,23 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         {"error": str(e)},
                         500,
                     )
-                    
+
             elif path == "/logs":
                 # Get log capture parameters
                 count = parse_int_or_default(params.get("count"), 100)
                 level_filter = params.get("level")
                 search_text = params.get("search")
                 start_id = parse_int_or_default(params.get("start_id"), None)
-                
+
                 log_capture = get_active_log_capture()
                 if log_capture:
                     logs = log_capture.get_logs(count, level_filter, search_text, start_id)
                     self._send_json_response({"logs": logs})
                 else:
-                    self._send_json_response({"error": "Log capture not available", "logs": []}, 200)
-                
+                    self._send_json_response(
+                        {"error": "Log capture not available", "logs": []}, 200
+                    )
+
             elif path == "/logs/stats":
                 log_capture = get_active_log_capture()
                 if log_capture:
@@ -860,7 +857,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     self._send_json_response(stats)
                 else:
                     self._send_json_response({"total_logs": 0, "levels": {}, "loggers": {}})
-                
+
             elif path == "/logs/errors":
                 count = parse_int_or_default(params.get("count"), 10)
                 log_capture = get_active_log_capture()
@@ -869,7 +866,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     self._send_json_response({"errors": errors})
                 else:
                     self._send_json_response({"errors": []})
-                
+
             elif path == "/logs/warnings":
                 count = parse_int_or_default(params.get("count"), 10)
                 log_capture = get_active_log_capture()
@@ -878,35 +875,35 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     self._send_json_response({"warnings": warnings})
                 else:
                     self._send_json_response({"warnings": []})
-                
+
             elif path == "/console":
                 # Get console capture parameters
                 count = parse_int_or_default(params.get("count"), 100)
                 type_filter = params.get("type")
                 search_text = params.get("search")
                 start_id = parse_int_or_default(params.get("start_id"), None)
-                
+
                 console_capture = get_console_capture()
                 output = console_capture.get_output(count, type_filter, search_text, start_id)
                 self._send_json_response({"output": output})
-                
+
             elif path == "/console/stats":
                 console_capture = get_console_capture()
                 stats = console_capture.get_console_stats()
                 self._send_json_response(stats)
-                
+
             elif path == "/console/errors":
                 count = parse_int_or_default(params.get("count"), 10)
                 console_capture = get_console_capture()
                 errors = console_capture.get_latest_errors(count)
                 self._send_json_response({"errors": errors})
-                
+
             elif path == "/console/complete":
                 partial = params.get("partial", "")
                 console_capture = get_console_capture()
                 completions = console_capture.get_completions(partial)
                 self._send_json_response({"completions": completions})
-                
+
             else:
                 self._send_json_response({"error": "Not found"}, 404)
 
@@ -932,9 +929,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     {
                         "error": "Function not found",
                         "requested_name": function_name,
-                        "available_functions": self.binary_ops.get_function_names(
-                            0, 10
-                        ),
+                        "available_functions": self.binary_ops.get_function_names(0, 10),
                     },
                     404,
                 )
@@ -953,9 +948,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     500,
                 )
             else:
-                self._send_json_response(
-                    {"decompiled": decompiled, "function": func_info}
-                )
+                self._send_json_response({"decompiled": decompiled, "function": func_info})
         except Exception as e:
             bn.log_error(f"Error during decompilation: {e}")
             self._send_json_response(
@@ -987,9 +980,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             if path == "/load":
                 filepath = params.get("filepath")
                 if not filepath:
-                    self._send_json_response(
-                        {"error": "Missing filepath parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing filepath parameter"}, 400)
                     return
 
                 try:
@@ -1074,9 +1065,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     return
 
                 try:
-                    address_int = (
-                        int(address, 16) if isinstance(address, str) else int(address)
-                    )
+                    address_int = int(address, 16) if isinstance(address, str) else int(address)
                     success = self.binary_ops.rename_data(address_int, new_name)
                     self._send_json_response({"success": success})
                 except ValueError:
@@ -1347,42 +1336,42 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                             "message": "No comment found for this function",
                         }
                     )
-                    
+
             elif path == "/logs/clear":
                 log_capture = get_active_log_capture()
                 if log_capture:
                     log_capture.clear_logs()
                     self._send_json_response({"success": True, "message": "Logs cleared"})
                 else:
-                    self._send_json_response({"success": False, "message": "Log capture not available"})
-                
+                    self._send_json_response(
+                        {"success": False, "message": "Log capture not available"}
+                    )
+
             elif path == "/console/clear":
                 console_capture = get_console_capture()
                 console_capture.clear_output()
                 self._send_json_response({"success": True, "message": "Console output cleared"})
-                
+
             elif path == "/console/execute":
                 command = params.get("command")
                 if not command:
-                    self._send_json_response(
-                        {"error": "Missing command parameter"}, 400
-                    )
+                    self._send_json_response({"error": "Missing command parameter"}, 400)
                     return
-                    
+
                 console_capture = get_console_capture()
-                
+
                 # Pass server context for binary view access if using V2
-                if hasattr(console_capture, 'set_server_context'):
+                if hasattr(console_capture, "set_server_context"):
                     console_capture.set_server_context(self)
-                
+
                 # Pass binary view directly if available
                 binary_view = self.binary_ops.current_view if self.binary_ops else None
-                if hasattr(console_capture, 'execute_command'):
+                if hasattr(console_capture, "execute_command"):
                     result = console_capture.execute_command(command, binary_view)
                 else:
                     # Fallback for older implementations
                     result = console_capture.execute_command(command)
-                    
+
                 self._send_json_response(result)
 
             else:
@@ -1410,11 +1399,7 @@ class MCPServer:
         self._lock = threading.Lock()
 
     def is_running(self) -> bool:
-        return (
-            self.server is not None
-            and self.thread is not None
-            and self.thread.is_alive()
-        )
+        return self.server is not None and self.thread is not None and self.thread.is_alive()
 
     def start(self):
         """Start the HTTP server in a background thread."""

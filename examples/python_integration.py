@@ -4,28 +4,25 @@ Example showing how to use the enhanced Python execution in Binary Ninja MCP
 Demonstrates integration patterns and result processing
 """
 
-import json
 import requests
 from typing import Any, Dict, List
 
 
 class BinaryNinjaMCP:
     """Client for Binary Ninja MCP with Python execution"""
-    
+
     def __init__(self, base_url: str = "http://localhost:9009"):
         self.base_url = base_url
         self.session = requests.Session()
-    
+
     def execute_python(self, code: str) -> Dict[str, Any]:
         """Execute Python code in Binary Ninja context"""
         response = self.session.post(
-            f"{self.base_url}/console/execute",
-            json={"command": code},
-            timeout=30
+            f"{self.base_url}/console/execute", json={"command": code}, timeout=30
         )
         response.raise_for_status()
         return response.json()
-    
+
     def get_functions(self) -> List[Dict[str, Any]]:
         """Get all functions using Python execution"""
         result = self.execute_python("""
@@ -40,11 +37,11 @@ for func in bv.functions:
     })
 _result = functions
 """)
-        
-        if result['success'] and result.get('return_value'):
-            return result['return_value']
+
+        if result["success"] and result.get("return_value"):
+            return result["return_value"]
         return []
-    
+
     def analyze_strings(self, min_length: int = 10) -> List[Dict[str, Any]]:
         """Analyze strings in the binary"""
         code = f"""
@@ -64,11 +61,11 @@ strings.sort(key=lambda x: x['length'], reverse=True)
 _result = strings[:20]  # Top 20 longest strings
 """
         result = self.execute_python(code)
-        
-        if result['success'] and result.get('return_value'):
-            return result['return_value']
+
+        if result["success"] and result.get("return_value"):
+            return result["return_value"]
         return []
-    
+
     def find_crypto_functions(self) -> List[str]:
         """Find potential cryptographic functions"""
         code = """
@@ -92,11 +89,11 @@ for sym in bv.symbols:
 _result = sorted(set(crypto_funcs))
 """
         result = self.execute_python(code)
-        
-        if result['success'] and result.get('return_value'):
-            return result['return_value']
+
+        if result["success"] and result.get("return_value"):
+            return result["return_value"]
         return []
-    
+
     def get_call_graph(self, function_name: str) -> Dict[str, Any]:
         """Get call graph for a function"""
         code = f"""
@@ -140,11 +137,11 @@ else:
     }}
 """
         result = self.execute_python(code)
-        
-        if result['success'] and result.get('return_value'):
-            return result['return_value']
-        return {'error': 'Execution failed'}
-    
+
+        if result["success"] and result.get("return_value"):
+            return result["return_value"]
+        return {"error": "Execution failed"}
+
     def create_analysis_report(self) -> str:
         """Create a comprehensive analysis report"""
         code = """
@@ -227,53 +224,55 @@ Generated: {report['timestamp']}
 _result = md
 """
         result = self.execute_python(code)
-        
-        if result['success'] and result.get('return_value'):
-            return result['return_value']
+
+        if result["success"] and result.get("return_value"):
+            return result["return_value"]
         return "Error generating report"
 
 
 def main():
     """Example usage of the Binary Ninja MCP Python integration"""
-    
+
     # Create client
     client = BinaryNinjaMCP()
-    
+
     print("Binary Ninja MCP Python Integration Example")
     print("=" * 50)
-    
+
     # Test basic execution
     print("\n1. Testing basic Python execution:")
     result = client.execute_python("2 + 2")
     print(f"   Result: {result.get('return_value')} (took {result.get('execution_time', 0):.3f}s)")
-    
+
     # Check if binary is loaded
     print("\n2. Checking binary status:")
     result = client.execute_python("bv is not None")
-    if not result.get('return_value'):
+    if not result.get("return_value"):
         print("   Error: No binary loaded in Binary Ninja")
         return
-    
+
     print("   Binary is loaded!")
-    
+
     # Get functions
     print("\n3. Analyzing functions:")
     functions = client.get_functions()
     print(f"   Found {len(functions)} functions")
     if functions:
         # Show top 5 by size
-        functions.sort(key=lambda f: f['size'], reverse=True)
+        functions.sort(key=lambda f: f["size"], reverse=True)
         print("   Top 5 largest functions:")
         for func in functions[:5]:
-            print(f"     - {func['name']} at {func['address']} ({func['size']} bytes, {func['blocks']} blocks)")
-    
+            print(
+                f"     - {func['name']} at {func['address']} ({func['size']} bytes, {func['blocks']} blocks)"
+            )
+
     # Analyze strings
     print("\n4. Analyzing strings:")
     strings = client.analyze_strings(min_length=20)
     print(f"   Found {len(strings)} interesting strings")
     for s in strings[:3]:
         print(f"     - '{s['value'][:50]}...' at {s['address']}")
-    
+
     # Find crypto functions
     print("\n5. Looking for cryptographic functions:")
     crypto_funcs = client.find_crypto_functions()
@@ -283,29 +282,29 @@ def main():
             print(f"     - {func}")
     else:
         print("   No crypto functions found")
-    
+
     # Get call graph for a function
     if functions:
-        target = functions[0]['name']
+        target = functions[0]["name"]
         print(f"\n6. Analyzing call graph for '{target}':")
         call_graph = client.get_call_graph(target)
-        if 'error' not in call_graph:
+        if "error" not in call_graph:
             print(f"   - Called by: {len(call_graph['callers'])} functions")
             print(f"   - Calls: {len(call_graph['callees'])} functions")
             print(f"   - Complexity: {call_graph['complexity']} basic blocks")
-    
+
     # Generate report
     print("\n7. Generating analysis report:")
     report = client.create_analysis_report()
     print(report)
-    
+
     # Demonstrate error handling
     print("\n8. Error handling example:")
     result = client.execute_python("undefined_variable")
-    if not result['success']:
-        error = result.get('error', {})
+    if not result["success"]:
+        error = result.get("error", {})
         print(f"   Expected error: {error.get('type')}: {error.get('message')}")
-    
+
     # Show execution context
     print("\n9. Execution context:")
     result = client.execute_python("""
@@ -316,8 +315,8 @@ import sys
     'available_modules': [m for m in sys.modules.keys() if 'binaryninja' in m][:5]
 }
 """)
-    if result['success']:
-        context = result['return_value']
+    if result["success"]:
+        context = result["return_value"]
         print(f"   Python: {context.get('python_version')}")
         print(f"   Binary Ninja: {context.get('binaryninja_version')}")
         print(f"   Modules: {', '.join(context.get('available_modules', []))}")

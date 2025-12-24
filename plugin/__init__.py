@@ -37,11 +37,15 @@ if plugin.config.server.auto_start:
         # Start server without a specific binary view
         started = plugin.server.start()
         if started:
-            bn.log_info(f"MCP server auto-started on http://{plugin.config.server.host}:{plugin.config.server.port}")
+            bn.log_info(
+                f"MCP server auto-started on http://{plugin.config.server.host}:{plugin.config.server.port}"
+            )
     except Exception as e:
         bn.log_error(f"Failed to auto-start MCP server: {str(e)}")
 else:
-    bn.log_info("MCP server auto-start disabled. Use 'MCP Server > Start MCP Server' to start manually.")
+    bn.log_info(
+        "MCP server auto-start disabled. Use 'MCP Server > Start MCP Server' to start manually."
+    )
 
 bn.PluginCommand.register(
     "MCP Server\\Start MCP Server",
@@ -55,12 +59,14 @@ bn.PluginCommand.register(
     plugin.stop_server,
 )
 
+
 # Register callback to update binary view when files are opened
 def on_binary_opened(bv):
     """Automatically update the MCP server with the newly opened binary view"""
-    if plugin.server and hasattr(plugin.server, 'binary_ops'):
+    if plugin.server and hasattr(plugin.server, "binary_ops"):
         plugin.server.binary_ops.current_view = bv
         bn.log_info(f"MCP server updated with binary view: {bv.file.filename}")
+
 
 # Register the callback for when binaries are opened
 bn.BinaryViewType.add_binaryview_initial_analysis_completion_event(on_binary_opened)
