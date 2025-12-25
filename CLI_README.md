@@ -2,6 +2,11 @@
 
 A command-line interface for interacting with the Binary Ninja MCP server.
 
+## IMPORTANT: Don’t call `bv.save(...)` from the CLI
+
+Never call `bv.save(...)` from the CLI unless you have explicit user permission.
+Saving writes the `.bndb` to disk and is not always safe/desirable during automation.
+
 ## Installation
 
 ```bash
@@ -258,6 +263,28 @@ print(f'Saved {len(tags_list)} tags to /tmp/tags.json')
 ```bash
 # Add a comment at an address (works for any address, not just functions)
 ./cli.py python "bv.set_comment_at(0xC0074, 'Initializes IMR')"
+
+# Gotcha: comments can be function-local.
+# - `bv.get_comment_at(addr)` only returns “global” address comments.
+# - For comments inside a function, Binary Ninja commonly stores them on the function:
+#   `f.get_comment_at(addr)` (and `f.set_comment_at(addr, ...)`).
+./cli.py python "
+addr = 0xC0074
+f = bv.get_functions_containing(addr)[0]
+print('func comment:', f.get_comment_at(addr))
+print('global comment:', bv.get_comment_at(addr))
+"
+
+# Note: for addresses that are not part of any function, Binary Ninja may not display
+# the comment in views/listings until the address has a defined item (e.g., a data var,
+# a symbol, or a user-created function) at that location.
+./cli.py python "
+from binaryninja import Symbol, SymbolType, Type
+addr = 0x132
+bv.define_data_var(addr, Type.int(1, False))              # define a byte
+bv.define_user_symbol(Symbol(SymbolType.DataSymbol, addr, 'a'))  # name it
+bv.set_comment_at(addr, 'Keyboard short-repeat reload constant')
+"
 
 # Batch apply from JSON (format: {'0xC0074': 'comment', ...})
 ./cli.py python "
