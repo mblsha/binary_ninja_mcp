@@ -5,8 +5,12 @@ Uses the same HTTP API as the MCP bridge but provides a terminal interface
 """
 
 import json
+import os
+import shutil
+import subprocess
 import sys
 import textwrap
+import time
 import requests
 from plumbum import cli, colors
 
@@ -99,6 +103,105 @@ class BinaryNinjaCLI(cli.Application):
             print(colors.red | f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
+    def _server_reachable(self, timeout: float = 2.0) -> bool:
+        """Check whether MCP server is reachable without exiting."""
+        url = f"{self.server_url}/status"
+        try:
+            response = requests.get(url, timeout=timeout)
+            response.raise_for_status()
+            return True
+        except Exception:
+            return False
+
+    def _launch_binary_ninja_linux_wayland(self, filepath: str = "") -> dict:
+        """Best-effort Binary Ninja launch for Linux Wayland sessions."""
+        if sys.platform != "linux":
+            return {"ok": False, "error": "auto-launch is only supported on Linux"}
+
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        env = os.environ.copy()
+        env.pop("DISPLAY", None)
+        env["QT_QPA_PLATFORM"] = "wayland"
+        env["WAYLAND_DISPLAY"] = env.get("WAYLAND_DISPLAY") or "wayland-0"
+        env["XDG_RUNTIME_DIR"] = runtime_dir
+        env["DBUS_SESSION_BUS_ADDRESS"] = env.get(
+            "DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus"
+        )
+        env["XDG_SESSION_TYPE"] = env.get("XDG_SESSION_TYPE") or "wayland"
+
+        candidates = [
+            os.environ.get("BINJA_BINARY"),
+            "/home/mblsha/src/binja/binaryninja/binaryninja",
+            shutil.which("binaryninja"),
+            shutil.which("BinaryNinja"),
+        ]
+        binary_path = None
+        for candidate in candidates:
+            if not candidate:
+                continue
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                binary_path = candidate
+                break
+
+        if binary_path is None:
+            return {
+                "ok": False,
+                "error": (
+                    "unable to find Binary Ninja executable; set BINJA_BINARY or install "
+                    "binaryninja in PATH"
+                ),
+            }
+
+        # Launch regular UI mode to keep plugin loading behavior consistent.
+        args = [binary_path]
+        if filepath:
+            args.extend(["-e", filepath])
+
+        log_path = "/tmp/binja-cli-launch.log"
+        try:
+            with open(log_path, "ab") as log_fp:
+                subprocess.Popen(
+                    args,
+                    env=env,
+                    stdout=log_fp,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+        except Exception as exc:
+            return {"ok": False, "error": f"failed to launch Binary Ninja: {exc}", "log": log_path}
+
+        return {"ok": True, "binary": binary_path, "log": log_path}
+
+    def _ensure_server_for_open(self, filepath: str = "") -> dict:
+        """Ensure MCP server is available before running open workflow."""
+        if self._server_reachable(timeout=1.0):
+            return {"ok": True, "launched": False}
+
+        # Launching with -e <file> can present modal import dialogs before MCP
+        # automation has control. Start without a file, then let open() drive load.
+        launch = self._launch_binary_ninja_linux_wayland(filepath="")
+        if not launch.get("ok"):
+            return launch
+
+        deadline = time.time() + 25.0
+        while time.time() < deadline:
+            if self._server_reachable(timeout=1.0):
+                out = dict(launch)
+                out["ok"] = True
+                out["launched"] = True
+                return out
+            time.sleep(0.5)
+
+        return {
+            "ok": False,
+            "error": (
+                "Binary Ninja started but MCP server did not come up at "
+                f"{self.server_url} within 25s"
+            ),
+            "log": launch.get("log"),
+            "binary": launch.get("binary"),
+        }
+
     def _execute_python(self, code: str) -> dict:
         """Execute Python in Binary Ninja via MCP console endpoint."""
         return self._request("POST", "console/execute", data={"command": code})
@@ -179,6 +282,7 @@ class Open(cli.Application):
     """Open a file and auto-resolve Binary Ninja's "Open with Options" dialog.
 
     Behavior:
+    - If MCP is not reachable on Linux, auto-launches Binary Ninja with Wayland defaults.
     - If an "Open with Options" dialog is visible, optionally sets view type/platform and clicks "Open".
     - If no dialog is visible, falls back to `bn.load(filepath)` and updates MCP current_view.
     - Always reports inspected state/actions in JSON-like output.
@@ -207,6 +311,24 @@ class Open(cli.Application):
     )
 
     def main(self, filepath: str = ""):
+        ensure = self.parent._ensure_server_for_open(filepath=filepath)
+        if not ensure.get("ok"):
+            print(colors.red | f"Error: {ensure.get('error', 'unable to start Binary Ninja')}")
+            if ensure.get("binary"):
+                print(f"Binary: {ensure['binary']}", file=sys.stderr)
+            if ensure.get("log"):
+                print(f"Launch log: {ensure['log']}", file=sys.stderr)
+            print(
+                "If Binary Ninja is already open, ensure the MCP server is running.",
+                file=sys.stderr,
+            )
+            return 1
+        if ensure.get("launched") and self.parent.verbose:
+            print(
+                colors.yellow
+                | f"Started Binary Ninja ({ensure.get('binary')}); waiting for MCP server succeeded."
+            )
+
         config = {
             "filepath": filepath,
             "platform": self.platform or "",
@@ -218,6 +340,7 @@ class Open(cli.Application):
         script = textwrap.dedent(
             """
             import json
+            import time
             from pathlib import Path
             import binaryninja as bn
             from PySide6.QtWidgets import QApplication
@@ -301,6 +424,21 @@ class Open(cli.Application):
                         return widget
                 return None
 
+            def is_qt_object_alive(obj):
+                if obj is None:
+                    return False
+                try:
+                    import shiboken6
+
+                    return bool(shiboken6.isValid(obj))
+                except Exception:
+                    pass
+                try:
+                    obj.metaObject()
+                    return True
+                except Exception:
+                    return False
+
             def set_combo_value(combo, requested):
                 idx = find_item_index(combo, requested)
                 if idx < 0:
@@ -333,31 +471,55 @@ class Open(cli.Application):
                     pass
                 return None
 
-            # The MCP Python executor may run `exec` with separate globals/locals.
-            # Expose helpers in globals so comprehensions and nested call paths can
-            # resolve these names consistently.
-            globals()["norm_text"] = norm_text
-            globals()["collect_visible_windows"] = collect_visible_windows
-            globals()["find_item_index"] = find_item_index
-            globals()["find_options_dialog"] = find_options_dialog
-            globals()["set_combo_value"] = set_combo_value
-            globals()["get_loaded_filename"] = get_loaded_filename
+            def open_with_ui_context(filepath):
+                try:
+                    import binaryninjaui as bnui
+                except Exception:
+                    return {"ok": False, "reason": "binaryninjaui-unavailable"}
 
-            app = QApplication.instance()
-            result["state"]["visible_windows"] = collect_visible_windows(app)
-            if app is not None and app.activeWindow() is not None:
-                result["state"]["active_window"] = str(app.activeWindow().windowTitle() or "")
+                try:
+                    contexts = list(bnui.UIContext.allContexts())
+                except Exception as exc:
+                    return {"ok": False, "reason": f"uicontext-list-failed:{exc}"}
 
-            dialog = find_options_dialog(app)
-            loaded_bv = None
+                if not contexts:
+                    return {"ok": False, "reason": "no-uicontext"}
 
-            if dialog is not None:
+                last_exc = None
+                for ctx in contexts:
+                    try:
+                        opened = bool(ctx.openFilename(filepath))
+                    except Exception as exc:
+                        last_exc = exc
+                        continue
+                    if opened:
+                        return {"ok": True, "reason": "opened"}
+                if last_exc is not None:
+                    return {"ok": False, "reason": f"openFilename-failed:{last_exc}"}
+                return {"ok": False, "reason": "openFilename-returned-false"}
+
+            def handle_open_with_options_dialog(dialog, detected_action):
+                if dialog is None or not is_qt_object_alive(dialog):
+                    return False
+
+                try:
+                    dialog_title = str(dialog.windowTitle() or "")
+                except Exception:
+                    result["warnings"].append("open dialog disappeared before it could be handled")
+                    return False
+
                 result["dialog"]["present"] = True
-                result["dialog"]["title"] = str(dialog.windowTitle() or "")
-                result["actions"].append("detected_open_with_options_dialog")
+                result["dialog"]["title"] = dialog_title
+                result["actions"].append(detected_action)
 
                 combos = []
-                for child in dialog.findChildren(object):
+                try:
+                    dialog_children = dialog.findChildren(object)
+                except Exception:
+                    result["warnings"].append("unable to enumerate open dialog controls")
+                    return False
+
+                for child in dialog_children:
                     cls = type(child).__name__
                     if cls != "QComboBox":
                         continue
@@ -368,19 +530,50 @@ class Open(cli.Application):
                     combos.append(child)
 
                 view_combo = None
-                for combo in combos:
-                    items = {norm_text(combo.itemText(i)) for i in range(combo.count())}
-                    if "raw" in items and "mapped" in items:
-                        view_combo = combo
-                        break
+                if target_view_type:
+                    best_view_score = -10**9
+                    for combo in combos:
+                        idx = find_item_index(combo, target_view_type)
+                        if idx < 0:
+                            continue
+                        count = combo.count()
+                        items = [norm_text(combo.itemText(i)) for i in range(count)]
+                        score = 0
+                        if norm_text(combo.itemText(idx)) == norm_text(target_view_type):
+                            score += 100
+                        if "raw" in items and "mapped" in items:
+                            score += 80
+                        if count <= 6:
+                            score += 20
+                        if count > 20:
+                            score -= 60
+                        if any(item.startswith("analysis.") for item in items):
+                            score -= 100
+                        if score > best_view_score:
+                            view_combo = combo
+                            best_view_score = score
+                if view_combo is None:
+                    for combo in combos:
+                        items = {norm_text(combo.itemText(i)) for i in range(combo.count())}
+                        if "raw" in items and "mapped" in items:
+                            view_combo = combo
+                            break
                 if target_view_type:
                     if view_combo is None:
-                        result["warnings"].append("view type combo not found in dialog")
+                        result["dialog"]["view_type_set"] = {
+                            "requested": target_view_type,
+                            "changed": False,
+                            "reason": "view-type-control-not-present",
+                        }
                     else:
                         view_set = set_combo_value(view_combo, target_view_type)
                         result["dialog"]["view_type_set"] = view_set
                         if view_set.get("changed"):
                             result["actions"].append("set_view_type")
+                        elif view_set.get("reason") == "not-found":
+                            result["warnings"].append(
+                                f"requested view type '{target_view_type}' not available in dialog"
+                            )
 
                 if target_platform:
                     platform_combo = None
@@ -411,9 +604,11 @@ class Open(cli.Application):
                             platform_idx = idx
                             best_score = score
                     if platform_combo is None or platform_idx < 0:
-                        result["warnings"].append(
-                            f"platform '{target_platform}' not found in dialog combos"
-                        )
+                        result["dialog"]["platform_set"] = {
+                            "requested": target_platform,
+                            "changed": False,
+                            "reason": "platform-control-not-present-or-value-missing",
+                        }
                     else:
                         before = str(platform_combo.currentText() or "")
                         platform_combo.setCurrentIndex(platform_idx)
@@ -431,7 +626,11 @@ class Open(cli.Application):
 
                 if not inspect_only and click_open:
                     open_button = None
-                    for button in dialog.findChildren(object):
+                    try:
+                        button_children = dialog.findChildren(object)
+                    except Exception:
+                        button_children = []
+                    for button in button_children:
                         if type(button).__name__ != "QPushButton":
                             continue
                         if not hasattr(button, "text") or not hasattr(button, "click"):
@@ -446,38 +645,243 @@ class Open(cli.Application):
                     elif not open_button.isEnabled():
                         result["warnings"].append("open button is disabled")
                     else:
-                        open_button.click()
+                        try:
+                            open_button.click()
+                        except Exception:
+                            result["warnings"].append("open button click failed")
+                            return True
                         if app is not None:
                             for _ in range(10):
                                 app.processEvents()
+                                time.sleep(0.02)
                         result["dialog"]["open_clicked"] = True
                         result["actions"].append("clicked_open_button")
-            else:
-                result["actions"].append("no_open_with_options_dialog")
-                if inspect_only:
-                    result["actions"].append("inspect_only_no_load")
-                elif not target_file:
-                    result["warnings"].append("no filepath provided and no dialog to accept")
+                        dialog_still_visible = False
+                        try:
+                            dialog_still_visible = bool(dialog.isVisible())
+                        except Exception:
+                            dialog_still_visible = False
+                        if dialog_still_visible and hasattr(dialog, "accept"):
+                            try:
+                                dialog.accept()
+                                if app is not None:
+                                    for _ in range(10):
+                                        app.processEvents()
+                                        time.sleep(0.02)
+                                hidden_after_accept = False
+                                try:
+                                    hidden_after_accept = not dialog.isVisible()
+                                except Exception:
+                                    hidden_after_accept = True
+                                if hidden_after_accept:
+                                    result["actions"].append("accepted_open_dialog")
+                            except Exception as exc:
+                                result["warnings"].append(
+                                    f"open dialog accept() fallback failed: {exc}"
+                                )
+
+                return True
+
+            # The MCP Python executor may run `exec` with separate globals/locals.
+            # Expose helpers in globals so comprehensions and nested call paths can
+            # resolve these names consistently.
+            globals()["norm_text"] = norm_text
+            globals()["collect_visible_windows"] = collect_visible_windows
+            globals()["find_item_index"] = find_item_index
+            globals()["find_options_dialog"] = find_options_dialog
+            globals()["is_qt_object_alive"] = is_qt_object_alive
+            globals()["set_combo_value"] = set_combo_value
+            globals()["get_loaded_filename"] = get_loaded_filename
+            globals()["open_with_ui_context"] = open_with_ui_context
+            globals()["handle_open_with_options_dialog"] = handle_open_with_options_dialog
+            globals()["time"] = time
+            globals()["QApplication"] = QApplication
+            globals()["Path"] = Path
+            globals()["bn"] = bn
+            globals()["result"] = result
+            globals()["target_file"] = target_file
+            globals()["target_view_type"] = target_view_type
+            globals()["target_platform"] = target_platform
+            globals()["inspect_only"] = inspect_only
+            globals()["click_open"] = click_open
+
+            def run_open_workflow():
+                app = QApplication.instance()
+                globals()["app"] = app
+                result["state"]["visible_windows"] = collect_visible_windows(app)
+                if app is not None and app.activeWindow() is not None:
+                    result["state"]["active_window"] = str(app.activeWindow().windowTitle() or "")
+
+                dialog = find_options_dialog(app)
+                loaded_bv = None
+
+                if dialog is not None:
+                    handle_open_with_options_dialog(dialog, "detected_open_with_options_dialog")
                 else:
-                    if target_platform or target_view_type:
-                        result["warnings"].append(
-                            "no open dialog visible; --platform/--view-type were not forced (bn.load defaults used)"
+                    result["actions"].append("no_open_with_options_dialog")
+                    if inspect_only:
+                        result["actions"].append("inspect_only_no_load")
+                    elif not target_file:
+                        result["warnings"].append("no filepath provided and no dialog to accept")
+                    else:
+                        ui_open = {"ok": False, "reason": "skipped"}
+                        if app is not None:
+                            ui_open = open_with_ui_context(target_file)
+                            if ui_open.get("ok"):
+                                result["actions"].append("ui_context_open_filename")
+                            else:
+                                result["warnings"].append(
+                                    f"ui_context_open_filename: {ui_open.get('reason')}"
+                                )
+                        if not ui_open.get("ok"):
+                            if target_platform or target_view_type:
+                                result["warnings"].append(
+                                    "no open dialog visible; --platform/--view-type were not forced (bn.load defaults used)"
+                                )
+                            try:
+                                loaded_bv = bn.load(target_file)
+                                result["actions"].append("bn.load")
+                            except Exception as exc:
+                                result["errors"].append(f"bn.load failed: {exc}")
+
+                        if app is not None:
+                            deadline = time.time() + 6.0
+                            while time.time() < deadline:
+                                app.processEvents()
+                                post_dialog = find_options_dialog(app)
+                                if post_dialog is not None:
+                                    handle_open_with_options_dialog(
+                                        post_dialog,
+                                        "detected_open_with_options_dialog_after_open",
+                                    )
+                                loaded_now = get_loaded_filename()
+                                if loaded_now:
+                                    try:
+                                        if target_file:
+                                            expected_now = str(Path(target_file).resolve())
+                                            observed_now = str(Path(loaded_now).resolve())
+                                            if observed_now == expected_now:
+                                                break
+                                    except Exception:
+                                        break
+                                time.sleep(0.05)
+
+                # Final pass: if any options dialog is still visible, keep trying to resolve it.
+                if app is not None and (not inspect_only) and click_open:
+                    deadline = time.time() + 8.0
+                    while time.time() < deadline:
+                        lingering = find_options_dialog(app)
+                        if lingering is None:
+                            break
+                        handle_open_with_options_dialog(
+                            lingering, "resolved_open_with_options_dialog_final_pass"
                         )
-                    try:
-                        loaded_bv = bn.load(target_file)
-                        result["actions"].append("bn.load")
-                    except Exception as exc:
-                        result["errors"].append(f"bn.load failed: {exc}")
+                        for _ in range(12):
+                            app.processEvents()
+                            time.sleep(0.02)
+                    if find_options_dialog(app) is not None:
+                        result["warnings"].append(
+                            "open dialog remained visible after final resolution pass"
+                        )
 
-            # Ensure MCP server tracks the view when we can identify one.
-            try:
-                import binary_ninja_mcp.plugin as mcp_plugin
+                if loaded_bv is None:
+                    candidate_bv = globals().get("bv")
+                    if candidate_bv is not None and getattr(candidate_bv, "file", None) is not None:
+                        loaded_bv = candidate_bv
+
+                # Ensure MCP server tracks the view when we can identify one.
+                try:
+                    import binary_ninja_mcp.plugin as mcp_plugin
+                    if loaded_bv is not None:
+                        mcp_plugin.plugin.server.binary_ops.current_view = loaded_bv
+                        result["actions"].append("set_current_view")
+                except Exception as exc:
+                    result["warnings"].append(f"unable to set MCP current_view: {exc}")
+
+                if app is not None:
+                    result["state"]["visible_windows"] = collect_visible_windows(app)
+                    if app.activeWindow() is not None:
+                        result["state"]["active_window"] = str(app.activeWindow().windowTitle() or "")
+                    else:
+                        result["state"]["active_window"] = None
+
+                loaded_filename = get_loaded_filename()
+                result["state"]["loaded_filename"] = loaded_filename
                 if loaded_bv is not None:
-                    mcp_plugin.plugin.server.binary_ops.current_view = loaded_bv
-                    result["actions"].append("set_current_view")
-            except Exception as exc:
-                result["warnings"].append(f"unable to set MCP current_view: {exc}")
+                    try:
+                        result["state"]["loaded_arch"] = str(
+                            loaded_bv.arch.name if loaded_bv.arch is not None else None
+                        )
+                    except Exception:
+                        result["state"]["loaded_arch"] = None
 
+                if target_file:
+                    try:
+                        expected = str(Path(target_file).resolve())
+                        observed = str(Path(loaded_filename).resolve()) if loaded_filename else None
+                    except Exception:
+                        expected = target_file
+                        observed = loaded_filename
+                    if observed is None:
+                        result["warnings"].append("no loaded filename reported by MCP")
+                    elif observed != expected:
+                        result["warnings"].append(
+                            f"loaded filename differs (expected {expected}, got {observed})"
+                        )
+
+                if target_platform and result["state"].get("loaded_arch"):
+                    if norm_text(result["state"]["loaded_arch"]) != norm_text(target_platform):
+                        result["warnings"].append(
+                            f"loaded arch ({result['state']['loaded_arch']}) differs from requested platform ({target_platform})"
+                        )
+
+                return loaded_bv
+
+            globals()["run_open_workflow"] = run_open_workflow
+
+            def run_non_ui_fallback_load():
+                fallback_bv = None
+                if not target_file:
+                    return fallback_bv
+                try:
+                    fallback_bv = bn.load(target_file)
+                    result["actions"].append("bn.load_non_ui_fallback")
+                except Exception as exc:
+                    result["errors"].append(f"non-ui fallback load failed: {exc}")
+                return fallback_bv
+
+            globals()["run_non_ui_fallback_load"] = run_non_ui_fallback_load
+
+            loaded_bv = None
+            if hasattr(bn, "execute_on_main_thread_and_wait"):
+                def _run_open_workflow_main_thread():
+                    globals()["__open_main_thread_started"] = True
+                    globals()["__open_loaded_bv"] = globals()["run_open_workflow"]()
+                    globals()["__open_main_thread_done"] = True
+
+                globals()["_run_open_workflow_main_thread"] = _run_open_workflow_main_thread
+                try:
+                    globals()["__open_main_thread_started"] = False
+                    globals()["__open_main_thread_done"] = False
+                    bn.execute_on_main_thread_and_wait(_run_open_workflow_main_thread)
+                    if globals().get("__open_main_thread_done"):
+                        loaded_bv = globals().get("__open_loaded_bv")
+                        result["actions"].append("ran_open_workflow_on_main_thread")
+                    else:
+                        result["warnings"].append(
+                            "main-thread open workflow did not complete; running non-ui fallback"
+                        )
+                        loaded_bv = run_non_ui_fallback_load()
+                except Exception as exc:
+                    result["warnings"].append(
+                        f"main-thread open workflow failed: {exc}; running non-ui fallback"
+                    )
+                    loaded_bv = run_non_ui_fallback_load()
+            else:
+                loaded_bv = run_non_ui_fallback_load()
+
+            # Reconcile state after any fallback path.
+            app = QApplication.instance()
             if app is not None:
                 result["state"]["visible_windows"] = collect_visible_windows(app)
                 if app.activeWindow() is not None:
@@ -485,35 +889,32 @@ class Open(cli.Application):
                 else:
                     result["state"]["active_window"] = None
 
-            loaded_filename = get_loaded_filename()
-            result["state"]["loaded_filename"] = loaded_filename
             if loaded_bv is not None:
+                try:
+                    import binary_ninja_mcp.plugin as mcp_plugin
+
+                    mcp_plugin.plugin.server.binary_ops.current_view = loaded_bv
+                    if "set_current_view" not in result["actions"]:
+                        result["actions"].append("set_current_view")
+                except Exception as exc:
+                    result["warnings"].append(f"unable to set MCP current_view: {exc}")
+
+            loaded_filename = get_loaded_filename()
+            if loaded_filename is None and loaded_bv is not None:
+                try:
+                    if getattr(loaded_bv, "file", None) is not None:
+                        loaded_filename = str(loaded_bv.file.filename)
+                except Exception:
+                    pass
+            result["state"]["loaded_filename"] = loaded_filename
+
+            if loaded_bv is not None and not result["state"].get("loaded_arch"):
                 try:
                     result["state"]["loaded_arch"] = str(
                         loaded_bv.arch.name if loaded_bv.arch is not None else None
                     )
                 except Exception:
                     result["state"]["loaded_arch"] = None
-
-            if target_file:
-                try:
-                    expected = str(Path(target_file).resolve())
-                    observed = str(Path(loaded_filename).resolve()) if loaded_filename else None
-                except Exception:
-                    expected = target_file
-                    observed = loaded_filename
-                if observed is None:
-                    result["warnings"].append("no loaded filename reported by MCP")
-                elif observed != expected:
-                    result["warnings"].append(
-                        f"loaded filename differs (expected {expected}, got {observed})"
-                    )
-
-            if target_platform and result["state"].get("loaded_arch"):
-                if norm_text(result["state"]["loaded_arch"]) != norm_text(target_platform):
-                    result["warnings"].append(
-                        f"loaded arch ({result['state']['loaded_arch']}) differs from requested platform ({target_platform})"
-                    )
 
             if result["errors"]:
                 result["ok"] = False
@@ -530,6 +931,17 @@ class Open(cli.Application):
             parsed = self.parent._extract_last_json_line(data.get("stdout", ""))
             if parsed is None and isinstance(data.get("return_value"), dict):
                 parsed = data["return_value"]
+            stderr_text = data.get("stderr", "")
+            if (
+                isinstance(parsed, dict)
+                and isinstance(stderr_text, str)
+                and ("Traceback" in stderr_text or "Exception ignored on calling ctypes callback" in stderr_text)
+            ):
+                warnings = parsed.setdefault("warnings", [])
+                warn_msg = "python execution emitted stderr traceback; check --json stderr output"
+                if warn_msg not in warnings:
+                    warnings.append(warn_msg)
+                parsed["ok"] = False
 
         if self.parent.json_output:
             if parsed is not None and isinstance(data, dict):

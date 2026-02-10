@@ -133,6 +133,9 @@ current UI state and does the right thing:
   - `Open` is clicked automatically (unless `--no-click` or `--inspect-only` is set).
 - If no dialog is visible:
   - falls back to `bn.load(filepath)` and updates MCP `current_view`.
+- If MCP server is not reachable on Linux:
+  - automatically launches Binary Ninja with Wayland defaults and retries;
+  - prints a clear startup error (and launch log path) if startup fails.
 
 Examples:
 

@@ -72,6 +72,7 @@ uv run python scripts/binja-cli.py quit
 - Add a comment: `uv run python scripts/binja-cli.py comment <addr> "text"`
 - Work in Python: `uv run python scripts/binja-cli.py python -i` (interactive), or `... python -f script.py`
 - Open a binary robustly: `uv run python scripts/binja-cli.py open <path> [--view-type Mapped] [--platform x86_16]`
+  - On Linux, `open` auto-launches Binary Ninja with Wayland defaults when MCP is not reachable.
 - Close safely without modal prompt stalls: `uv run python scripts/binja-cli.py quit [--decision auto|save|dont-save|cancel]` (auto pre-saves when the loaded target is `.bndb`)
 
 ## Troubleshooting
