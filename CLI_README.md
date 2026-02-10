@@ -109,6 +109,9 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 
 # Verbose mode
 ./cli.py --verbose decompile main
+
+# Increase HTTP timeout for expensive operations (or set BINJA_CLI_TIMEOUT)
+./cli.py --request-timeout 60 decompile main
 ```
 
 ### Help

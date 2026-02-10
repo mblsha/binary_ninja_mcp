@@ -30,6 +30,15 @@ class BinaryNinjaCLI(cli.Application):
 
     verbose = cli.Flag(["--verbose", "-v"], help="Verbose output")
 
+    request_timeout = cli.SwitchAttr(
+        ["--request-timeout", "-t"],
+        float,
+        default=float(os.environ.get("BINJA_CLI_TIMEOUT", "5")),
+        help=(
+            "HTTP request timeout in seconds (default: 5; can also set BINJA_CLI_TIMEOUT)"
+        ),
+    )
+
     def _request(self, method: str, endpoint: str, params: dict = None, data: dict = None) -> dict:
         """Make HTTP request to the server"""
         url = f"{self.server_url}/{endpoint}"
@@ -43,9 +52,9 @@ class BinaryNinjaCLI(cli.Application):
 
         try:
             if method == "GET":
-                response = requests.get(url, params=params, timeout=5)
+                response = requests.get(url, params=params, timeout=self.request_timeout)
             else:
-                response = requests.post(url, json=data, timeout=5)
+                response = requests.post(url, json=data, timeout=self.request_timeout)
 
             response.raise_for_status()
             return response.json()
