@@ -6,6 +6,7 @@ Uses the same HTTP API as the MCP bridge but provides a terminal interface
 
 import json
 import sys
+import textwrap
 import requests
 from plumbum import cli, colors
 
@@ -98,6 +99,25 @@ class BinaryNinjaCLI(cli.Application):
             print(colors.red | f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
+    def _execute_python(self, code: str) -> dict:
+        """Execute Python in Binary Ninja via MCP console endpoint."""
+        return self._request("POST", "console/execute", data={"command": code})
+
+    @staticmethod
+    def _extract_last_json_line(text: str):
+        """Parse the last JSON object line from text output."""
+        if not isinstance(text, str):
+            return None
+        for raw_line in reversed(text.splitlines()):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+        return None
+
     def _output(self, data: dict):
         """Output data in JSON or formatted text"""
         if self.json_output:
@@ -152,6 +172,1004 @@ class Status(cli.Application):
                 print(f"  File: {data.get('filename', 'Unknown')}")
             else:
                 print(colors.yellow | "⚠ No binary loaded")
+
+
+@BinaryNinjaCLI.subcommand("open")
+class Open(cli.Application):
+    """Open a file and auto-resolve Binary Ninja's "Open with Options" dialog.
+
+    Behavior:
+    - If an "Open with Options" dialog is visible, optionally sets view type/platform and clicks "Open".
+    - If no dialog is visible, falls back to `bn.load(filepath)` and updates MCP current_view.
+    - Always reports inspected state/actions in JSON-like output.
+    """
+
+    platform = cli.SwitchAttr(
+        ["--platform", "-p"],
+        str,
+        help="Platform/arch text to select in the dialog (e.g. x86_16).",
+    )
+
+    view_type = cli.SwitchAttr(
+        ["--view-type", "-t"],
+        str,
+        help="View type to select in the dialog (e.g. Mapped, Raw).",
+    )
+
+    no_click = cli.Flag(
+        ["--no-click"],
+        help="Inspect/set dialog fields but do not click the Open button.",
+    )
+
+    inspect_only = cli.Flag(
+        ["--inspect-only"],
+        help="Inspect UI state only (do not load or click open).",
+    )
+
+    def main(self, filepath: str = ""):
+        config = {
+            "filepath": filepath,
+            "platform": self.platform or "",
+            "view_type": self.view_type or "",
+            "click_open": not self.no_click,
+            "inspect_only": self.inspect_only,
+        }
+
+        script = textwrap.dedent(
+            """
+            import json
+            from pathlib import Path
+            import binaryninja as bn
+            from PySide6.QtWidgets import QApplication
+
+            CONFIG = json.loads(%r)
+
+            target_file = str(CONFIG.get("filepath") or "").strip()
+            target_platform = str(CONFIG.get("platform") or "").strip()
+            target_view_type = str(CONFIG.get("view_type") or "").strip()
+            click_open = bool(CONFIG.get("click_open", True))
+            inspect_only = bool(CONFIG.get("inspect_only", False))
+
+            result = {
+                "ok": True,
+                "input": {
+                    "filepath": target_file,
+                    "platform": target_platform,
+                    "view_type": target_view_type,
+                    "click_open": click_open,
+                    "inspect_only": inspect_only,
+                },
+                "actions": [],
+                "warnings": [],
+                "errors": [],
+                "dialog": {
+                    "present": False,
+                    "title": None,
+                    "view_type_set": None,
+                    "platform_set": None,
+                    "open_clicked": False,
+                    "open_button_found": False,
+                },
+                "state": {
+                    "active_window": None,
+                    "visible_windows": [],
+                    "loaded_filename": None,
+                },
+            }
+
+            def norm_text(value):
+                text = str(value or "").strip().lower()
+                return "".join(ch for ch in text if ch.isalnum() or ch in ("_", ".", "-"))
+
+            def collect_visible_windows(app):
+                windows = []
+                if app is None:
+                    return windows
+                for widget in app.topLevelWidgets():
+                    if not widget.isVisible():
+                        continue
+                    windows.append(
+                        {
+                            "class": type(widget).__name__,
+                            "title": str(widget.windowTitle() or ""),
+                        }
+                    )
+                return windows
+
+            def find_item_index(combo, wanted_text):
+                wanted_norm = norm_text(wanted_text)
+                if not wanted_norm:
+                    return -1
+                partial_idx = -1
+                for idx in range(combo.count()):
+                    item_norm = norm_text(combo.itemText(idx))
+                    if item_norm == wanted_norm:
+                        return idx
+                    if partial_idx < 0 and (wanted_norm in item_norm or item_norm in wanted_norm):
+                        partial_idx = idx
+                return partial_idx
+
+            def find_options_dialog(app):
+                if app is None:
+                    return None
+                for widget in app.topLevelWidgets():
+                    if not widget.isVisible():
+                        continue
+                    title = str(widget.windowTitle() or "")
+                    cls_name = type(widget).__name__.lower()
+                    if "open with options" in title.lower() or "optionsdialog" in cls_name:
+                        return widget
+                return None
+
+            def set_combo_value(combo, requested):
+                idx = find_item_index(combo, requested)
+                if idx < 0:
+                    return {"requested": requested, "changed": False, "reason": "not-found"}
+                before = str(combo.currentText() or "")
+                combo.setCurrentIndex(idx)
+                QApplication.processEvents()
+                after = str(combo.currentText() or "")
+                return {
+                    "requested": requested,
+                    "changed": before != after,
+                    "before": before,
+                    "after": after,
+                    "index": idx,
+                }
+
+            def get_loaded_filename():
+                try:
+                    import binary_ninja_mcp.plugin as mcp_plugin
+                    current = mcp_plugin.plugin.server.binary_ops.current_view
+                    if current is not None and getattr(current, "file", None) is not None:
+                        return str(current.file.filename)
+                except Exception:
+                    pass
+                try:
+                    current_bv = globals().get("bv")
+                    if current_bv is not None and getattr(current_bv, "file", None) is not None:
+                        return str(current_bv.file.filename)
+                except Exception:
+                    pass
+                return None
+
+            # The MCP Python executor may run `exec` with separate globals/locals.
+            # Expose helpers in globals so comprehensions and nested call paths can
+            # resolve these names consistently.
+            globals()["norm_text"] = norm_text
+            globals()["collect_visible_windows"] = collect_visible_windows
+            globals()["find_item_index"] = find_item_index
+            globals()["find_options_dialog"] = find_options_dialog
+            globals()["set_combo_value"] = set_combo_value
+            globals()["get_loaded_filename"] = get_loaded_filename
+
+            app = QApplication.instance()
+            result["state"]["visible_windows"] = collect_visible_windows(app)
+            if app is not None and app.activeWindow() is not None:
+                result["state"]["active_window"] = str(app.activeWindow().windowTitle() or "")
+
+            dialog = find_options_dialog(app)
+            loaded_bv = None
+
+            if dialog is not None:
+                result["dialog"]["present"] = True
+                result["dialog"]["title"] = str(dialog.windowTitle() or "")
+                result["actions"].append("detected_open_with_options_dialog")
+
+                combos = []
+                for child in dialog.findChildren(object):
+                    cls = type(child).__name__
+                    if cls != "QComboBox":
+                        continue
+                    if not hasattr(child, "count") or not hasattr(child, "itemText"):
+                        continue
+                    if not hasattr(child, "setCurrentIndex") or not hasattr(child, "currentText"):
+                        continue
+                    combos.append(child)
+
+                view_combo = None
+                for combo in combos:
+                    items = {norm_text(combo.itemText(i)) for i in range(combo.count())}
+                    if "raw" in items and "mapped" in items:
+                        view_combo = combo
+                        break
+                if target_view_type:
+                    if view_combo is None:
+                        result["warnings"].append("view type combo not found in dialog")
+                    else:
+                        view_set = set_combo_value(view_combo, target_view_type)
+                        result["dialog"]["view_type_set"] = view_set
+                        if view_set.get("changed"):
+                            result["actions"].append("set_view_type")
+
+                if target_platform:
+                    platform_combo = None
+                    platform_idx = -1
+                    best_score = -10**9
+                    for combo in combos:
+                        if view_combo is not None and combo is view_combo:
+                            continue
+                        idx = find_item_index(combo, target_platform)
+                        if idx < 0:
+                            continue
+                        count = combo.count()
+                        items = [norm_text(combo.itemText(i)) for i in range(count)]
+                        score = 0
+                        if norm_text(combo.itemText(idx)) == norm_text(target_platform):
+                            score += 100
+                        if count >= 12:
+                            score += 20
+                        if any(
+                            tok.startswith("x86") or tok.startswith("arm") or tok.startswith("mips")
+                            for tok in items
+                        ):
+                            score += 20
+                        if "raw" in items and "mapped" in items:
+                            score -= 200
+                        if score > best_score:
+                            platform_combo = combo
+                            platform_idx = idx
+                            best_score = score
+                    if platform_combo is None or platform_idx < 0:
+                        result["warnings"].append(
+                            f"platform '{target_platform}' not found in dialog combos"
+                        )
+                    else:
+                        before = str(platform_combo.currentText() or "")
+                        platform_combo.setCurrentIndex(platform_idx)
+                        QApplication.processEvents()
+                        after = str(platform_combo.currentText() or "")
+                        result["dialog"]["platform_set"] = {
+                            "requested": target_platform,
+                            "changed": before != after,
+                            "before": before,
+                            "after": after,
+                            "index": platform_idx,
+                        }
+                        if before != after:
+                            result["actions"].append("set_platform")
+
+                if not inspect_only and click_open:
+                    open_button = None
+                    for button in dialog.findChildren(object):
+                        if type(button).__name__ != "QPushButton":
+                            continue
+                        if not hasattr(button, "text") or not hasattr(button, "click"):
+                            continue
+                        label = str(button.text() or "").replace("&", "").strip().lower()
+                        if label == "open":
+                            open_button = button
+                            break
+                    result["dialog"]["open_button_found"] = open_button is not None
+                    if open_button is None:
+                        result["warnings"].append("open button not found in dialog")
+                    elif not open_button.isEnabled():
+                        result["warnings"].append("open button is disabled")
+                    else:
+                        open_button.click()
+                        if app is not None:
+                            for _ in range(10):
+                                app.processEvents()
+                        result["dialog"]["open_clicked"] = True
+                        result["actions"].append("clicked_open_button")
+            else:
+                result["actions"].append("no_open_with_options_dialog")
+                if inspect_only:
+                    result["actions"].append("inspect_only_no_load")
+                elif not target_file:
+                    result["warnings"].append("no filepath provided and no dialog to accept")
+                else:
+                    if target_platform or target_view_type:
+                        result["warnings"].append(
+                            "no open dialog visible; --platform/--view-type were not forced (bn.load defaults used)"
+                        )
+                    try:
+                        loaded_bv = bn.load(target_file)
+                        result["actions"].append("bn.load")
+                    except Exception as exc:
+                        result["errors"].append(f"bn.load failed: {exc}")
+
+            # Ensure MCP server tracks the view when we can identify one.
+            try:
+                import binary_ninja_mcp.plugin as mcp_plugin
+                if loaded_bv is not None:
+                    mcp_plugin.plugin.server.binary_ops.current_view = loaded_bv
+                    result["actions"].append("set_current_view")
+            except Exception as exc:
+                result["warnings"].append(f"unable to set MCP current_view: {exc}")
+
+            if app is not None:
+                result["state"]["visible_windows"] = collect_visible_windows(app)
+                if app.activeWindow() is not None:
+                    result["state"]["active_window"] = str(app.activeWindow().windowTitle() or "")
+                else:
+                    result["state"]["active_window"] = None
+
+            loaded_filename = get_loaded_filename()
+            result["state"]["loaded_filename"] = loaded_filename
+            if loaded_bv is not None:
+                try:
+                    result["state"]["loaded_arch"] = str(
+                        loaded_bv.arch.name if loaded_bv.arch is not None else None
+                    )
+                except Exception:
+                    result["state"]["loaded_arch"] = None
+
+            if target_file:
+                try:
+                    expected = str(Path(target_file).resolve())
+                    observed = str(Path(loaded_filename).resolve()) if loaded_filename else None
+                except Exception:
+                    expected = target_file
+                    observed = loaded_filename
+                if observed is None:
+                    result["warnings"].append("no loaded filename reported by MCP")
+                elif observed != expected:
+                    result["warnings"].append(
+                        f"loaded filename differs (expected {expected}, got {observed})"
+                    )
+
+            if target_platform and result["state"].get("loaded_arch"):
+                if norm_text(result["state"]["loaded_arch"]) != norm_text(target_platform):
+                    result["warnings"].append(
+                        f"loaded arch ({result['state']['loaded_arch']}) differs from requested platform ({target_platform})"
+                    )
+
+            if result["errors"]:
+                result["ok"] = False
+
+            print(json.dumps(result, sort_keys=True))
+            """
+            % json.dumps(config)
+        )
+
+        data = self.parent._execute_python(script)
+
+        parsed = None
+        if isinstance(data, dict):
+            parsed = self.parent._extract_last_json_line(data.get("stdout", ""))
+            if parsed is None and isinstance(data.get("return_value"), dict):
+                parsed = data["return_value"]
+
+        if self.parent.json_output:
+            if parsed is not None and isinstance(data, dict):
+                data = dict(data)
+                data["open_result"] = parsed
+            self.parent._output(data)
+            return
+
+        if not data.get("success"):
+            error = data.get("error", {})
+            if isinstance(error, dict):
+                print(
+                    colors.red
+                    | f"Error: {error.get('type', 'Unknown')}: {error.get('message', 'Unknown error')}"
+                )
+            else:
+                print(colors.red | f"Error: {error}")
+            if data.get("stderr"):
+                print(colors.red | data["stderr"], end="")
+            return
+
+        if parsed is None:
+            print(colors.yellow | "Open command executed, but no structured result was returned.")
+            if data.get("stdout"):
+                print(data["stdout"], end="")
+            return
+
+        ok = bool(parsed.get("ok"))
+        status_line = "✓ Open workflow completed" if ok else "⚠ Open workflow completed with issues"
+        color = colors.green if ok else colors.yellow
+        print(color | status_line)
+
+        loaded = parsed.get("state", {}).get("loaded_filename")
+        if loaded:
+            print(f"  Loaded: {loaded}")
+        else:
+            print("  Loaded: <unknown>")
+
+        active_window = parsed.get("state", {}).get("active_window")
+        if active_window:
+            print(f"  Active Window: {active_window}")
+
+        actions = parsed.get("actions", [])
+        if actions:
+            print("  Actions:")
+            for action in actions:
+                print(f"    - {action}")
+
+        warnings = parsed.get("warnings", [])
+        if warnings:
+            print(colors.yellow | "  Warnings:")
+            for warning in warnings:
+                print(colors.yellow | f"    - {warning}")
+
+        errors = parsed.get("errors", [])
+        if errors:
+            print(colors.red | "  Errors:")
+            for err in errors:
+                print(colors.red | f"    - {err}")
+
+
+@BinaryNinjaCLI.subcommand("quit")
+class Quit(cli.Application):
+    """Close Binary Ninja windows and auto-answer save confirmation dialogs.
+
+    Default decision policy:
+    - Save if currently loaded file is a `.bndb` or has a sibling `<file>.bndb`.
+    - Otherwise choose Don't Save/Discard.
+    """
+
+    decision = cli.SwitchAttr(
+        ["--decision"],
+        str,
+        default="auto",
+        help="Decision policy: auto|save|dont-save|cancel",
+    )
+
+    mark_dirty = cli.Flag(
+        ["--mark-dirty"],
+        help="Force current BinaryView's modified flag before closing (useful for testing).",
+    )
+
+    inspect_only = cli.Flag(
+        ["--inspect-only"],
+        help="Inspect dialogs and policy only; do not close windows or click buttons.",
+    )
+
+    wait_ms = cli.SwitchAttr(
+        ["--wait-ms"],
+        int,
+        default=2000,
+        help="Maximum time to wait for confirmation dialogs after close (ms).",
+    )
+
+    quit_app = cli.Flag(
+        ["--quit-app"],
+        help="Request QApplication.quit() after dialog handling (best-effort).",
+    )
+
+    quit_delay_ms = cli.SwitchAttr(
+        ["--quit-delay-ms"],
+        int,
+        default=300,
+        help="Delay before QApplication.quit() when --quit-app is used (ms).",
+    )
+
+    def main(self):
+        decision_in = (self.decision or "auto").strip().lower()
+        valid = {"auto", "save", "dont-save", "dont_save", "cancel"}
+        if decision_in not in valid:
+            print(
+                colors.red
+                | f"Invalid --decision '{self.decision}'. Expected one of: auto, save, dont-save, cancel"
+            )
+            return 1
+        if decision_in == "dont_save":
+            decision_in = "dont-save"
+
+        config = {
+            "decision": decision_in,
+            "mark_dirty": bool(self.mark_dirty),
+            "inspect_only": bool(self.inspect_only),
+            "wait_ms": int(self.wait_ms or 2000),
+            "quit_app": bool(self.quit_app),
+            "quit_delay_ms": int(self.quit_delay_ms or 300),
+        }
+
+        script = textwrap.dedent(
+            """
+            import json
+            import time
+            from pathlib import Path
+
+            import binaryninja as bn
+            from PySide6.QtCore import QTimer, Qt
+            from PySide6.QtGui import QAction
+            from PySide6.QtWidgets import QApplication, QPushButton
+
+            CONFIG = json.loads(%r)
+
+            decision_in = str(CONFIG.get("decision") or "auto").strip().lower()
+            mark_dirty = bool(CONFIG.get("mark_dirty", False))
+            inspect_only = bool(CONFIG.get("inspect_only", False))
+            wait_ms = max(0, int(CONFIG.get("wait_ms", 2000)))
+            quit_app = bool(CONFIG.get("quit_app", False))
+            quit_delay_ms = max(0, int(CONFIG.get("quit_delay_ms", 300)))
+
+            result = {
+                "ok": True,
+                "input": {
+                    "decision": decision_in,
+                    "mark_dirty": mark_dirty,
+                    "inspect_only": inspect_only,
+                    "wait_ms": wait_ms,
+                },
+                "policy": {
+                    "resolved_decision": None,
+                    "loaded_filename": None,
+                    "loaded_is_bndb": False,
+                    "companion_bndb_exists": False,
+                },
+                "state": {
+                    "active_window_before": None,
+                    "active_window_after": None,
+                    "visible_windows_before": [],
+                    "visible_windows_after": [],
+                    "dialogs_before_action": [],
+                    "dialogs_after_action": [],
+                    "stuck_confirmation": False,
+                    "quit_on_last_window_closed_before": None,
+                    "quit_on_last_window_closed_after": None,
+                    "pre_saved_database": None,
+                },
+                "actions": [],
+                "warnings": [],
+                "errors": [],
+            }
+
+            def norm_text(value):
+                text = str(value or "").replace("&", "").strip().lower()
+                return " ".join(text.split())
+
+            def collect_visible_windows(app):
+                out = []
+                if app is None:
+                    return out
+                for widget in app.topLevelWidgets():
+                    if not widget.isVisible():
+                        continue
+                    out.append(
+                        {
+                            "class": type(widget).__name__,
+                            "title": str(widget.windowTitle() or ""),
+                        }
+                    )
+                return out
+
+            def get_current_bv():
+                try:
+                    import binary_ninja_mcp.plugin as mcp_plugin
+                    current = mcp_plugin.plugin.server.binary_ops.current_view
+                    if current is not None:
+                        return current
+                except Exception:
+                    pass
+                return globals().get("bv")
+
+            def get_loaded_filename():
+                current_bv = get_current_bv()
+                if current_bv is None:
+                    return None
+                try:
+                    if getattr(current_bv, "file", None) is not None:
+                        return str(current_bv.file.filename)
+                except Exception:
+                    pass
+                return None
+
+            def resolve_policy(loaded_filename, decision):
+                loaded_is_bndb = False
+                companion_exists = False
+                resolved = decision
+                if loaded_filename:
+                    try:
+                        loaded_name = str(loaded_filename).strip()
+                        loaded_is_bndb = loaded_name.lower().endswith(".bndb")
+                        if not loaded_is_bndb:
+                            companion_exists = Path(loaded_name + ".bndb").exists()
+                    except Exception:
+                        pass
+                if decision == "auto":
+                    resolved = "save" if (loaded_is_bndb or companion_exists) else "dont-save"
+                return resolved, loaded_is_bndb, companion_exists
+
+            def collect_confirmation_dialogs(app):
+                dialogs = []
+                if app is None:
+                    return dialogs
+                for widget in app.topLevelWidgets():
+                    if not widget.isVisible():
+                        continue
+                    buttons = []
+                    try:
+                        push_buttons = widget.findChildren(
+                            QPushButton, options=Qt.FindDirectChildrenOnly
+                        )
+                    except Exception:
+                        push_buttons = []
+                    for button in push_buttons:
+                        if not button.isVisible():
+                            continue
+                        text = norm_text(button.text())
+                        if not text:
+                            continue
+                        buttons.append(
+                            {
+                                "text": str(button.text() or ""),
+                                "norm": text,
+                                "enabled": bool(button.isEnabled()),
+                            }
+                        )
+                    if not buttons:
+                        # If we cannot enumerate buttons but this still looks like a modal save prompt,
+                        # keep tracking it as a confirmation dialog.
+                        title_norm = norm_text(widget.windowTitle())
+                        cls_norm = type(widget).__name__.lower()
+                        if "messagebox" not in cls_norm and "modified" not in title_norm:
+                            continue
+                    tokens = {b["norm"] for b in buttons}
+                    has_save_token = any("save" in t for t in tokens)
+                    has_reject_token = any(
+                        ("don't save" in t)
+                        or ("dont save" in t)
+                        or ("discard" in t)
+                        or ("close without saving" in t)
+                        or ("close without save" in t)
+                        or (t == "no")
+                        for t in tokens
+                    )
+                    has_cancel_token = any(("cancel" in t) for t in tokens)
+                    title_norm = norm_text(widget.windowTitle())
+                    cls_norm = type(widget).__name__.lower()
+                    looks_modal_save_prompt = (
+                        ("messagebox" in cls_norm) and ("modified" in title_norm or "save" in title_norm)
+                    )
+                    if has_save_token or has_reject_token or has_cancel_token or looks_modal_save_prompt:
+                        dialogs.append(
+                            {
+                                "title": str(widget.windowTitle() or ""),
+                                "class": type(widget).__name__,
+                                "buttons": buttons,
+                                "_widget": widget,
+                            }
+                        )
+                return dialogs
+
+            def find_button_for_decision(dialog_widget, decision):
+                priorities = []
+                if decision == "save":
+                    priorities = ["save", "save changes", "save all", "yes"]
+                elif decision == "dont-save":
+                    priorities = [
+                        "don't save",
+                        "dont save",
+                        "close without saving",
+                        "close without save",
+                        "discard changes",
+                        "discard",
+                        "no",
+                    ]
+                elif decision == "cancel":
+                    priorities = ["cancel"]
+
+                candidates = []
+                try:
+                    buttons = dialog_widget.findChildren(QPushButton)
+                except Exception:
+                    buttons = []
+
+                for button in buttons:
+                    if not button.isVisible():
+                        continue
+                    label = str(button.text() or "")
+                    norm = norm_text(label)
+                    if not norm:
+                        continue
+                    candidates.append((button, label, norm))
+
+                for wanted in priorities:
+                    for button, label, norm in candidates:
+                        if norm == wanted:
+                            return button, label
+                    for button, label, norm in candidates:
+                        if wanted in norm:
+                            return button, label
+                return None, None
+
+            def find_primary_main_window(app):
+                if app is None:
+                    return None
+                for widget in app.topLevelWidgets():
+                    if not widget.isVisible():
+                        continue
+                    if "mainwindow" in type(widget).__name__.lower():
+                        return widget
+                return None
+
+            def trigger_close_tab(main_window):
+                if main_window is None:
+                    return False, "no_main_window"
+                try:
+                    actions = main_window.findChildren(QAction)
+                except Exception:
+                    actions = []
+
+                # Prefer exact "Close Tab", then fallback to any action containing both terms.
+                best = None
+                for action in actions:
+                    text = norm_text(action.text())
+                    if not text:
+                        continue
+                    if text == "close tab":
+                        best = action
+                        break
+                    if ("close" in text) and ("tab" in text) and best is None:
+                        best = action
+                if best is None:
+                    return False, "close_tab_action_not_found"
+                if not best.isEnabled():
+                    return False, "close_tab_action_disabled"
+                try:
+                    best.trigger()
+                    QApplication.processEvents()
+                    return True, "close_tab_action_triggered"
+                except Exception as exc:
+                    return False, f"close_tab_action_trigger_failed:{exc}"
+
+            # The MCP Python executor may run exec with split globals/locals.
+            globals()["norm_text"] = norm_text
+            globals()["Path"] = Path
+            globals()["QPushButton"] = QPushButton
+            globals()["QApplication"] = QApplication
+            globals()["QAction"] = QAction
+            globals()["Qt"] = Qt
+            globals()["time"] = time
+            globals()["collect_visible_windows"] = collect_visible_windows
+            globals()["get_current_bv"] = get_current_bv
+            globals()["get_loaded_filename"] = get_loaded_filename
+            globals()["resolve_policy"] = resolve_policy
+            globals()["collect_confirmation_dialogs"] = collect_confirmation_dialogs
+            globals()["find_button_for_decision"] = find_button_for_decision
+            globals()["find_primary_main_window"] = find_primary_main_window
+            globals()["trigger_close_tab"] = trigger_close_tab
+
+            app = QApplication.instance()
+            result["state"]["visible_windows_before"] = collect_visible_windows(app)
+            if app is not None and app.activeWindow() is not None:
+                result["state"]["active_window_before"] = str(app.activeWindow().windowTitle() or "")
+            if app is not None:
+                try:
+                    result["state"]["quit_on_last_window_closed_before"] = bool(
+                        app.quitOnLastWindowClosed()
+                    )
+                except Exception:
+                    result["state"]["quit_on_last_window_closed_before"] = None
+
+            loaded_filename = get_loaded_filename()
+            result["policy"]["loaded_filename"] = loaded_filename
+            resolved, loaded_is_bndb, companion_exists = resolve_policy(loaded_filename, decision_in)
+            result["policy"]["resolved_decision"] = resolved
+            result["policy"]["loaded_is_bndb"] = loaded_is_bndb
+            result["policy"]["companion_bndb_exists"] = companion_exists
+
+            if mark_dirty:
+                current_bv = get_current_bv()
+                if current_bv is None or getattr(current_bv, "file", None) is None:
+                    result["warnings"].append("no current BinaryView available to mark dirty")
+                else:
+                    try:
+                        current_bv.file.modified = True
+                        result["actions"].append("marked_current_view_modified")
+                    except Exception as exc:
+                        result["warnings"].append(f"unable to mark current view modified: {exc}")
+
+            # For explicit/auto "save" policy, proactively persist .bndb changes
+            # before closing UI to avoid losing edits when close paths vary by platform.
+            if (not inspect_only) and (resolved == "save"):
+                current_bv = get_current_bv()
+                if current_bv is None:
+                    result["warnings"].append("save policy selected but no current BinaryView is available")
+                elif not loaded_filename:
+                    result["warnings"].append("save policy selected but no loaded filename is available")
+                else:
+                    try:
+                        save_ok = bool(current_bv.create_database(str(loaded_filename)))
+                        result["state"]["pre_saved_database"] = save_ok
+                        result["actions"].append(f"pre_saved_database:{save_ok}")
+                        if save_ok and getattr(current_bv, "file", None) is not None:
+                            try:
+                                current_bv.file.modified = False
+                                result["actions"].append("cleared_modified_after_pre_save")
+                            except Exception:
+                                pass
+                    except Exception as exc:
+                        result["warnings"].append(f"pre-save failed: {exc}")
+
+            dialogs = collect_confirmation_dialogs(app)
+            result["state"]["dialogs_before_action"] = [
+                {
+                    "title": d["title"],
+                    "class": d["class"],
+                    "buttons": d["buttons"],
+                }
+                for d in dialogs
+            ]
+
+            if not inspect_only:
+                if app is None:
+                    result["errors"].append("QApplication instance is not available")
+                else:
+                    try:
+                        app.setQuitOnLastWindowClosed(False)
+                        result["actions"].append("set_quit_on_last_window_closed:false")
+                    except Exception as exc:
+                        result["warnings"].append(
+                            f"unable to disable quitOnLastWindowClosed before close: {exc}"
+                        )
+
+                    # Prefer closing only the active tab (keeps app/server alive),
+                    # and fall back to closing main windows when action lookup fails.
+                    if not dialogs:
+                        main_window = find_primary_main_window(app)
+                        close_tab_ok, close_tab_reason = trigger_close_tab(main_window)
+                        if close_tab_ok:
+                            result["actions"].append(close_tab_reason)
+                        else:
+                            result["warnings"].append(close_tab_reason)
+                            closed = 0
+                            for widget in app.topLevelWidgets():
+                                if not widget.isVisible():
+                                    continue
+                                cls_name = type(widget).__name__.lower()
+                                if "mainwindow" not in cls_name:
+                                    continue
+                                try:
+                                    widget.close()
+                                    closed += 1
+                                except Exception:
+                                    pass
+                            result["actions"].append(f"requested_close_main_windows:{closed}")
+
+                    # Re-check for modal prompts after close. If a prompt already exists,
+                    # keep it and respond without waiting for a new one.
+                    if not dialogs:
+                        deadline = time.time() + (wait_ms / 1000.0)
+                        while time.time() < deadline:
+                            app.processEvents()
+                            dialogs = collect_confirmation_dialogs(app)
+                            if dialogs:
+                                break
+                            time.sleep(0.05)
+
+                    if dialogs:
+                        chosen_button = None
+                        chosen_label = None
+                        def dialog_priority(d):
+                            cls = str(d.get("class") or "").lower()
+                            title = norm_text(d.get("title"))
+                            if "messagebox" in cls:
+                                return 0
+                            if "dialog" in cls:
+                                return 1
+                            if "modified" in title or "save" in title:
+                                return 2
+                            return 9
+
+                        dialogs = sorted(dialogs, key=dialog_priority)
+                        chosen_dialog = dialogs[0]
+                        chosen_button, chosen_label = find_button_for_decision(
+                            chosen_dialog["_widget"], resolved
+                        )
+                        if chosen_button is None:
+                            result["warnings"].append(
+                                f"confirmation dialog detected but no matching '{resolved}' button found"
+                            )
+                        elif not chosen_button.isEnabled():
+                            result["warnings"].append(
+                                f"matched confirmation button '{chosen_label}' is disabled"
+                            )
+                        else:
+                            chosen_button.click()
+                            result["actions"].append(
+                                f"clicked_confirmation_button:{str(chosen_label)}"
+                            )
+                            for _ in range(20):
+                                app.processEvents()
+                                time.sleep(0.02)
+                    else:
+                        result["actions"].append("no_confirmation_dialog_detected_after_close")
+
+            dialogs_after = collect_confirmation_dialogs(app)
+            result["state"]["dialogs_after_action"] = [
+                {
+                    "title": d["title"],
+                    "class": d["class"],
+                    "buttons": d["buttons"],
+                }
+                for d in dialogs_after
+            ]
+            result["state"]["stuck_confirmation"] = len(dialogs_after) > 0
+
+            if app is not None:
+                result["state"]["visible_windows_after"] = collect_visible_windows(app)
+                if app.activeWindow() is not None:
+                    result["state"]["active_window_after"] = str(app.activeWindow().windowTitle() or "")
+                else:
+                    result["state"]["active_window_after"] = None
+                try:
+                    result["state"]["quit_on_last_window_closed_after"] = bool(
+                        app.quitOnLastWindowClosed()
+                    )
+                except Exception:
+                    result["state"]["quit_on_last_window_closed_after"] = None
+
+                if quit_app:
+                    try:
+                        QTimer.singleShot(quit_delay_ms, app.quit)
+                        result["actions"].append(f"scheduled_app_quit:{quit_delay_ms}ms")
+                    except Exception as exc:
+                        result["warnings"].append(f"unable to schedule app.quit(): {exc}")
+
+            if result["errors"]:
+                result["ok"] = False
+
+            print(json.dumps(result, sort_keys=True))
+            """
+            % json.dumps(config)
+        )
+
+        data = self.parent._execute_python(script)
+
+        parsed = None
+        if isinstance(data, dict):
+            parsed = self.parent._extract_last_json_line(data.get("stdout", ""))
+            if parsed is None and isinstance(data.get("return_value"), dict):
+                parsed = data["return_value"]
+
+        if self.parent.json_output:
+            if parsed is not None and isinstance(data, dict):
+                data = dict(data)
+                data["quit_result"] = parsed
+            self.parent._output(data)
+            return
+
+        if not data.get("success"):
+            error = data.get("error", {})
+            if isinstance(error, dict):
+                print(
+                    colors.red
+                    | f"Error: {error.get('type', 'Unknown')}: {error.get('message', 'Unknown error')}"
+                )
+            else:
+                print(colors.red | f"Error: {error}")
+            if data.get("stderr"):
+                print(colors.red | data["stderr"], end="")
+            return
+
+        if parsed is None:
+            print(colors.yellow | "Quit command executed, but no structured result was returned.")
+            if data.get("stdout"):
+                print(data["stdout"], end="")
+            return
+
+        ok = bool(parsed.get("ok"))
+        stuck = bool(parsed.get("state", {}).get("stuck_confirmation"))
+        decision = parsed.get("policy", {}).get("resolved_decision")
+        status_line = "✓ Quit workflow completed" if ok and not stuck else "⚠ Quit workflow completed with issues"
+        color = colors.green if ok and not stuck else colors.yellow
+        print(color | status_line)
+        print(f"  Policy Decision: {decision}")
+        print(f"  Loaded File: {parsed.get('policy', {}).get('loaded_filename')}")
+        print(f"  Stuck On Confirmation: {stuck}")
+
+        actions = parsed.get("actions", [])
+        if actions:
+            print("  Actions:")
+            for action in actions:
+                print(f"    - {action}")
+
+        warnings = parsed.get("warnings", [])
+        if warnings:
+            print(colors.yellow | "  Warnings:")
+            for warning in warnings:
+                print(colors.yellow | f"    - {warning}")
+
+        errors = parsed.get("errors", [])
+        if errors:
+            print(colors.red | "  Errors:")
+            for err in errors:
+                print(colors.red | f"    - {err}")
 
 
 @BinaryNinjaCLI.subcommand("functions")

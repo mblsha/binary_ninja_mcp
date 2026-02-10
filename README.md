@@ -58,6 +58,12 @@ uv run python scripts/binja-cli.py python "len(list(bv.functions))"
 
 # View recent errors from Binary Ninja logs
 uv run python scripts/binja-cli.py logs --errors --count 50
+
+# Open a file and auto-resolve "Open with Options" (set view/platform when needed)
+uv run python scripts/binja-cli.py open /path/to/binary --view-type Mapped --platform x86_16
+
+# Close Binary Ninja and auto-answer save confirmation dialogs
+uv run python scripts/binja-cli.py quit
 ```
 
 ## Common Tasks
@@ -65,6 +71,8 @@ uv run python scripts/binja-cli.py logs --errors --count 50
 - Rename a function: `uv run python scripts/binja-cli.py rename function <old> <new>`
 - Add a comment: `uv run python scripts/binja-cli.py comment <addr> "text"`
 - Work in Python: `uv run python scripts/binja-cli.py python -i` (interactive), or `... python -f script.py`
+- Open a binary robustly: `uv run python scripts/binja-cli.py open <path> [--view-type Mapped] [--platform x86_16]`
+- Close safely without modal prompt stalls: `uv run python scripts/binja-cli.py quit [--decision auto|save|dont-save|cancel]` (auto pre-saves when the loaded target is `.bndb`)
 
 ## Troubleshooting
 
