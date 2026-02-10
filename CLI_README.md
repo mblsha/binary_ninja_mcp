@@ -24,6 +24,14 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 # Check server status
 ./cli.py status
 
+# Open a file (auto-resolve "Open with Options" dialog)
+./cli.py open /path/to/binary
+./cli.py open /path/to/binary --view-type Mapped --platform x86_16
+
+# Close Binary Ninja and auto-answer save confirmation dialogs
+./cli.py quit
+./cli.py quit --decision auto --mark-dirty
+
 # List functions
 ./cli.py functions
 ./cli.py functions --limit 50
@@ -112,6 +120,70 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 # Command-specific help
 ./cli.py functions --help
 ./cli.py logs --help
+./cli.py open --help
+```
+
+### Open Dialog Automation
+
+Use `open` to make file-opening automation reproducible from the CLI. It inspects
+current UI state and does the right thing:
+
+- If an **Open with Options** dialog is visible:
+  - optional `--view-type` and `--platform` are applied when matching controls are found;
+  - `Open` is clicked automatically (unless `--no-click` or `--inspect-only` is set).
+- If no dialog is visible:
+  - falls back to `bn.load(filepath)` and updates MCP `current_view`.
+
+Examples:
+
+```bash
+# Typical headless-safe open with explicit platform/view
+./cli.py open /path/to/town_mcga.bin --view-type Mapped --platform x86_16
+
+# Inspect state only (no click/load side effects)
+./cli.py open /path/to/town_mcga.bin --inspect-only
+
+# Configure fields but don't click Open
+./cli.py open /path/to/town_mcga.bin --view-type Raw --platform x86 --no-click
+
+# JSON output for scripting
+./cli.py --json open /path/to/town_mcga.bin --platform x86_16
+```
+
+### Quit Dialog Automation
+
+Use `quit` to close Binary Ninja windows and handle save-confirmation dialogs
+without getting stuck in modal prompts.
+
+Default `--decision auto` policy:
+
+- choose `save` when the loaded file is `.bndb` or a sibling `<file>.bndb`
+  already exists
+- choose `dont-save` otherwise
+- when policy resolves to `save`, the CLI pre-saves the current database via
+  Binary Ninja API before close to avoid losing edits on abrupt UI shutdown
+
+Examples:
+
+```bash
+# Auto policy (recommended)
+./cli.py quit
+
+# Force specific behavior
+./cli.py quit --decision dont-save
+./cli.py quit --decision save
+
+# Test dialog handling by forcing dirty state first
+./cli.py quit --mark-dirty
+
+# Inspect policy/dialog state only
+./cli.py quit --inspect-only
+
+# Ask app to exit after dialog handling (best-effort)
+./cli.py quit --quit-app --quit-delay-ms 500
+
+# Script-friendly structured output
+./cli.py --json quit
 ```
 
 ## Examples
