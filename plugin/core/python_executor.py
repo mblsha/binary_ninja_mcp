@@ -375,14 +375,18 @@ class EnhancedConsoleCapture:
         """Stop console capture"""
         pass
 
-    def execute_command(self, command: str) -> Dict[str, Any]:
+    def execute_command(
+        self, command: str, binary_view=None, timeout: float = 30.0
+    ) -> Dict[str, Any]:
         """Execute a Python command and return results"""
         # Update binary view if available
-        if bn and hasattr(bn, "current_view") and bn.current_view:
+        if binary_view is not None:
+            self.executor.update_binary_view(binary_view)
+        elif bn and hasattr(bn, "current_view") and bn.current_view:
             self.executor.update_binary_view(bn.current_view)
 
         # Execute the command
-        result = self.executor.execute(command)
+        result = self.executor.execute(command, timeout=timeout)
 
         # Store output in buffer for retrieval
         timestamp = datetime.now().isoformat()

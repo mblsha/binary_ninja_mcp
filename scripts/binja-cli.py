@@ -211,9 +211,13 @@ class BinaryNinjaCLI(cli.Application):
             "binary": launch.get("binary"),
         }
 
-    def _execute_python(self, code: str) -> dict:
+    def _execute_python(self, code: str, exec_timeout: float = 30.0) -> dict:
         """Execute Python in Binary Ninja via MCP console endpoint."""
-        return self._request("POST", "console/execute", data={"command": code})
+        return self._request(
+            "POST",
+            "console/execute",
+            data={"command": code, "timeout": exec_timeout},
+        )
 
     @staticmethod
     def _extract_last_json_line(text: str):
@@ -1929,6 +1933,12 @@ class Python(cli.Application):
     complete = cli.SwitchAttr(
         ["-c", "--complete"], str, help="Get code completions for partial input"
     )
+    exec_timeout = cli.SwitchAttr(
+        ["--exec-timeout"],
+        float,
+        default=30.0,
+        help="Execution timeout in seconds for /console/execute (default: 30)",
+    )
 
     def main(self, *args):
         code = None
@@ -2027,7 +2037,11 @@ class Python(cli.Application):
             return 1
 
         # Execute the code
-        data = self.parent._request("POST", "console/execute", data={"command": code})
+        data = self.parent._request(
+            "POST",
+            "console/execute",
+            data={"command": code, "timeout": self.exec_timeout},
+        )
 
         if self.parent.json_output:
             self.parent._output(data)
@@ -2090,7 +2104,11 @@ class Python(cli.Application):
                     code = "\n".join(lines)
 
                 # Execute
-                data = self.parent._request("POST", "console/execute", data={"command": code})
+                data = self.parent._request(
+                    "POST",
+                    "console/execute",
+                    data={"command": code, "timeout": self.exec_timeout},
+                )
 
                 # Display results
                 if data.get("success"):

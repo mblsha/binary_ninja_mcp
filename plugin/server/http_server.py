@@ -1358,6 +1358,19 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     self._send_json_response({"error": "Missing command parameter"}, 400)
                     return
 
+                timeout_raw = params.get("timeout")
+                if timeout_raw is None:
+                    timeout_raw = params.get("exec_timeout")
+                try:
+                    timeout = float(timeout_raw) if timeout_raw is not None else 30.0
+                except (TypeError, ValueError):
+                    timeout = 30.0
+                # Keep bounds sane while still allowing long imports.
+                if timeout < 1:
+                    timeout = 1.0
+                if timeout > 3600:
+                    timeout = 3600.0
+
                 console_capture = get_console_capture()
 
                 # Pass server context for binary view access if using V2
@@ -1366,11 +1379,25 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
                 # Pass binary view directly if available
                 binary_view = self.binary_ops.current_view if self.binary_ops else None
-                if hasattr(console_capture, "execute_command"):
-                    result = console_capture.execute_command(command, binary_view)
-                else:
-                    # Fallback for older implementations
-                    result = console_capture.execute_command(command)
+                if not hasattr(console_capture, "execute_command"):
+                    self._send_json_response(
+                        {"error": "console capture backend does not support command execution"},
+                        500,
+                    )
+                    return
+
+                # Best-effort compatibility across v2/v1/simple console capture APIs.
+                try:
+                    result = console_capture.execute_command(
+                        command,
+                        binary_view=binary_view,
+                        timeout=timeout,
+                    )
+                except TypeError:
+                    try:
+                        result = console_capture.execute_command(command, binary_view)
+                    except TypeError:
+                        result = console_capture.execute_command(command)
 
                 self._send_json_response(result)
 
