@@ -599,7 +599,9 @@ class SmartConsoleCapture:
             if hasattr(server.binary_ops, "current_view") and server.binary_ops.current_view:
                 _registry.register_view("server_view", server.binary_ops.current_view)
 
-    def execute_command(self, command: str, binary_view=None, timeout: float = 30.0) -> Dict[str, Any]:
+    def execute_command(
+        self, command: str, binary_view=None, timeout: float = 30.0
+    ) -> Dict[str, Any]:
         """Execute a Python command with automatic context"""
         # Update binary view if provided
         if binary_view:

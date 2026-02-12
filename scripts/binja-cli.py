@@ -34,9 +34,7 @@ class BinaryNinjaCLI(cli.Application):
         ["--request-timeout", "-t"],
         float,
         default=float(os.environ.get("BINJA_CLI_TIMEOUT", "5")),
-        help=(
-            "HTTP request timeout in seconds (default: 5; can also set BINJA_CLI_TIMEOUT)"
-        ),
+        help=("HTTP request timeout in seconds (default: 5; can also set BINJA_CLI_TIMEOUT)"),
     )
 
     def _request(self, method: str, endpoint: str, params: dict = None, data: dict = None) -> dict:
@@ -522,7 +520,9 @@ class StatusBar(cli.Application):
             return
 
         if parsed is None:
-            print(colors.yellow | "Statusbar command executed, but no structured result was returned.")
+            print(
+                colors.yellow | "Statusbar command executed, but no structured result was returned."
+            )
             if data.get("stdout"):
                 print(data["stdout"], end="")
             return
@@ -1307,7 +1307,10 @@ class Open(cli.Application):
             if (
                 isinstance(parsed, dict)
                 and isinstance(stderr_text, str)
-                and ("Traceback" in stderr_text or "Exception ignored on calling ctypes callback" in stderr_text)
+                and (
+                    "Traceback" in stderr_text
+                    or "Exception ignored on calling ctypes callback" in stderr_text
+                )
             ):
                 warnings = parsed.setdefault("warnings", [])
                 warn_msg = "python execution emitted stderr traceback; check --json stderr output"
@@ -1964,7 +1967,11 @@ class Quit(cli.Application):
         ok = bool(parsed.get("ok"))
         stuck = bool(parsed.get("state", {}).get("stuck_confirmation"))
         decision = parsed.get("policy", {}).get("resolved_decision")
-        status_line = "✓ Quit workflow completed" if ok and not stuck else "⚠ Quit workflow completed with issues"
+        status_line = (
+            "✓ Quit workflow completed"
+            if ok and not stuck
+            else "⚠ Quit workflow completed with issues"
+        )
         color = colors.green if ok and not stuck else colors.yellow
         print(color | status_line)
         print(f"  Policy Decision: {decision}")
