@@ -484,6 +484,41 @@ class Open(cli.Application):
                     pass
                 return None
 
+            def find_open_view_for_file(filepath):
+                if not filepath:
+                    return None
+                try:
+                    expected = str(Path(filepath).resolve())
+                except Exception:
+                    expected = str(filepath)
+                try:
+                    import binaryninjaui as bnui
+                except Exception:
+                    return None
+                try:
+                    contexts = list(bnui.UIContext.allContexts())
+                except Exception:
+                    return None
+                for ctx in contexts:
+                    try:
+                        tabs = list(ctx.getTabs())
+                    except Exception:
+                        continue
+                    for tab in tabs:
+                        try:
+                            vf = ctx.getViewFrameForTab(tab)
+                            if vf is None:
+                                continue
+                            bv = vf.getCurrentBinaryView()
+                            if bv is None or getattr(bv, "file", None) is None:
+                                continue
+                            observed = str(Path(bv.file.filename).resolve())
+                        except Exception:
+                            continue
+                        if observed == expected:
+                            return {"context": ctx, "tab": tab, "view": bv}
+                return None
+
             def open_with_ui_context(filepath):
                 try:
                     import binaryninjaui as bnui
@@ -705,6 +740,7 @@ class Open(cli.Application):
             globals()["is_qt_object_alive"] = is_qt_object_alive
             globals()["set_combo_value"] = set_combo_value
             globals()["get_loaded_filename"] = get_loaded_filename
+            globals()["find_open_view_for_file"] = find_open_view_for_file
             globals()["open_with_ui_context"] = open_with_ui_context
             globals()["handle_open_with_options_dialog"] = handle_open_with_options_dialog
             globals()["time"] = time
@@ -737,8 +773,18 @@ class Open(cli.Application):
                     elif not target_file:
                         result["warnings"].append("no filepath provided and no dialog to accept")
                     else:
+                        existing = find_open_view_for_file(target_file)
+                        if existing is not None:
+                            loaded_bv = existing.get("view")
+                            result["actions"].append("reuse_existing_tab_for_file")
+                            try:
+                                existing["context"].activateTab(existing["tab"])
+                                result["actions"].append("activate_existing_tab_for_file")
+                            except Exception as exc:
+                                result["warnings"].append(f"unable to activate existing tab: {exc}")
+
                         ui_open = {"ok": False, "reason": "skipped"}
-                        if app is not None:
+                        if loaded_bv is None and app is not None:
                             ui_open = open_with_ui_context(target_file)
                             if ui_open.get("ok"):
                                 result["actions"].append("ui_context_open_filename")
@@ -746,7 +792,7 @@ class Open(cli.Application):
                                 result["warnings"].append(
                                     f"ui_context_open_filename: {ui_open.get('reason')}"
                                 )
-                        if not ui_open.get("ok"):
+                        if loaded_bv is None and not ui_open.get("ok"):
                             if target_platform or target_view_type:
                                 result["warnings"].append(
                                     "no open dialog visible; --platform/--view-type were not forced (bn.load defaults used)"
@@ -801,6 +847,60 @@ class Open(cli.Application):
                     candidate_bv = globals().get("bv")
                     if candidate_bv is not None and getattr(candidate_bv, "file", None) is not None:
                         loaded_bv = candidate_bv
+
+                if loaded_bv is not None and target_platform:
+                    try:
+                        wanted_arch = bn.Architecture[target_platform]
+                    except Exception:
+                        wanted_arch = None
+                    if wanted_arch is None:
+                        result["warnings"].append(
+                            f"requested platform/arch '{target_platform}' is not registered"
+                        )
+                    else:
+                        try:
+                            current_arch_name = (
+                                loaded_bv.arch.name if loaded_bv.arch is not None else None
+                            )
+                        except Exception:
+                            current_arch_name = None
+                        if norm_text(current_arch_name) != norm_text(target_platform):
+                            try:
+                                loaded_bv.arch = wanted_arch
+                                result["actions"].append("set_loaded_view_arch")
+                            except Exception as exc:
+                                result["warnings"].append(
+                                    f"unable to set loaded view arch '{target_platform}': {exc}"
+                                )
+
+                        platform_map = {
+                            "8086": "dos-8086",
+                        }
+                        mapped_platform = platform_map.get(target_platform)
+                        if mapped_platform:
+                            try:
+                                wanted_platform = bn.Platform[mapped_platform]
+                            except Exception:
+                                wanted_platform = None
+                            if wanted_platform is None:
+                                result["warnings"].append(
+                                    f"mapped platform '{mapped_platform}' is not registered"
+                                )
+                            else:
+                                try:
+                                    cur_platform_name = (
+                                        loaded_bv.platform.name if loaded_bv.platform is not None else None
+                                    )
+                                except Exception:
+                                    cur_platform_name = None
+                                if norm_text(cur_platform_name) != norm_text(mapped_platform):
+                                    try:
+                                        loaded_bv.platform = wanted_platform
+                                        result["actions"].append("set_loaded_view_platform")
+                                    except Exception as exc:
+                                        result["warnings"].append(
+                                            f"unable to set loaded view platform '{mapped_platform}': {exc}"
+                                        )
 
                 # Ensure MCP server tracks the view when we can identify one.
                 try:
