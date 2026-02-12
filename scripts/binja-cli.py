@@ -1161,6 +1161,13 @@ class Quit(cli.Application):
         help="Delay before QApplication.quit() when --quit-app is used (ms).",
     )
 
+    exec_timeout = cli.SwitchAttr(
+        ["--exec-timeout"],
+        float,
+        default=120.0,
+        help="Console execution timeout in seconds for the quit workflow.",
+    )
+
     def main(self):
         decision_in = (self.decision or "auto").strip().lower()
         valid = {"auto", "save", "dont-save", "dont_save", "cancel"}
@@ -1392,6 +1399,40 @@ class Quit(cli.Application):
                             return button, label
                 return None, None
 
+            def dialog_priority(d):
+                cls = str(d.get("class") or "").lower()
+                title = norm_text(d.get("title"))
+                if "messagebox" in cls:
+                    return 0
+                if "dialog" in cls:
+                    return 1
+                if "modified" in title or "save" in title:
+                    return 2
+                return 9
+
+            def click_confirmation_dialog(app, decision, result):
+                dialogs_local = collect_confirmation_dialogs(app)
+                if not dialogs_local:
+                    return False
+                dialogs_local = sorted(dialogs_local, key=dialog_priority)
+                chosen_dialog = dialogs_local[0]
+                chosen_button, chosen_label = find_button_for_decision(
+                    chosen_dialog["_widget"], decision
+                )
+                if chosen_button is None:
+                    warn = f"confirmation dialog detected but no matching '{decision}' button found"
+                    if warn not in result["warnings"]:
+                        result["warnings"].append(warn)
+                    return False
+                if not chosen_button.isEnabled():
+                    warn = f"matched confirmation button '{chosen_label}' is disabled"
+                    if warn not in result["warnings"]:
+                        result["warnings"].append(warn)
+                    return False
+                chosen_button.click()
+                result["actions"].append(f"clicked_confirmation_button:{str(chosen_label)}")
+                return True
+
             def find_primary_main_window(app):
                 if app is None:
                     return None
@@ -1426,9 +1467,11 @@ class Quit(cli.Application):
                 if not best.isEnabled():
                     return False, "close_tab_action_disabled"
                 try:
-                    best.trigger()
+                    # Queue close action to avoid blocking in synchronous close handlers
+                    # that show modal save prompts.
+                    QTimer.singleShot(0, best.trigger)
                     QApplication.processEvents()
-                    return True, "close_tab_action_triggered"
+                    return True, "close_tab_action_queued"
                 except Exception as exc:
                     return False, f"close_tab_action_trigger_failed:{exc}"
 
@@ -1438,6 +1481,7 @@ class Quit(cli.Application):
             globals()["QPushButton"] = QPushButton
             globals()["QApplication"] = QApplication
             globals()["QAction"] = QAction
+            globals()["QTimer"] = QTimer
             globals()["Qt"] = Qt
             globals()["time"] = time
             globals()["collect_visible_windows"] = collect_visible_windows
@@ -1446,6 +1490,8 @@ class Quit(cli.Application):
             globals()["resolve_policy"] = resolve_policy
             globals()["collect_confirmation_dialogs"] = collect_confirmation_dialogs
             globals()["find_button_for_decision"] = find_button_for_decision
+            globals()["dialog_priority"] = dialog_priority
+            globals()["click_confirmation_dialog"] = click_confirmation_dialog
             globals()["find_primary_main_window"] = find_primary_main_window
             globals()["trigger_close_tab"] = trigger_close_tab
 
@@ -1523,6 +1569,8 @@ class Quit(cli.Application):
                             f"unable to disable quitOnLastWindowClosed before close: {exc}"
                         )
 
+                    close_requested = False
+
                     # Prefer closing only the active tab (keeps app/server alive),
                     # and fall back to closing main windows when action lookup fails.
                     if not dialogs:
@@ -1530,9 +1578,10 @@ class Quit(cli.Application):
                         close_tab_ok, close_tab_reason = trigger_close_tab(main_window)
                         if close_tab_ok:
                             result["actions"].append(close_tab_reason)
+                            close_requested = True
                         else:
                             result["warnings"].append(close_tab_reason)
-                            closed = 0
+                            queued = 0
                             for widget in app.topLevelWidgets():
                                 if not widget.isVisible():
                                     continue
@@ -1540,59 +1589,41 @@ class Quit(cli.Application):
                                 if "mainwindow" not in cls_name:
                                     continue
                                 try:
-                                    widget.close()
-                                    closed += 1
+                                    # Queue close to avoid blocking on modal confirmation.
+                                    QTimer.singleShot(0, widget.close)
+                                    queued += 1
                                 except Exception:
                                     pass
-                            result["actions"].append(f"requested_close_main_windows:{closed}")
+                            result["actions"].append(f"queued_close_main_windows:{queued}")
+                            close_requested = queued > 0
 
-                    # Re-check for modal prompts after close. If a prompt already exists,
-                    # keep it and respond without waiting for a new one.
-                    if not dialogs:
-                        deadline = time.time() + (wait_ms / 1000.0)
-                        while time.time() < deadline:
-                            app.processEvents()
-                            dialogs = collect_confirmation_dialogs(app)
-                            if dialogs:
-                                break
-                            time.sleep(0.05)
-
-                    if dialogs:
-                        chosen_button = None
-                        chosen_label = None
-                        def dialog_priority(d):
-                            cls = str(d.get("class") or "").lower()
-                            title = norm_text(d.get("title"))
-                            if "messagebox" in cls:
-                                return 0
-                            if "dialog" in cls:
-                                return 1
-                            if "modified" in title or "save" in title:
-                                return 2
-                            return 9
-
-                        dialogs = sorted(dialogs, key=dialog_priority)
-                        chosen_dialog = dialogs[0]
-                        chosen_button, chosen_label = find_button_for_decision(
-                            chosen_dialog["_widget"], resolved
-                        )
-                        if chosen_button is None:
-                            result["warnings"].append(
-                                f"confirmation dialog detected but no matching '{resolved}' button found"
-                            )
-                        elif not chosen_button.isEnabled():
-                            result["warnings"].append(
-                                f"matched confirmation button '{chosen_label}' is disabled"
-                            )
-                        else:
-                            chosen_button.click()
-                            result["actions"].append(
-                                f"clicked_confirmation_button:{str(chosen_label)}"
-                            )
-                            for _ in range(20):
+                    # Keep processing events and auto-handle confirmation prompts.
+                    # This loop is bounded by wait_ms to avoid hanging.
+                    deadline = time.time() + (wait_ms / 1000.0)
+                    clicked_count = 0
+                    quiet_cycles = 0
+                    while time.time() < deadline:
+                        app.processEvents()
+                        if click_confirmation_dialog(app, resolved, result):
+                            clicked_count += 1
+                            quiet_cycles = 0
+                            # Give Qt a short window to propagate post-click state.
+                            for _ in range(4):
                                 app.processEvents()
-                                time.sleep(0.02)
-                    else:
+                                time.sleep(0.01)
+                            continue
+
+                        dialogs = collect_confirmation_dialogs(app)
+                        if dialogs:
+                            quiet_cycles = 0
+                        else:
+                            quiet_cycles += 1
+                            if close_requested and quiet_cycles >= 5:
+                                break
+                        time.sleep(0.03)
+
+                    dialogs = collect_confirmation_dialogs(app)
+                    if clicked_count == 0 and not dialogs:
                         result["actions"].append("no_confirmation_dialog_detected_after_close")
 
             dialogs_after = collect_confirmation_dialogs(app)
@@ -1634,7 +1665,10 @@ class Quit(cli.Application):
             % json.dumps(config)
         )
 
-        data = self.parent._execute_python(script)
+        data = self.parent._execute_python(
+            script,
+            exec_timeout=max(5.0, float(self.exec_timeout or 120.0)),
+        )
 
         parsed = None
         if isinstance(data, dict):
