@@ -290,6 +290,265 @@ class Status(cli.Application):
                 print(colors.yellow | "⚠ No binary loaded")
 
 
+@BinaryNinjaCLI.subcommand("statusbar")
+class StatusBar(cli.Application):
+    """Read Binary Ninja status bar text from the active UI window"""
+
+    all_windows = cli.Flag(
+        ["--all"],
+        help="Return status text for all visible top-level windows (not just active/main).",
+    )
+
+    include_hidden = cli.Flag(
+        ["--include-hidden"],
+        help="Include hidden windows in the scan.",
+    )
+
+    exec_timeout = cli.SwitchAttr(
+        ["--exec-timeout"],
+        float,
+        default=20.0,
+        help="Console execution timeout in seconds.",
+    )
+
+    def main(self):
+        config = {
+            "all_windows": bool(self.all_windows),
+            "include_hidden": bool(self.include_hidden),
+        }
+
+        script = textwrap.dedent(
+            """
+            import json
+            from PySide6.QtWidgets import QApplication, QWidget
+
+            CONFIG = json.loads(%r)
+            include_hidden = bool(CONFIG.get("include_hidden", False))
+            include_all = bool(CONFIG.get("all_windows", False))
+            globals()["QWidget"] = QWidget
+
+            def _norm(value):
+                text = str(value or "").strip()
+                return " ".join(text.split())
+
+            globals()["_norm"] = _norm
+
+            def _scan_status(window):
+                entry = {
+                    "title": str(window.windowTitle() or ""),
+                    "class": type(window).__name__,
+                    "visible": bool(window.isVisible()),
+                    "status_text": "",
+                    "status_items": [],
+                    "status_source": "none",
+                }
+
+                status_items = []
+                seen = set()
+
+                status_bar = None
+                try:
+                    if hasattr(window, "statusBar"):
+                        status_bar = window.statusBar()
+                except Exception:
+                    status_bar = None
+
+                def add_item(raw):
+                    text = _norm(raw)
+                    if not text:
+                        return
+                    if text in seen:
+                        return
+                    seen.add(text)
+                    status_items.append(text)
+
+                if status_bar is not None:
+                    try:
+                        add_item(status_bar.currentMessage())
+                    except Exception:
+                        pass
+
+                    try:
+                        for child in status_bar.findChildren(QWidget):
+                            cls = type(child).__name__.lower()
+                            if ("label" in cls) and hasattr(child, "text"):
+                                add_item(child.text())
+                    except Exception:
+                        pass
+
+                    try:
+                        for child in status_bar.findChildren(QWidget):
+                            cls = type(child).__name__.lower()
+                            if ("progress" in cls) and hasattr(child, "format"):
+                                fmt = _norm(child.format())
+                                if fmt:
+                                    add_item(fmt)
+                                try:
+                                    add_item(f"{int(child.value())}/{int(child.maximum())}")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
+                # Some Binary Ninja builds render status text in bottom-row labels
+                # instead of QStatusBar.currentMessage(). Fall back to visible labels
+                # at the bottom-most Y coordinate of the active window.
+                if not status_items:
+                    bottom_candidates = []
+                    try:
+                        for child in window.findChildren(QWidget):
+                            if not child.isVisible():
+                                continue
+                            cls = type(child).__name__.lower()
+                            if ("label" not in cls) or (not hasattr(child, "text")):
+                                continue
+                            text = _norm(child.text())
+                            if not text:
+                                continue
+                            try:
+                                pos = child.mapToGlobal(child.rect().topLeft())
+                                y = int(pos.y())
+                                x = int(pos.x())
+                            except Exception:
+                                y = 0
+                                x = 0
+                            bottom_candidates.append((y, x, text))
+                    except Exception:
+                        bottom_candidates = []
+
+                    if bottom_candidates:
+                        max_y = max(y for y, _x, _t in bottom_candidates)
+                        row = [(x, t) for y, x, t in bottom_candidates if y >= (max_y - 2)]
+                        for _x, t in sorted(row, key=lambda it: it[0]):
+                            add_item(t)
+                        if status_items:
+                            entry["status_source"] = "bottom_row_labels"
+
+                if status_items and entry["status_source"] == "none":
+                    entry["status_source"] = "status_bar"
+
+                entry["status_items"] = status_items
+                entry["status_text"] = " | ".join(status_items)
+                return entry
+
+            result = {
+                "ok": True,
+                "active_window_title": None,
+                "status_source": "",
+                "status_text": "",
+                "status_items": [],
+                "windows": [],
+                "warnings": [],
+                "errors": [],
+            }
+
+            app = QApplication.instance()
+            if app is None:
+                result["ok"] = False
+                result["errors"].append("QApplication instance is not available")
+                print(json.dumps(result, sort_keys=True))
+                raise SystemExit(0)
+
+            active = app.activeWindow()
+            if active is not None:
+                result["active_window_title"] = str(active.windowTitle() or "")
+
+            scanned = []
+            for widget in app.topLevelWidgets():
+                try:
+                    visible = bool(widget.isVisible())
+                except Exception:
+                    visible = False
+                if (not include_hidden) and (not visible):
+                    continue
+                cls_norm = type(widget).__name__.lower()
+                if (not include_all) and ("mainwindow" not in cls_norm):
+                    continue
+                scanned.append(_scan_status(widget))
+
+            result["windows"] = scanned
+
+            selected = None
+            if active is not None:
+                for entry in scanned:
+                    if entry["title"] == str(active.windowTitle() or ""):
+                        selected = entry
+                        break
+            if selected is None and scanned:
+                selected = scanned[0]
+
+            if selected is not None:
+                result["status_source"] = selected.get("status_source", "")
+                result["status_text"] = selected.get("status_text", "")
+                result["status_items"] = selected.get("status_items", [])
+
+            if not result["status_items"]:
+                result["warnings"].append("no status bar text found")
+
+            print(json.dumps(result, sort_keys=True))
+            """
+            % json.dumps(config)
+        )
+
+        data = self.parent._execute_python(
+            script,
+            exec_timeout=max(5.0, float(self.exec_timeout or 20.0)),
+        )
+
+        parsed = None
+        if isinstance(data, dict):
+            parsed = self.parent._extract_last_json_line(data.get("stdout", ""))
+            if parsed is None and isinstance(data.get("return_value"), dict):
+                parsed = data["return_value"]
+
+        if self.parent.json_output:
+            if parsed is not None and isinstance(data, dict):
+                data = dict(data)
+                data["statusbar_result"] = parsed
+            self.parent._output(data)
+            return
+
+        if not data.get("success"):
+            error = data.get("error", {})
+            if isinstance(error, dict):
+                print(
+                    colors.red
+                    | f"Error: {error.get('type', 'Unknown')}: {error.get('message', 'Unknown error')}"
+                )
+            else:
+                print(colors.red | f"Error: {error}")
+            if data.get("stderr"):
+                print(colors.red | data["stderr"], end="")
+            return
+
+        if parsed is None:
+            print(colors.yellow | "Statusbar command executed, but no structured result was returned.")
+            if data.get("stdout"):
+                print(data["stdout"], end="")
+            return
+
+        print("Active Window:", parsed.get("active_window_title"))
+        print("Status Source:", parsed.get("status_source", ""))
+        print("Status Text:", parsed.get("status_text", ""))
+        items = parsed.get("status_items", [])
+        if items:
+            print("Status Items:")
+            for item in items:
+                print(f"  - {item}")
+
+        warnings = parsed.get("warnings", [])
+        if warnings:
+            print(colors.yellow | "Warnings:")
+            for warning in warnings:
+                print(colors.yellow | f"  - {warning}")
+
+        errors = parsed.get("errors", [])
+        if errors:
+            print(colors.red | "Errors:")
+            for err in errors:
+                print(colors.red | f"  - {err}")
+
+
 @BinaryNinjaCLI.subcommand("open")
 class Open(cli.Application):
     """Open a file and auto-resolve Binary Ninja's "Open with Options" dialog.
