@@ -7,8 +7,10 @@ import subprocess
 import json
 import sys
 
+DEFAULT_ENDPOINT_API_VERSION = 1
 
-def test_cli_python_command(venv_path="venv"):
+
+def test_cli_python_command():
     """Test the CLI python command"""
     print("Testing CLI Python Command")
     print("=" * 50)
@@ -26,7 +28,7 @@ def test_cli_python_command(venv_path="venv"):
         },
         {
             "name": "Binary view check",
-            "command": ["python", "bv is not None"],
+            "command": ["python", "isinstance(bv is not None, bool)"],
             "check": lambda r: "True" in r or "→ True" in r,
         },
         {
@@ -41,7 +43,7 @@ def test_cli_python_command(venv_path="venv"):
 
     for test in tests:
         print(f"\nTest: {test['name']}")
-        cmd = [f"{venv_path}/bin/python", "cli.py"] + test["command"]
+        cmd = ["uv", "run", "python", "scripts/binja-cli.py"] + test["command"]
         print(f"Command: {' '.join(cmd)}")
 
         try:
@@ -115,12 +117,24 @@ def test_mcp_bridge():
 
             response = requests.post(
                 "http://localhost:9009/console/execute",
-                json={"command": test["command"]},
+                json={"command": test["command"], "_api_version": DEFAULT_ENDPOINT_API_VERSION},
+                headers={"X-Binja-MCP-Api-Version": str(DEFAULT_ENDPOINT_API_VERSION)},
                 timeout=5,
             )
 
             if response.status_code == 200:
                 data = response.json()
+                if int(response.headers.get("X-Binja-MCP-Api-Version", -1)) != DEFAULT_ENDPOINT_API_VERSION:
+                    print(
+                        "❌ Endpoint API version mismatch (header): "
+                        f"{response.headers.get('X-Binja-MCP-Api-Version')}"
+                    )
+                    failed += 1
+                    continue
+                if int(data.get("_api_version", -1)) != DEFAULT_ENDPOINT_API_VERSION:
+                    print(f"❌ Endpoint API version mismatch (body): {data.get('_api_version')}")
+                    failed += 1
+                    continue
                 if test["check"](data):
                     print("✅ Passed")
                     print(f"   Success: {data.get('success')}")
