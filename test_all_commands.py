@@ -6,11 +6,19 @@ Automated test script for all Binary Ninja MCP commands
 import json
 import subprocess
 from typing import Dict, Any
+import urllib.parse
+
+import requests
 
 # Configuration
-CLI_PATH = "./cli.py"
+CLI_PATH = "scripts/binja-cli.py"
 BRIDGE_URL = "http://localhost:9009"
-VENV_ACTIVATE = "source venv/bin/activate && "
+DEFAULT_ENDPOINT_API_VERSION = 1
+ENDPOINT_API_VERSION_OVERRIDES = {
+    "/ui/open": 2,
+    "/ui/quit": 2,
+    "/ui/statusbar": 2,
+}
 
 
 class CommandTester:
@@ -21,7 +29,7 @@ class CommandTester:
 
     def run_cli(self, command: str) -> Dict[str, Any]:
         """Run CLI command and return result"""
-        full_cmd = f"{VENV_ACTIVATE}python {CLI_PATH} --json {command}"
+        full_cmd = f"uv run python {CLI_PATH} --json {command}"
         try:
             result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True)
             if result.returncode == 0:
@@ -31,20 +39,58 @@ class CommandTester:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    @staticmethod
+    def _expected_api_version(endpoint: str) -> int:
+        path = str(endpoint or "").split("?", 1)[0]
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return ENDPOINT_API_VERSION_OVERRIDES.get(path, DEFAULT_ENDPOINT_API_VERSION)
+
     def run_curl(self, endpoint: str, method: str = "GET", data: Dict = None) -> Dict[str, Any]:
         """Run curl command to test bridge-only endpoints"""
-        if method == "GET":
-            cmd = f'{VENV_ACTIVATE}curl -s "{BRIDGE_URL}/{endpoint}"'
-        else:
-            json_data = json.dumps(data) if data else "{}"
-            cmd = f'{VENV_ACTIVATE}curl -s -X {method} "{BRIDGE_URL}/{endpoint}" -H "Content-Type: application/json" -d \'{json_data}\''
-
+        path, _, query = endpoint.partition("?")
+        url = f"{BRIDGE_URL}/{path}"
+        params = dict(urllib.parse.parse_qsl(query)) if query else {}
+        api_version = self._expected_api_version(endpoint)
+        params["_api_version"] = api_version
+        headers = {"X-Binja-MCP-Api-Version": str(api_version)}
         try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            if result.stdout:
-                return {"success": True, "output": json.loads(result.stdout)}
+            if method == "GET":
+                response = requests.get(url, params=params, headers=headers, timeout=10)
             else:
-                return {"success": False, "error": "Empty response"}
+                payload = dict(data or {})
+                payload["_api_version"] = api_version
+                response = requests.request(
+                    method,
+                    url,
+                    params=params,
+                    headers=headers,
+                    json=payload,
+                    timeout=10,
+                )
+
+            response.raise_for_status()
+            response_data = response.json()
+
+            header_version = int(response.headers.get("X-Binja-MCP-Api-Version", -1))
+            if header_version != api_version:
+                return {
+                    "success": False,
+                    "error": (
+                        "Version mismatch in response header: "
+                        f"client={api_version} server={header_version}"
+                    ),
+                }
+            body_version = int(response_data.get("_api_version", -1))
+            if body_version != api_version:
+                return {
+                    "success": False,
+                    "error": (
+                        "Version mismatch in response body: "
+                        f"client={api_version} server={body_version}"
+                    ),
+                }
+            return {"success": True, "output": response_data}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

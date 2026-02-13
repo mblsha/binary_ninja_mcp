@@ -8,6 +8,8 @@ import json
 import requests
 import sys
 
+DEFAULT_ENDPOINT_API_VERSION = 1
+
 
 def test_executor(base_url="http://localhost:9009"):
     """Test various Python execution scenarios"""
@@ -104,8 +106,12 @@ bn.log_debug("Debug information")
 
         try:
             # Execute the code
+            api_version = DEFAULT_ENDPOINT_API_VERSION
             response = requests.post(
-                f"{base_url}/console/execute", json={"command": test["code"]}, timeout=5
+                f"{base_url}/console/execute",
+                json={"command": test["code"], "_api_version": api_version},
+                headers={"X-Binja-MCP-Api-Version": str(api_version)},
+                timeout=5,
             )
 
             if response.status_code != 200:
@@ -114,6 +120,35 @@ bn.log_debug("Debug information")
                 continue
 
             result = response.json()
+            header_raw = response.headers.get("X-Binja-MCP-Api-Version")
+            try:
+                header_version = int(header_raw)
+            except (TypeError, ValueError):
+                print(f"  ❌ Invalid response version header: {header_raw}")
+                failed += 1
+                continue
+            if header_version != api_version:
+                print(
+                    "  ❌ Endpoint API version mismatch: "
+                    f"client={api_version}, server_header={header_version}"
+                )
+                failed += 1
+                continue
+
+            body_raw = result.get("_api_version")
+            try:
+                body_version = int(body_raw)
+            except (TypeError, ValueError):
+                print(f"  ❌ Invalid response body _api_version: {body_raw}")
+                failed += 1
+                continue
+            if body_version != api_version:
+                print(
+                    "  ❌ Endpoint API version mismatch: "
+                    f"client={api_version}, server_body={body_version}"
+                )
+                failed += 1
+                continue
 
             # Check expectations
             success = True

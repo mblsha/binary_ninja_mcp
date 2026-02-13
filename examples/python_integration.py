@@ -7,6 +7,22 @@ Demonstrates integration patterns and result processing
 import requests
 from typing import Any, Dict, List
 
+DEFAULT_ENDPOINT_API_VERSION = 1
+ENDPOINT_API_VERSION_OVERRIDES = {
+    "/ui/open": 2,
+    "/ui/quit": 2,
+    "/ui/statusbar": 2,
+}
+
+
+def _expected_api_version(endpoint: str) -> int:
+    path = str(endpoint or "").split("?", 1)[0].strip()
+    if not path:
+        path = "/"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return ENDPOINT_API_VERSION_OVERRIDES.get(path, DEFAULT_ENDPOINT_API_VERSION)
+
 
 class BinaryNinjaMCP:
     """Client for Binary Ninja MCP with Python execution"""
@@ -17,11 +33,40 @@ class BinaryNinjaMCP:
 
     def execute_python(self, code: str) -> Dict[str, Any]:
         """Execute Python code in Binary Ninja context"""
+        endpoint = "/console/execute"
+        api_version = _expected_api_version(endpoint)
         response = self.session.post(
-            f"{self.base_url}/console/execute", json={"command": code}, timeout=30
+            f"{self.base_url.rstrip('/')}{endpoint}",
+            json={"command": code, "_api_version": api_version},
+            headers={"X-Binja-MCP-Api-Version": str(api_version)},
+            timeout=30,
         )
         response.raise_for_status()
-        return response.json()
+        payload = response.json()
+
+        header_raw = response.headers.get("X-Binja-MCP-Api-Version")
+        try:
+            header_version = int(header_raw)
+        except (TypeError, ValueError):
+            raise RuntimeError(
+                f"invalid X-Binja-MCP-Api-Version header for /console/execute: {header_raw}"
+            )
+        if header_version != api_version:
+            raise RuntimeError(
+                f"endpoint API version mismatch: client={api_version}, server_header={header_raw}"
+            )
+        try:
+            body_version = int(payload.get("_api_version"))
+        except (TypeError, ValueError):
+            raise RuntimeError(
+                "invalid _api_version field in /console/execute response: "
+                f"{payload.get('_api_version')}"
+            )
+        if body_version != api_version:
+            raise RuntimeError(
+                f"endpoint API version mismatch: client={api_version}, server_body={payload.get('_api_version')}"
+            )
+        return payload
 
     def get_functions(self) -> List[Dict[str, Any]]:
         """Get all functions using Python execution"""
