@@ -6,23 +6,104 @@ from mcp.server.fastmcp import FastMCP
 
 binja_server_url = "http://localhost:9009"
 mcp = FastMCP("binja-mcp")
+DEFAULT_ENDPOINT_API_VERSION = 1
+ENDPOINT_API_VERSION_OVERRIDES = {
+    "/ui/open": 2,
+    "/ui/quit": 2,
+    "/ui/statusbar": 2,
+}
+
+
+def _normalize_endpoint_path(endpoint: str) -> str:
+    path = str(endpoint or "").strip()
+    if not path:
+        return "/"
+    if "?" in path:
+        path = path.split("?", 1)[0]
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return path
+
+
+def _expected_api_version(endpoint: str) -> int:
+    endpoint_path = _normalize_endpoint_path(endpoint)
+    return ENDPOINT_API_VERSION_OVERRIDES.get(endpoint_path, DEFAULT_ENDPOINT_API_VERSION)
+
+
+def _request_headers(endpoint: str) -> dict[str, str]:
+    return {"X-Binja-MCP-Api-Version": str(_expected_api_version(endpoint))}
+
+
+def _request_params(endpoint: str, params: dict | None = None) -> dict:
+    out = dict(params or {})
+    out["_api_version"] = _expected_api_version(endpoint)
+    return out
+
+
+def _validate_versioned_response(endpoint: str, response: requests.Response) -> tuple[bool, str]:
+    endpoint_path = _normalize_endpoint_path(endpoint)
+    expected = _expected_api_version(endpoint)
+
+    header_raw = response.headers.get("X-Binja-MCP-Api-Version")
+    if header_raw is None:
+        return False, f"missing X-Binja-MCP-Api-Version response header for {endpoint_path}"
+    try:
+        header_version = int(header_raw)
+    except (TypeError, ValueError):
+        return False, f"invalid X-Binja-MCP-Api-Version header '{header_raw}' for {endpoint_path}"
+    if header_version != expected:
+        return (
+            False,
+            (
+                f"endpoint API version mismatch for {endpoint_path}: "
+                f"client={expected}, server_header={header_version}"
+            ),
+        )
+
+    try:
+        body = response.json()
+    except ValueError:
+        return False, f"non-JSON response for {endpoint_path}; cannot validate _api_version"
+
+    if not isinstance(body, dict):
+        return False, f"invalid JSON response type for {endpoint_path}; expected object"
+
+    body_raw = body.get("_api_version")
+    if body_raw is None:
+        return False, f"missing _api_version response field for {endpoint_path}"
+    try:
+        body_version = int(body_raw)
+    except (TypeError, ValueError):
+        return False, f"invalid _api_version response field '{body_raw}' for {endpoint_path}"
+    if body_version != expected:
+        return (
+            False,
+            (
+                f"endpoint API version mismatch for {endpoint_path}: "
+                f"client={expected}, server_body={body_version}"
+            ),
+        )
+
+    return True, ""
 
 
 def safe_get(endpoint: str, params: dict = None) -> list:
     """
     Perform a GET request. If 'params' is given, we convert it to a query string.
     """
-    if params is None:
-        params = {}
-    qs = [f"{k}={v}" for k, v in params.items()]
-    query_string = "&".join(qs)
     url = f"{binja_server_url}/{endpoint}"
-    if query_string:
-        url += "?" + query_string
 
     try:
-        response = requests.get(url, timeout=5)
+        response = requests.get(
+            url,
+            params=_request_params(endpoint, params),
+            headers=_request_headers(endpoint),
+            timeout=5,
+        )
         response.encoding = "utf-8"
+        ok, msg = _validate_versioned_response(endpoint, response)
+        if not ok:
+            return [f"Request failed: {msg}"]
         if response.ok:
             return response.text.splitlines()
         else:
@@ -35,17 +116,19 @@ def safe_get_json(endpoint: str, params: dict = None) -> str:
     """
     Perform a GET request and return the raw response text (for JSON endpoints).
     """
-    if params is None:
-        params = {}
-    qs = [f"{k}={v}" for k, v in params.items()]
-    query_string = "&".join(qs)
     url = f"{binja_server_url}/{endpoint}"
-    if query_string:
-        url += "?" + query_string
 
     try:
-        response = requests.get(url, timeout=5)
+        response = requests.get(
+            url,
+            params=_request_params(endpoint, params),
+            headers=_request_headers(endpoint),
+            timeout=5,
+        )
         response.encoding = "utf-8"
+        ok, msg = _validate_versioned_response(endpoint, response)
+        if not ok:
+            return f"Request failed: {msg}"
         if response.ok:
             return response.text.strip()
         else:
@@ -57,12 +140,26 @@ def safe_get_json(endpoint: str, params: dict = None) -> str:
 def safe_post(endpoint: str, data: dict | str) -> str:
     try:
         if isinstance(data, dict):
-            response = requests.post(f"{binja_server_url}/{endpoint}", json=data, timeout=5)
+            payload = dict(data)
+            payload["_api_version"] = _expected_api_version(endpoint)
+            response = requests.post(
+                f"{binja_server_url}/{endpoint}",
+                json=payload,
+                headers=_request_headers(endpoint),
+                timeout=5,
+            )
         else:
             response = requests.post(
-                f"{binja_server_url}/{endpoint}", data=data.encode("utf-8"), timeout=5
+                f"{binja_server_url}/{endpoint}",
+                params=_request_params(endpoint, {}),
+                data=data.encode("utf-8"),
+                headers=_request_headers(endpoint),
+                timeout=5,
             )
         response.encoding = "utf-8"
+        ok, msg = _validate_versioned_response(endpoint, response)
+        if not ok:
+            return f"Request failed: {msg}"
         if response.ok:
             return response.text.strip()
         else:

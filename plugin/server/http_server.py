@@ -11,6 +11,13 @@ from ..core.config import Config
 from ..api.endpoints import BinaryNinjaEndpoints
 from ..utils.string_utils import parse_int_or_default
 
+DEFAULT_ENDPOINT_API_VERSION = 1
+ENDPOINT_API_VERSION_OVERRIDES = {
+    "/ui/open": 2,
+    "/ui/quit": 2,
+    "/ui/statusbar": 2,
+}
+
 try:
     from ..core.log_capture import get_log_capture
 except Exception:
@@ -103,11 +110,23 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status_code)
         self.send_header("Content-Type", content_type)
         self.send_header("Access-Control-Allow-Origin", "*")
+        path = urllib.parse.urlparse(self.path).path
+        version = self._expected_api_version(path)
+        self.send_header("X-Binja-MCP-Api-Version", str(version))
+        self.send_header("X-Binja-MCP-Endpoint", path)
         self.end_headers()
 
     def _send_json_response(self, data: Dict[str, Any], status_code: int = 200):
         self._set_headers(status_code=status_code)
-        self.wfile.write(json.dumps(data).encode("utf-8"))
+        path = urllib.parse.urlparse(self.path).path
+        version = self._expected_api_version(path)
+        if isinstance(data, dict):
+            payload = dict(data)
+            payload.setdefault("_endpoint", path)
+            payload.setdefault("_api_version", version)
+        else:
+            payload = data
+        self.wfile.write(json.dumps(payload).encode("utf-8"))
 
     def _parse_query_params(self) -> Dict[str, str]:
         parsed_path = urllib.parse.urlparse(self.path)
@@ -154,18 +173,93 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         if "text/plain" in content_type.lower() or not content_type:
             return {"name": post_data.strip()}
 
-        # Try all formats as fallback
-        try:
-            return json.loads(post_data)
-        except json.JSONDecodeError:
-            try:
-                parsed = dict(urllib.parse.parse_qsl(post_data))
-                if parsed:
-                    return parsed
-            except (ValueError, TypeError):
-                pass
+    @staticmethod
+    def _as_list(value: Any) -> list:
+        if isinstance(value, list):
+            return value
+        return []
 
-            return {"name": post_data.strip()}
+    @staticmethod
+    def _as_dict(value: Any) -> dict:
+        if isinstance(value, dict):
+            return value
+        return {}
+
+    @staticmethod
+    def _normalize_endpoint_path(path: str) -> str:
+        raw = str(path or "").strip()
+        if not raw:
+            return "/"
+        if "?" in raw:
+            raw = raw.split("?", 1)[0]
+        if not raw.startswith("/"):
+            raw = f"/{raw}"
+        return raw
+
+    def _expected_api_version(self, path: str) -> int:
+        endpoint_path = self._normalize_endpoint_path(path)
+        return ENDPOINT_API_VERSION_OVERRIDES.get(endpoint_path, DEFAULT_ENDPOINT_API_VERSION)
+
+    def _validate_endpoint_version(self, path: str, params: Optional[Dict[str, Any]]) -> bool:
+        endpoint_path = self._normalize_endpoint_path(path)
+        expected = self._expected_api_version(endpoint_path)
+
+        received_raw = None
+        if isinstance(params, dict):
+            received_raw = params.get("_api_version")
+        if received_raw is None:
+            received_raw = self.headers.get("X-Binja-MCP-Api-Version")
+        if received_raw is None:
+            self._send_json_response(
+                {
+                    "error": "Missing endpoint API version",
+                    "endpoint": endpoint_path,
+                    "expected_api_version": expected,
+                    "help": "Include _api_version or X-Binja-MCP-Api-Version in requests.",
+                },
+                400,
+            )
+            return False
+
+        try:
+            received = int(received_raw)
+        except (TypeError, ValueError):
+            self._send_json_response(
+                {
+                    "error": "Invalid endpoint API version",
+                    "endpoint": endpoint_path,
+                    "expected_api_version": expected,
+                    "received_api_version": received_raw,
+                },
+                400,
+            )
+            return False
+
+        if received != expected:
+            self._send_json_response(
+                {
+                    "error": "Endpoint API version mismatch",
+                    "endpoint": endpoint_path,
+                    "expected_api_version": expected,
+                    "received_api_version": received,
+                },
+                409,
+            )
+            return False
+        return True
+
+    def _normalize_ui_contract(self, endpoint_path: str, raw_result: Any) -> Dict[str, Any]:
+        raw = raw_result if isinstance(raw_result, dict) else {"ok": False, "errors": [str(raw_result)]}
+        return {
+            "ok": bool(raw.get("ok", not bool(raw.get("errors")))),
+            "schema_version": 1,
+            "endpoint": endpoint_path,
+            "actions": self._as_list(raw.get("actions")),
+            "warnings": self._as_list(raw.get("warnings")),
+            "errors": self._as_list(raw.get("errors")),
+            "state": self._as_dict(raw.get("state")),
+            "result": raw,
+        }
 
     @staticmethod
     def _parse_bool(value: Any, default: bool = False) -> bool:
@@ -191,7 +285,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _maybe_refresh_current_view(self, params: Optional[Dict[str, Any]] = None):
+    def _maybe_refresh_current_view(
+        self, params: Optional[Dict[str, Any]] = None, clear_if_missing: bool = False
+    ):
         """Best-effort refresh of current BinaryView for multi-tab UI workflows.
 
         - If `filename` (or `file`) is provided, attempt to select a previously-seen view.
@@ -214,13 +310,45 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
         try:
             import binaryninjaui  # type: ignore
+            if not hasattr(binaryninjaui, "UIContext"):
+                return
 
-            if hasattr(binaryninjaui, "UIContext") and hasattr(
-                binaryninjaui.UIContext, "currentBinaryView"
-            ):
-                view = binaryninjaui.UIContext.currentBinaryView()
-                if view:
-                    self.binary_ops.current_view = view
+            tab_views = []
+            try:
+                contexts = list(binaryninjaui.UIContext.allContexts())
+            except Exception:
+                contexts = []
+
+            for ctx in contexts:
+                try:
+                    tabs = list(ctx.getTabs())
+                except Exception:
+                    tabs = []
+                for tab in tabs:
+                    try:
+                        view_frame = ctx.getViewFrameForTab(tab)
+                        if view_frame is None:
+                            continue
+                        view = view_frame.getCurrentBinaryView()
+                        if view is not None:
+                            tab_views.append(view)
+                    except Exception:
+                        continue
+
+            if tab_views:
+                current_view = None
+                if hasattr(binaryninjaui.UIContext, "currentBinaryView"):
+                    try:
+                        candidate = binaryninjaui.UIContext.currentBinaryView()
+                        if candidate in tab_views:
+                            current_view = candidate
+                    except Exception:
+                        current_view = None
+                if current_view is None:
+                    current_view = tab_views[0]
+                self.binary_ops.current_view = current_view
+            elif clear_if_missing:
+                self.binary_ops.current_view = None
         except Exception:
             # UI not available (headless) or API mismatch; ignore.
             pass
@@ -230,8 +358,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             # Endpoints that don't require a binary to be loaded
             no_binary_required = ["/status", "/logs", "/console"]
             params = self._parse_query_params()
-            self._maybe_refresh_current_view(params)
             path = urllib.parse.urlparse(self.path).path
+            if not self._validate_endpoint_version(path, params):
+                return
+            self._maybe_refresh_current_view(params, clear_if_missing=(path == "/status"))
 
             # For most endpoints, check if binary is loaded
             if not any(path.startswith(prefix) for prefix in no_binary_required):
@@ -984,6 +1114,8 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             path = urllib.parse.urlparse(self.path).path
 
             params = self._parse_post_params()
+            if not self._validate_endpoint_version(path, params):
+                return
             self._maybe_refresh_current_view(params)
 
             # For most endpoints, check if binary is loaded
@@ -1413,28 +1545,30 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             elif path == "/ui/statusbar":
                 from ..automation.statusbar import read_statusbar
 
-                result = read_statusbar(
+                raw_result = read_statusbar(
                     all_windows=self._parse_bool(params.get("all_windows"), False),
                     include_hidden=self._parse_bool(params.get("include_hidden"), False),
                 )
+                result = self._normalize_ui_contract(path, raw_result)
                 self._send_json_response(result)
 
             elif path == "/ui/open":
                 from ..automation.open_file import open_file_workflow
 
-                result = open_file_workflow(
+                raw_result = open_file_workflow(
                     filepath=str(params.get("filepath") or ""),
                     platform=str(params.get("platform") or ""),
                     view_type=str(params.get("view_type") or ""),
                     click_open=self._parse_bool(params.get("click_open"), True),
                     inspect_only=self._parse_bool(params.get("inspect_only"), False),
                 )
+                result = self._normalize_ui_contract(path, raw_result)
                 self._send_json_response(result)
 
             elif path == "/ui/quit":
                 from ..automation.quit_app import quit_workflow
 
-                result = quit_workflow(
+                raw_result = quit_workflow(
                     decision=str(params.get("decision") or "auto"),
                     mark_dirty=self._parse_bool(params.get("mark_dirty"), False),
                     inspect_only=self._parse_bool(params.get("inspect_only"), False),
@@ -1442,6 +1576,14 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     quit_app=self._parse_bool(params.get("quit_app"), False),
                     quit_delay_ms=parse_int_or_default(params.get("quit_delay_ms"), 300),
                 )
+                self._maybe_refresh_current_view(clear_if_missing=True)
+                if self.binary_ops and self.binary_ops.current_view is None:
+                    actions = self._as_list(raw_result.get("actions")) if isinstance(raw_result, dict) else []
+                    if "cleared_current_view" not in actions:
+                        actions.append("cleared_current_view")
+                    if isinstance(raw_result, dict):
+                        raw_result["actions"] = actions
+                result = self._normalize_ui_contract(path, raw_result)
                 self._send_json_response(result)
 
             else:
