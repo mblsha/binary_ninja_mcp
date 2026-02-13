@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional
 import binaryninja as bn
 import threading
 from ..core.binary_operations import BinaryOperations
+from ..core.console_capture_adapter import ConsoleCaptureAdapter
 from ..core.config import Config
 from ..api.endpoints import BinaryNinjaEndpoints
 from ..utils.string_utils import parse_int_or_default
@@ -165,6 +166,23 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 pass
 
             return {"name": post_data.strip()}
+
+    @staticmethod
+    def _parse_bool(value: Any, default: bool = False) -> bool:
+        """Parse booleans from JSON/form-style values."""
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        return default
 
     def _check_binary_loaded(self):
         """Check if a binary is loaded and return appropriate error response if not"""
@@ -962,7 +980,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             # Endpoints that don't require a binary to be loaded
-            no_binary_required = ["/logs", "/console"]
+            no_binary_required = ["/logs", "/console", "/ui"]
             path = urllib.parse.urlparse(self.path).path
 
             params = self._parse_post_params()
@@ -1372,6 +1390,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     timeout = 3600.0
 
                 console_capture = get_console_capture()
+                console_adapter = ConsoleCaptureAdapter(console_capture)
 
                 # Pass server context for binary view access if using V2
                 if hasattr(console_capture, "set_server_context"):
@@ -1379,26 +1398,50 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
                 # Pass binary view directly if available
                 binary_view = self.binary_ops.current_view if self.binary_ops else None
-                if not hasattr(console_capture, "execute_command"):
-                    self._send_json_response(
-                        {"error": "console capture backend does not support command execution"},
-                        500,
-                    )
-                    return
-
-                # Best-effort compatibility across v2/v1/simple console capture APIs.
                 try:
-                    result = console_capture.execute_command(
+                    result = console_adapter.execute_command(
                         command,
                         binary_view=binary_view,
                         timeout=timeout,
                     )
-                except TypeError:
-                    try:
-                        result = console_capture.execute_command(command, binary_view)
-                    except TypeError:
-                        result = console_capture.execute_command(command)
+                except RuntimeError as exc:
+                    self._send_json_response({"error": str(exc)}, 500)
+                    return
 
+                self._send_json_response(result)
+
+            elif path == "/ui/statusbar":
+                from ..automation.statusbar import read_statusbar
+
+                result = read_statusbar(
+                    all_windows=self._parse_bool(params.get("all_windows"), False),
+                    include_hidden=self._parse_bool(params.get("include_hidden"), False),
+                )
+                self._send_json_response(result)
+
+            elif path == "/ui/open":
+                from ..automation.open_file import open_file_workflow
+
+                result = open_file_workflow(
+                    filepath=str(params.get("filepath") or ""),
+                    platform=str(params.get("platform") or ""),
+                    view_type=str(params.get("view_type") or ""),
+                    click_open=self._parse_bool(params.get("click_open"), True),
+                    inspect_only=self._parse_bool(params.get("inspect_only"), False),
+                )
+                self._send_json_response(result)
+
+            elif path == "/ui/quit":
+                from ..automation.quit_app import quit_workflow
+
+                result = quit_workflow(
+                    decision=str(params.get("decision") or "auto"),
+                    mark_dirty=self._parse_bool(params.get("mark_dirty"), False),
+                    inspect_only=self._parse_bool(params.get("inspect_only"), False),
+                    wait_ms=parse_int_or_default(params.get("wait_ms"), 2000),
+                    quit_app=self._parse_bool(params.get("quit_app"), False),
+                    quit_delay_ms=parse_int_or_default(params.get("quit_delay_ms"), 300),
+                )
                 self._send_json_response(result)
 
             else:

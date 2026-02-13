@@ -26,6 +26,7 @@ class PythonExecutor:
         self.binary_view = binary_view
         self.execution_history = deque(maxlen=1000)
         self.globals_dict = self._create_globals()
+        self._base_global_names = set(self.globals_dict.keys())
         self.locals_dict = {}
         self._lock = threading.Lock()
 
@@ -116,6 +117,29 @@ class PythonExecutor:
                 # Update globals with current binary view
                 if self.binary_view:
                     self.globals_dict["bv"] = self.binary_view
+                # Use one shared exec namespace to avoid split globals/locals surprises.
+                protected_names = {
+                    "bn",
+                    "binaryninja",
+                    "bv",
+                    "current_view",
+                    "functions",
+                    "entry_point",
+                    "entry_function",
+                    "BinaryView",
+                    "Function",
+                    "Symbol",
+                    "Type",
+                    "log_debug",
+                    "log_info",
+                    "log_warn",
+                    "log_error",
+                    "help",
+                }
+                for name, value in self.locals_dict.items():
+                    if name in protected_names:
+                        continue
+                    self.globals_dict[name] = value
 
                 # Parse code to check if it's an expression or statements
                 tree = ast.parse(code, mode="exec")
@@ -140,11 +164,11 @@ class PythonExecutor:
                 with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
                     # Execute statements first
                     if stmt_code:
-                        exec(stmt_code, self.globals_dict, self.locals_dict)
+                        exec(stmt_code, self.globals_dict, self.globals_dict)
 
                     # Then evaluate expression if present
                     if expr_code:
-                        value = eval(expr_code, self.globals_dict, self.locals_dict)
+                        value = eval(expr_code, self.globals_dict, self.globals_dict)
                         if value is not None:
                             result["return_value"] = self._serialize_value(value)
                             result["return_type"] = type(value).__name__
@@ -152,8 +176,8 @@ class PythonExecutor:
                             print(repr(value))
 
                     # Check for special _result variable
-                    elif "_result" in self.locals_dict:
-                        value = self.locals_dict["_result"]
+                    elif "_result" in self.globals_dict:
+                        value = self.globals_dict["_result"]
                         result["return_value"] = self._serialize_value(value)
                         result["return_type"] = type(value).__name__
 
@@ -169,6 +193,11 @@ class PythonExecutor:
                 result["stderr"] += traceback.format_exc()
 
             finally:
+                self.locals_dict = {
+                    name: value
+                    for name, value in self.globals_dict.items()
+                    if name not in self._base_global_names
+                }
                 # Always capture output
                 result["stdout"] = stdout_capture.getvalue()
                 result["stderr"] += stderr_capture.getvalue()
@@ -269,10 +298,29 @@ class PythonExecutor:
     def _capture_variables(self) -> Dict[str, Any]:
         """Capture interesting variables from execution context"""
         captured = {}
+        skip_names = {
+            "bn",
+            "binaryninja",
+            "bv",
+            "current_view",
+            "functions",
+            "entry_point",
+            "entry_function",
+            "BinaryView",
+            "Function",
+            "Symbol",
+            "Type",
+            "log_debug",
+            "log_info",
+            "log_warn",
+            "log_error",
+        }
 
         # Capture from locals
         for name, value in self.locals_dict.items():
             # Skip private variables and callables (unless they're interesting)
+            if name in skip_names:
+                continue
             if not name.startswith("_") and not (callable(value) and not isinstance(value, type)):
                 try:
                     captured[name] = self._serialize_value(value)
@@ -326,7 +374,7 @@ class PythonExecutor:
             # Try to resolve the object and get its attributes
             try:
                 obj_path = ".".join(parts[:-1])
-                obj = eval(obj_path, self.globals_dict, self.locals_dict)
+                obj = eval(obj_path, self.globals_dict, self.globals_dict)
                 prefix = parts[-1]
 
                 # Get attributes
@@ -350,6 +398,7 @@ class PythonExecutor:
             self.execution_history.clear()
             # Recreate globals to reset any modifications
             self.globals_dict = self._create_globals()
+            self._base_global_names = set(self.globals_dict.keys())
 
     def get_history(self, count: int = 100) -> List[Dict[str, Any]]:
         """Get execution history"""

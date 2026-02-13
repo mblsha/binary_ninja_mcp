@@ -16,6 +16,45 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
 
+      - name: Check for bidi control chars
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+
+          forbidden = {
+              "\u202a",  # LRE
+              "\u202b",  # RLE
+              "\u202c",  # PDF
+              "\u202d",  # LRO
+              "\u202e",  # RLO
+              "\u2066",  # LRI
+              "\u2067",  # RLI
+              "\u2068",  # FSI
+              "\u2069",  # PDI
+          }
+
+          failures = []
+          for path in Path(".").rglob("*"):
+              if not path.is_file():
+                  continue
+              if ".git" in path.parts:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except Exception:
+                  continue
+              for line_num, line in enumerate(text.splitlines(), start=1):
+                  if any(ch in forbidden for ch in line):
+                      failures.append(f"{path}:{line_num}")
+
+          if failures:
+              print("Found forbidden bidi control characters:")
+              for item in failures:
+                  print(f"  {item}")
+              sys.exit(1)
+          PY
+
       - name: Ruff check
         run: uv tool run ruff@0.14.10 check --output-format=github .
 
