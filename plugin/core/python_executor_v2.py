@@ -87,6 +87,7 @@ class SmartPythonExecutor:
         self._lock = threading.Lock()
         self._helper_functions = self._create_helpers()
         self.globals_dict = self._create_globals()
+        self._base_global_names = set(self.globals_dict.keys())
 
     def _create_helpers(self) -> Dict[str, Any]:
         """Create helper functions for common tasks"""
@@ -285,6 +286,38 @@ Examples:
                     "entry_function": bv.entry_function,
                 }
             )
+        protected_names = {
+            "bn",
+            "binaryninja",
+            "bv",
+            "current_view",
+            "functions",
+            "entry_point",
+            "entry_function",
+            "BinaryView",
+            "Function",
+            "BasicBlock",
+            "Symbol",
+            "Type",
+            "log_debug",
+            "log_info",
+            "log_warn",
+            "log_error",
+            "help",
+            "get_current_view",
+            "get_func",
+            "find_functions",
+            "find_funcs",
+            "get_strings",
+            "hex_dump",
+            "hexdump",
+            "quick_info",
+            "info",
+        }
+        for name, value in self.locals_dict.items():
+            if name in protected_names:
+                continue
+            self.globals_dict[name] = value
 
         # Rest of execution logic remains the same as original...
         stdout_capture = io.StringIO()
@@ -333,17 +366,17 @@ Examples:
 
                     with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
                         if stmt_code:
-                            exec(stmt_code, self.globals_dict, self.locals_dict)
+                            exec(stmt_code, self.globals_dict, self.globals_dict)
 
                         if expr_code:
-                            value = eval(expr_code, self.globals_dict, self.locals_dict)
+                            value = eval(expr_code, self.globals_dict, self.globals_dict)
                             if value is not None:
                                 result["return_value"] = self._serialize_value(value)
                                 result["return_type"] = type(value).__name__
                                 print(repr(value))
 
-                        elif "_result" in self.locals_dict:
-                            value = self.locals_dict["_result"]
+                        elif "_result" in self.globals_dict:
+                            value = self.globals_dict["_result"]
                             result["return_value"] = self._serialize_value(value)
                             result["return_type"] = type(value).__name__
 
@@ -353,6 +386,11 @@ Examples:
                     exception_queue.put(e)
 
                 finally:
+                    self.locals_dict = {
+                        name: value
+                        for name, value in self.globals_dict.items()
+                        if name not in self._base_global_names
+                    }
                     result["stdout"] = stdout_capture.getvalue()
                     result["stderr"] += stderr_capture.getvalue()
                     result["variables"] = self._capture_variables()
@@ -551,7 +589,7 @@ Examples:
             # Try to resolve the object and get its attributes
             try:
                 obj_path = ".".join(parts[:-1])
-                obj = eval(obj_path, self.globals_dict, self.locals_dict)
+                obj = eval(obj_path, self.globals_dict, self.globals_dict)
                 prefix = parts[-1]
 
                 # Get attributes
@@ -575,6 +613,7 @@ Examples:
             self.execution_history.clear()
             # Recreate globals to reset any modifications
             self.globals_dict = self._create_globals()
+            self._base_global_names = set(self.globals_dict.keys())
 
 
 # Enhanced console capture that uses SmartPythonExecutor
