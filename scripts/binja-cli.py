@@ -13,6 +13,13 @@ import time
 import requests
 from plumbum import cli, colors
 
+DEFAULT_ENDPOINT_API_VERSION = 1
+ENDPOINT_API_VERSION_OVERRIDES = {
+    "/ui/open": 2,
+    "/ui/quit": 2,
+    "/ui/statusbar": 2,
+}
+
 
 def _float_env(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -46,6 +53,31 @@ class BinaryNinjaCLI(cli.Application):
         help=("HTTP request timeout in seconds (default: 5; can also set BINJA_CLI_TIMEOUT)"),
     )
 
+    @staticmethod
+    def _normalize_endpoint_path(endpoint: str) -> str:
+        path = str(endpoint or "").strip()
+        if not path:
+            return "/"
+        if "?" in path:
+            path = path.split("?", 1)[0]
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return path
+
+    def _expected_api_version(self, endpoint: str) -> int:
+        path = self._normalize_endpoint_path(endpoint)
+        return ENDPOINT_API_VERSION_OVERRIDES.get(path, DEFAULT_ENDPOINT_API_VERSION)
+
+    @staticmethod
+    def _validate_ui_contract(payload: dict, endpoint: str) -> dict:
+        required_keys = {"ok", "actions", "warnings", "errors", "state", "result", "schema_version"}
+        missing = [key for key in required_keys if key not in payload]
+        if missing:
+            raise RuntimeError(
+                f"invalid UI response contract for {endpoint}: missing keys {', '.join(missing)}"
+            )
+        return payload
+
     def _request(
         self,
         method: str,
@@ -55,24 +87,78 @@ class BinaryNinjaCLI(cli.Application):
         timeout: float = None,
     ) -> dict:
         """Make HTTP request to the server"""
-        url = f"{self.server_url}/{endpoint}"
+        endpoint_path = self._normalize_endpoint_path(endpoint)
+        url = f"{self.server_url}/{endpoint.lstrip('/')}"
         request_timeout = self.request_timeout if timeout is None else float(timeout)
+        expected_api_version = self._expected_api_version(endpoint_path)
+
+        request_headers = {
+            "X-Binja-MCP-Api-Version": str(expected_api_version),
+        }
+        request_params = dict(params or {})
+        request_data = dict(data or {})
+        request_params["_api_version"] = expected_api_version
+        request_data["_api_version"] = expected_api_version
 
         if self.verbose:
             print(f"[{method}] {url}", file=sys.stderr)
-            if params:
-                print(f"Params: {params}", file=sys.stderr)
-            if data:
-                print(f"Data: {data}", file=sys.stderr)
+            if request_params:
+                print(f"Params: {request_params}", file=sys.stderr)
+            if request_data:
+                print(f"Data: {request_data}", file=sys.stderr)
 
         try:
             if method == "GET":
-                response = requests.get(url, params=params, timeout=request_timeout)
+                response = requests.get(
+                    url,
+                    params=request_params,
+                    headers=request_headers,
+                    timeout=request_timeout,
+                )
             else:
-                response = requests.post(url, json=data, timeout=request_timeout)
+                response = requests.post(
+                    url,
+                    json=request_data,
+                    headers=request_headers,
+                    timeout=request_timeout,
+                )
 
             response.raise_for_status()
-            return response.json()
+            response_data = response.json()
+
+            header_version_raw = response.headers.get("X-Binja-MCP-Api-Version")
+            if header_version_raw is None:
+                raise RuntimeError(
+                    f"missing X-Binja-MCP-Api-Version response header for {endpoint_path}"
+                )
+            try:
+                header_version = int(header_version_raw)
+            except (TypeError, ValueError):
+                raise RuntimeError(
+                    f"invalid X-Binja-MCP-Api-Version header '{header_version_raw}' for {endpoint_path}"
+                )
+            if header_version != expected_api_version:
+                raise RuntimeError(
+                    f"endpoint API version mismatch for {endpoint_path}: "
+                    f"client={expected_api_version}, server_header={header_version}"
+                )
+
+            body_version_raw = response_data.get("_api_version") if isinstance(response_data, dict) else None
+            if body_version_raw is None:
+                raise RuntimeError(f"missing _api_version response field for {endpoint_path}")
+            try:
+                body_version = int(body_version_raw)
+            except (TypeError, ValueError):
+                raise RuntimeError(
+                    f"invalid _api_version response field '{body_version_raw}' for {endpoint_path}"
+                )
+            if body_version != expected_api_version:
+                raise RuntimeError(
+                    f"endpoint API version mismatch for {endpoint_path}: "
+                    f"client={expected_api_version}, server_body={body_version}"
+                )
+
+            return response_data
 
         except requests.exceptions.ConnectionError:
             print(
@@ -130,8 +216,14 @@ class BinaryNinjaCLI(cli.Application):
     def _server_reachable(self, timeout: float = 2.0) -> bool:
         """Check whether MCP server is reachable without exiting."""
         url = f"{self.server_url}/status"
+        expected_api_version = self._expected_api_version("/status")
         try:
-            response = requests.get(url, timeout=timeout)
+            response = requests.get(
+                url,
+                params={"_api_version": expected_api_version},
+                headers={"X-Binja-MCP-Api-Version": str(expected_api_version)},
+                timeout=timeout,
+            )
             response.raise_for_status()
             return True
         except Exception:
@@ -323,19 +415,21 @@ class StatusBar(cli.Application):
             data=config,
             timeout=max(self.parent.request_timeout, float(self.exec_timeout or 20.0)),
         )
+        if not isinstance(parsed, dict):
+            print(colors.yellow | "Statusbar endpoint returned an unexpected payload.")
+            return
+        parsed = self.parent._validate_ui_contract(parsed, "/ui/statusbar")
 
         if self.parent.json_output:
             self.parent._output({"statusbar_result": parsed})
             return
 
-        if not isinstance(parsed, dict):
-            print(colors.yellow | "Statusbar endpoint returned an unexpected payload.")
-            return
+        details = parsed.get("result", {}) if isinstance(parsed.get("result"), dict) else {}
 
-        print("Active Window:", parsed.get("active_window_title"))
-        print("Status Source:", parsed.get("status_source", ""))
-        print("Status Text:", parsed.get("status_text", ""))
-        items = parsed.get("status_items", [])
+        print("Active Window:", details.get("active_window_title"))
+        print("Status Source:", details.get("status_source", ""))
+        print("Status Text:", details.get("status_text", ""))
+        items = details.get("status_items", [])
         if items:
             print("Status Items:")
             for item in items:
@@ -420,13 +514,13 @@ class Open(cli.Application):
             data=config,
             timeout=max(self.parent.request_timeout, 30.0),
         )
+        if not isinstance(parsed, dict):
+            print(colors.yellow | "Open endpoint returned an unexpected payload.")
+            return
+        parsed = self.parent._validate_ui_contract(parsed, "/ui/open")
 
         if self.parent.json_output:
             self.parent._output({"open_result": parsed})
-            return
-
-        if not isinstance(parsed, dict):
-            print(colors.yellow | "Open endpoint returned an unexpected payload.")
             return
 
         ok = bool(parsed.get("ok"))
@@ -542,18 +636,21 @@ class Quit(cli.Application):
             data=config,
             timeout=max(self.parent.request_timeout, float(self.exec_timeout or 120.0)),
         )
+        if not isinstance(parsed, dict):
+            print(colors.yellow | "Quit endpoint returned an unexpected payload.")
+            return
+        parsed = self.parent._validate_ui_contract(parsed, "/ui/quit")
 
         if self.parent.json_output:
             self.parent._output({"quit_result": parsed})
             return
 
-        if not isinstance(parsed, dict):
-            print(colors.yellow | "Quit endpoint returned an unexpected payload.")
-            return
+        details = parsed.get("result", {}) if isinstance(parsed.get("result"), dict) else {}
+        policy = details.get("policy", {}) if isinstance(details.get("policy"), dict) else {}
 
         ok = bool(parsed.get("ok"))
         stuck = bool(parsed.get("state", {}).get("stuck_confirmation"))
-        decision = parsed.get("policy", {}).get("resolved_decision")
+        decision = policy.get("resolved_decision")
         status_line = (
             "✓ Quit workflow completed"
             if ok and not stuck
@@ -562,7 +659,7 @@ class Quit(cli.Application):
         color = colors.green if ok and not stuck else colors.yellow
         print(color | status_line)
         print(f"  Policy Decision: {decision}")
-        print(f"  Loaded File: {parsed.get('policy', {}).get('loaded_filename')}")
+        print(f"  Loaded File: {policy.get('loaded_filename')}")
         print(f"  Stuck On Confirmation: {stuck}")
 
         actions = parsed.get("actions", [])
