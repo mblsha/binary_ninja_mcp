@@ -57,6 +57,18 @@ def _wait_for_server(base_url: str, timeout_s: float = 30.0) -> None:
     )
 
 
+def _server_reachable(base_url: str, timeout_s: float = 3.0) -> bool:
+    try:
+        _wait_for_server(base_url, timeout_s=timeout_s)
+        return True
+    except Exception:
+        return False
+
+
+def _has_gui_session() -> bool:
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def _tail_log(log_path: str, max_lines: int = 60) -> str:
     path = Path(log_path)
     if not path.exists():
@@ -250,7 +262,11 @@ def fixture_binary_path() -> str:
 def binja_process(base_url: str) -> Generator[subprocess.Popen | None, None, None]:
     spawn = _env_flag("BINJA_SPAWN", default=True)
     if not spawn:
-        _wait_for_server(base_url, timeout_s=10.0)
+        if not _server_reachable(base_url, timeout_s=10.0):
+            pytest.skip(
+                "BINJA_SPAWN=0 and MCP server is not reachable; "
+                "start Binary Ninja MCP server or enable BINJA_SPAWN=1."
+            )
         yield None
         return
 
@@ -259,6 +275,16 @@ def binja_process(base_url: str) -> Generator[subprocess.Popen | None, None, Non
         raise RuntimeError("BINJA_SPAWN=1 requires BINJA_BINARY to be set")
     if not Path(binja_binary).exists():
         raise RuntimeError(f"BINJA_BINARY does not exist: {binja_binary}")
+
+    # In headless shells, spawning GUI Binary Ninja is expected to fail.
+    # Prefer attaching to an already-running MCP server if available.
+    if (not _has_gui_session()) and (not os.environ.get("BINJA_QPA_PLATFORM")):
+        if _server_reachable(base_url, timeout_s=3.0):
+            yield None
+            return
+        pytest.skip(
+            "No GUI session detected (DISPLAY/WAYLAND_DISPLAY unset) and no running MCP server."
+        )
 
     log_path = os.environ.get("BINJA_LOG_PATH", "/tmp/binja-integration.log")
     pid_file = Path(os.environ.get("BINJA_PID_FILE", "/tmp/binja-integration.pid"))

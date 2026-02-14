@@ -3,8 +3,13 @@
 Debug script to understand console capture initialization issues
 """
 
-import binaryninja as bn
 import sys
+
+try:
+    import binaryninja as bn
+except ModuleNotFoundError:
+    print("SKIP: binaryninja module is not available in this Python environment.")
+    sys.exit(0)
 
 print("=== Binary Ninja Console Capture Debug ===")
 print(f"Binary Ninja Version: {bn.core_version()}")

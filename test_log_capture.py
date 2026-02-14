@@ -4,7 +4,13 @@ Test script for Binary Ninja MCP log capture functionality
 Run this from Binary Ninja's Python console to test log capture
 """
 
-import binaryninja as bn
+import sys
+
+try:
+    import binaryninja as bn
+except ModuleNotFoundError:
+    print("SKIP: binaryninja module is not available in this Python environment.")
+    sys.exit(0)
 
 # Test log capture
 print("[TEST] Testing Binary Ninja MCP log capture...")
