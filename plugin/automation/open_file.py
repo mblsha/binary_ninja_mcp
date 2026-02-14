@@ -351,11 +351,28 @@ def open_file_workflow(
     target_file = result["input"]["filepath"]
     target_platform = result["input"]["platform"]
     target_view_type = result["input"]["view_type"]
+    prefer_ui_open = bool(_unused.get("prefer_ui_open", False))
 
     if bn is None:
         result["ok"] = False
         result["errors"].append("binaryninja module is unavailable")
         return result
+
+    if target_file and not inspect_only:
+        try:
+            candidate = Path(target_file)
+            if not candidate.exists():
+                result["ok"] = False
+                result["errors"].append(f"filepath does not exist: {target_file}")
+                return result
+            if not candidate.is_file():
+                result["ok"] = False
+                result["errors"].append(f"filepath is not a regular file: {target_file}")
+                return result
+        except Exception as exc:
+            result["ok"] = False
+            result["errors"].append(f"unable to validate filepath '{target_file}': {exc}")
+            return result
 
     try:
         from PySide6.QtWidgets import QApplication
@@ -600,7 +617,7 @@ def open_file_workflow(
                         result["warnings"].append(f"unable to activate existing tab: {exc}")
 
                 ui_open = {"ok": False, "reason": "skipped"}
-                if loaded_bv is None and app is not None:
+                if loaded_bv is None and app is not None and prefer_ui_open:
                     ui_open = _open_with_ui_context(target_file)
                     if ui_open.get("ok"):
                         result["actions"].append("ui_context_open_filename")
@@ -608,6 +625,8 @@ def open_file_workflow(
                         result["warnings"].append(
                             f"ui_context_open_filename: {ui_open.get('reason')}"
                         )
+                elif loaded_bv is None and app is not None:
+                    result["actions"].append("skipped_ui_context_open_to_avoid_modal_block")
 
                 if loaded_bv is None and not ui_open.get("ok"):
                     if target_platform or target_view_type:
