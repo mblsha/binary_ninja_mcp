@@ -84,7 +84,9 @@ def _scan_status(app, all_windows: bool, include_hidden: bool) -> dict[str, Any]
                         if fmt:
                             add_item(seen, status_items, fmt)
                         try:
-                            add_item(seen, status_items, f"{int(child.value())}/{int(child.maximum())}")
+                            add_item(
+                                seen, status_items, f"{int(child.value())}/{int(child.maximum())}"
+                            )
                         except Exception:
                             pass
             except Exception:
