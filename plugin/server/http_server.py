@@ -1211,7 +1211,8 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     self._send_json_response({"error": "Invalid address format"}, 400)
 
             elif path == "/comment":
-                if self.command == "GET":
+                effective_method = str(params.get("_method") or self.command).strip().upper()
+                if effective_method == "GET":
                     address = params.get("address")
                     if not address:
                         self._send_json_response(
@@ -1246,7 +1247,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                             )
                     except ValueError:
                         self._send_json_response({"error": "Invalid address format"}, 400)
-                elif self.command == "DELETE":
+                elif effective_method == "DELETE":
                     address = params.get("address")
                     if not address:
                         self._send_json_response(
@@ -1316,7 +1317,8 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         self._send_json_response({"error": "Invalid address format"}, 400)
 
             elif path == "/comment/function":
-                if self.command == "GET":
+                effective_method = str(params.get("_method") or self.command).strip().upper()
+                if effective_method == "GET":
                     function_name = params.get("name") or params.get("functionName")
                     if not function_name:
                         self._send_json_response(
@@ -1347,7 +1349,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                                 "message": "No comment found for this function",
                             }
                         )
-                elif self.command == "DELETE":
+                elif effective_method == "DELETE":
                     function_name = params.get("name") or params.get("functionName")
                     if not function_name:
                         self._send_json_response(
