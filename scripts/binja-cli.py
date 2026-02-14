@@ -6,6 +6,7 @@ Uses the same HTTP API as the MCP bridge but provides a terminal interface
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,13 @@ def _float_env(name: str, default: float) -> float:
         return float(raw)
     except (TypeError, ValueError):
         return default
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class BinaryNinjaCLI(cli.Application):
@@ -305,7 +313,7 @@ class BinaryNinjaCLI(cli.Application):
         log_path = "/tmp/binja-cli-launch.log"
         try:
             with open(log_path, "ab") as log_fp:
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     args,
                     env=env,
                     stdout=log_fp,
@@ -315,7 +323,29 @@ class BinaryNinjaCLI(cli.Application):
         except Exception as exc:
             return {"ok": False, "error": f"failed to launch Binary Ninja: {exc}", "log": log_path}
 
-        return {"ok": True, "binary": binary_path, "log": log_path}
+        return {"ok": True, "binary": binary_path, "log": log_path, "pid": int(proc.pid)}
+
+    def _terminate_launched_binary(self, pid: int) -> bool:
+        if not isinstance(pid, int) or pid <= 1:
+            return False
+        terminated = False
+        try:
+            if hasattr(os, "killpg"):
+                os.killpg(pid, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
+            terminated = True
+        except Exception:
+            return False
+        time.sleep(0.5)
+        try:
+            if hasattr(os, "killpg"):
+                os.killpg(pid, signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+        return terminated
 
     def _ensure_server_for_open(self, filepath: str = "") -> dict:
         """Ensure MCP server is available before running open workflow."""
@@ -337,6 +367,10 @@ class BinaryNinjaCLI(cli.Application):
                 return out
             time.sleep(0.5)
 
+        killed = False
+        if _bool_env("BINJA_KILL_ON_LAUNCH_TIMEOUT", True):
+            killed = self._terminate_launched_binary(int(launch.get("pid") or 0))
+
         return {
             "ok": False,
             "error": (
@@ -345,6 +379,7 @@ class BinaryNinjaCLI(cli.Application):
             ),
             "log": launch.get("log"),
             "binary": launch.get("binary"),
+            "killed_on_timeout": killed,
         }
 
     def _execute_python(self, code: str, exec_timeout: float = 30.0) -> dict:
@@ -518,6 +553,8 @@ class Open(cli.Application):
                 print(f"Binary: {ensure['binary']}", file=sys.stderr)
             if ensure.get("log"):
                 print(f"Launch log: {ensure['log']}", file=sys.stderr)
+            if ensure.get("killed_on_timeout"):
+                print("Killed launched Binary Ninja after MCP startup timeout.", file=sys.stderr)
             print(
                 "If Binary Ninja is already open, ensure the MCP server is running.",
                 file=sys.stderr,
