@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -289,6 +290,18 @@ def open_file_workflow(
     **_unused: Any,
 ) -> dict[str, Any]:
     """Open a file and automate Binary Ninja's Open With Options dialog."""
+    timeout_raw = _unused.get("timeout")
+    if timeout_raw is None:
+        timeout_raw = _unused.get("timeout_s")
+    try:
+        open_timeout_s = float(timeout_raw) if timeout_raw is not None else 12.0
+    except (TypeError, ValueError):
+        open_timeout_s = 12.0
+    if open_timeout_s < 1.0:
+        open_timeout_s = 1.0
+    if open_timeout_s > 120.0:
+        open_timeout_s = 120.0
+
     result: dict[str, Any] = {
         "ok": True,
         "input": {
@@ -297,6 +310,7 @@ def open_file_workflow(
             "view_type": str(view_type or "").strip(),
             "click_open": bool(click_open),
             "inspect_only": bool(inspect_only),
+            "timeout_s": open_timeout_s,
         },
         "actions": [],
         "warnings": [],
@@ -315,6 +329,24 @@ def open_file_workflow(
             "loaded_filename": None,
         },
     }
+
+    def build_timeout_result() -> dict[str, Any]:
+        loaded_filename = _get_loaded_filename()
+        return {
+            "ok": False,
+            "input": dict(result["input"]),
+            "actions": list(result["actions"]) + ["open_workflow_timed_out"],
+            "warnings": list(result["warnings"])
+            + [f"open workflow exceeded {open_timeout_s:.1f}s while waiting for UI thread"],
+            "errors": list(result["errors"]) + ["open workflow timed out"],
+            "dialog": dict(result["dialog"]),
+            "state": {
+                "active_window": result["state"].get("active_window"),
+                "visible_windows": list(result["state"].get("visible_windows", [])),
+                "loaded_filename": loaded_filename,
+                "timed_out": True,
+            },
+        }
 
     target_file = result["input"]["filepath"]
     target_platform = result["input"]["platform"]
@@ -701,26 +733,53 @@ def open_file_workflow(
         return fallback_bv
 
     loaded_bv = None
-    if hasattr(bn, "execute_on_main_thread_and_wait"):
-        state = {"done": False, "loaded_bv": None}
+    if hasattr(bn, "execute_on_main_thread") or hasattr(bn, "execute_on_main_thread_and_wait"):
+        state = {"loaded_bv": None, "exception": None}
+        finished = threading.Event()
 
         def _main_thread_runner():
-            state["loaded_bv"] = run_open_workflow()
-            state["done"] = True
-
-        try:
-            bn.execute_on_main_thread_and_wait(_main_thread_runner)
-            if state["done"]:
-                loaded_bv = state["loaded_bv"]
+            try:
+                state["loaded_bv"] = run_open_workflow()
                 result["actions"].append("ran_open_workflow_on_main_thread")
-            else:
+            except Exception as exc:
+                state["exception"] = exc
+            finally:
+                finished.set()
+
+        scheduled = False
+        if hasattr(bn, "execute_on_main_thread"):
+            try:
+                bn.execute_on_main_thread(_main_thread_runner)
+                result["actions"].append("scheduled_open_workflow_on_main_thread")
+                scheduled = True
+            except Exception as exc:
                 result["warnings"].append(
-                    "main-thread open workflow did not complete; running non-ui fallback"
+                    f"failed to schedule open workflow on main thread: {exc}"
                 )
-                loaded_bv = run_non_ui_fallback_load()
-        except Exception as exc:
+
+        if (not scheduled) and hasattr(bn, "execute_on_main_thread_and_wait"):
+            def _worker() -> None:
+                try:
+                    bn.execute_on_main_thread_and_wait(_main_thread_runner)
+                except Exception as exc:
+                    state["exception"] = exc
+                    finished.set()
+
+            threading.Thread(target=_worker, daemon=True).start()
+            result["actions"].append("scheduled_open_workflow_via_helper_thread")
+            scheduled = True
+
+        if not scheduled:
+            _main_thread_runner()
+
+        if not finished.wait(open_timeout_s):
+            return build_timeout_result()
+
+        if state["exception"] is None:
+            loaded_bv = state["loaded_bv"]
+        else:
             result["warnings"].append(
-                f"main-thread open workflow failed: {exc}; running non-ui fallback"
+                f"main-thread open workflow failed: {state['exception']}; running non-ui fallback"
             )
             loaded_bv = run_non_ui_fallback_load()
     else:
