@@ -351,7 +351,8 @@ def open_file_workflow(
     target_file = result["input"]["filepath"]
     target_platform = result["input"]["platform"]
     target_view_type = result["input"]["view_type"]
-    prefer_ui_open = bool(_unused.get("prefer_ui_open", False))
+    prefer_ui_open_raw = _unused.get("prefer_ui_open")
+    prefer_ui_open = True if prefer_ui_open_raw is None else bool(prefer_ui_open_raw)
 
     if bn is None:
         result["ok"] = False
@@ -621,6 +622,23 @@ def open_file_workflow(
                     ui_open = _open_with_ui_context(target_file)
                     if ui_open.get("ok"):
                         result["actions"].append("ui_context_open_filename")
+                        # Wait briefly for UI context to materialize a tab/view for the target.
+                        ui_deadline = time.time() + 6.0
+                        while time.time() < ui_deadline:
+                            app.processEvents()
+                            opened = _find_open_view_for_file(target_file)
+                            if opened is not None:
+                                loaded_bv = opened.get("view")
+                                result["actions"].append("resolved_opened_tab_for_file")
+                                try:
+                                    opened["context"].activateTab(opened["tab"])
+                                    result["actions"].append("activate_opened_tab_for_file")
+                                except Exception as exc:
+                                    result["warnings"].append(
+                                        f"unable to activate opened tab: {exc}"
+                                    )
+                                break
+                            time.sleep(0.05)
                     else:
                         result["warnings"].append(
                             f"ui_context_open_filename: {ui_open.get('reason')}"
