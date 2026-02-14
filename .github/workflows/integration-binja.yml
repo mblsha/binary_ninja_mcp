@@ -13,9 +13,10 @@ jobs:
       BINJA_INTEGRATION: "1"
       BINJA_MCP_BASE_URL: ${{ vars.BINJA_MCP_BASE_URL || 'http://localhost:9009' }}
       BINJA_FIXTURE_BINARY: ${{ vars.BINJA_FIXTURE_BINARY || '/bin/ls' }}
-      BINJA_SPAWN: ${{ vars.BINJA_SPAWN || '0' }}
+      BINJA_SPAWN: ${{ vars.BINJA_SPAWN || '1' }}
       BINJA_BINARY: ${{ vars.BINJA_BINARY }}
       BINJA_LOG_PATH: ${{ vars.BINJA_LOG_PATH || '/tmp/binja-integration.log' }}
+      BINJA_UI_DESTRUCTIVE: ${{ vars.BINJA_UI_DESTRUCTIVE || '1' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,5 +24,22 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Run integration tests
-        run: uv run --with pytest pytest -m binja tests/integration -q
+      - name: Validate Binary Ninja spawn config
+        run: |
+          if [ "${BINJA_SPAWN}" = "1" ]; then
+            if [ -z "${BINJA_BINARY}" ]; then
+              echo "BINJA_SPAWN=1 requires BINJA_BINARY to point to the Binary Ninja executable"
+              exit 1
+            fi
+            if [ ! -x "${BINJA_BINARY}" ]; then
+              echo "BINJA_BINARY is not executable: ${BINJA_BINARY}"
+              exit 1
+            fi
+          fi
+
+      - name: Run non-destructive integration tests
+        run: uv run --with pytest pytest -m "binja and not binja_destructive" tests/integration -q
+
+      - name: Run destructive UI integration tests
+        if: ${{ env.BINJA_UI_DESTRUCTIVE == '1' }}
+        run: uv run --with pytest pytest -m "binja_destructive" tests/integration -q
