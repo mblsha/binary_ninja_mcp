@@ -38,9 +38,9 @@ def test_every_endpoint_exists_and_is_versioned(client, analysis_context):
         payload = _resolve_placeholders(endpoint.get("minimal_json") or {}, analysis_context)
         response, body = client.request(method, path, params=params, json=payload, timeout=30.0)
         if response.status_code == 404:
-            assert (
-                body.get("error") != "Not found"
-            ), f"{method} {path} routed to generic Not found response"
+            assert body.get("error") != "Not found", (
+                f"{method} {path} routed to generic Not found response"
+            )
             continue
         assert response.status_code < 500, f"{method} {path} returned {response.status_code}"
 
@@ -61,7 +61,9 @@ def test_every_endpoint_rejects_mismatched_api_version(client, analysis_context)
             version_override=int(endpoint["api_version"]) + 99,
             timeout=20.0,
         )
-        assert response.status_code == 409, f"{method} {path} expected 409, got {response.status_code}"
+        assert response.status_code == 409, (
+            f"{method} {path} expected 409, got {response.status_code}"
+        )
         assert body.get("error") == "Endpoint API version mismatch"
 
 

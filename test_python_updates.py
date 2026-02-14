@@ -110,15 +110,18 @@ def test_mcp_bridge():
         {
             "name": "Execute with output",
             "command": "print('Bridge test'); 42",
-            "check": lambda r: r.get("success")
-            and "Bridge test" in r.get("stdout", "")
-            and r.get("return_value") == 42,
+            "check": lambda r: (
+                r.get("success")
+                and "Bridge test" in r.get("stdout", "")
+                and r.get("return_value") == 42
+            ),
         },
         {
             "name": "Error handling",
             "command": "1/0",
-            "check": lambda r: not r.get("success")
-            and r.get("error", {}).get("type") == "ZeroDivisionError",
+            "check": lambda r: (
+                not r.get("success") and r.get("error", {}).get("type") == "ZeroDivisionError"
+            ),
         },
     ]
 
