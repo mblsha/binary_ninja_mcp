@@ -6,8 +6,22 @@ Test script to verify the updated MCP Bridge and CLI work with the new Python ex
 import subprocess
 import json
 import sys
+import requests
 
 DEFAULT_ENDPOINT_API_VERSION = 1
+
+
+def _server_reachable(url: str = "http://localhost:9009") -> bool:
+    try:
+        response = requests.get(
+            f"{url.rstrip('/')}/status",
+            params={"_api_version": DEFAULT_ENDPOINT_API_VERSION},
+            headers={"X-Binja-MCP-Api-Version": str(DEFAULT_ENDPOINT_API_VERSION)},
+            timeout=2,
+        )
+        return response.status_code == 200
+    except Exception:
+        return False
 
 
 def test_cli_python_command():
@@ -187,6 +201,10 @@ def main():
     """Run all tests"""
     print("Testing Python Executor Updates")
     print("=" * 70)
+
+    if not _server_reachable():
+        print("⚠️  Skipping: Binary Ninja MCP server is not reachable at http://localhost:9009")
+        return 0
 
     # Test CLI
     cli_ok = test_cli_python_command()
