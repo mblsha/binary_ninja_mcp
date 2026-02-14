@@ -49,6 +49,75 @@ def _wait_for_server(base_url: str, timeout_s: float = 30.0) -> None:
     )
 
 
+def _tail_log(log_path: str, max_lines: int = 60) -> str:
+    path = Path(log_path)
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except Exception:
+        return ""
+    if not lines:
+        return ""
+    tail = lines[-max_lines:]
+    return "\n".join(tail)
+
+
+def _kill_pid_or_group(pid: int, sig: int) -> None:
+    if pid <= 1:
+        return
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(pid, sig)
+        else:
+            os.kill(pid, sig)
+    except ProcessLookupError:
+        return
+    except Exception:
+        return
+
+
+def _terminate_process(proc: subprocess.Popen | None, grace_s: float = 8.0) -> None:
+    if proc is None:
+        return
+    if proc.poll() is not None:
+        return
+
+    _kill_pid_or_group(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace_s)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:
+        return
+
+    _kill_pid_or_group(proc.pid, signal.SIGKILL)
+    try:
+        proc.wait(timeout=2.0)
+    except Exception:
+        pass
+
+
+def _cleanup_stale_pid_file(pid_file: Path) -> None:
+    if not pid_file.exists():
+        return
+    try:
+        raw = pid_file.read_text().strip()
+        old_pid = int(raw)
+    except Exception:
+        old_pid = -1
+
+    if old_pid > 1:
+        _kill_pid_or_group(old_pid, signal.SIGTERM)
+        time.sleep(0.5)
+        _kill_pid_or_group(old_pid, signal.SIGKILL)
+    try:
+        pid_file.unlink()
+    except Exception:
+        pass
+
+
 @pytest.fixture(scope="session", autouse=True)
 def require_integration_mode() -> None:
     if os.environ.get("BINJA_INTEGRATION") != "1":
@@ -83,6 +152,8 @@ def binja_process(base_url: str) -> Generator[subprocess.Popen | None, None, Non
         raise RuntimeError(f"BINJA_BINARY does not exist: {binja_binary}")
 
     log_path = os.environ.get("BINJA_LOG_PATH", "/tmp/binja-integration.log")
+    pid_file = Path(os.environ.get("BINJA_PID_FILE", "/tmp/binja-integration.pid"))
+    _cleanup_stale_pid_file(pid_file)
     with open(log_path, "ab") as log_fp:
         proc = subprocess.Popen(
             [binja_binary],
@@ -91,13 +162,26 @@ def binja_process(base_url: str) -> Generator[subprocess.Popen | None, None, Non
             start_new_session=True,
             env=os.environ.copy(),
         )
+    try:
+        pid_file.write_text(str(proc.pid))
+    except Exception:
+        pass
 
     try:
         _wait_for_server(base_url, timeout_s=45.0)
+    except Exception as exc:
+        _terminate_process(proc)
+        log_tail = _tail_log(log_path)
+        detail = f"{exc}"
+        if log_tail:
+            detail = f"{detail}\n--- binja log tail ---\n{log_tail}"
+        raise RuntimeError(detail) from exc
+    try:
         yield proc
     finally:
+        _terminate_process(proc)
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
+            pid_file.unlink()
         except Exception:
             pass
 
