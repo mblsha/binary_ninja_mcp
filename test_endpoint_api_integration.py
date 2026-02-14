@@ -154,13 +154,18 @@ class TestEndpointApiIntegration(unittest.TestCase):
         for case in ENDPOINT_CASES:
             with self.subTest(endpoint=case["path"], method=case["method"]):
                 response = _call_endpoint(self.base_url, case, include_version=False)
-                self.assertEqual(response.status_code, 400, response.text)
-                body = response.json()
-                self.assertEqual(body.get("error"), "Missing endpoint API version")
-                self.assertEqual(
-                    int(body.get("expected_api_version", -1)),
-                    api_contracts.expected_api_version(case["path"]),
-                )
+                if case["path"] == "/status":
+                    self.assertEqual(response.status_code, 200, response.text)
+                    body = response.json()
+                    self.assertEqual(int(body.get("_api_version", -1)), 1)
+                else:
+                    self.assertEqual(response.status_code, 400, response.text)
+                    body = response.json()
+                    self.assertEqual(body.get("error"), "Missing endpoint API version")
+                    self.assertEqual(
+                        int(body.get("expected_api_version", -1)),
+                        api_contracts.expected_api_version(case["path"]),
+                    )
 
     def test_ui_endpoint_contract_shape(self):
         for path in ("/ui/open", "/ui/quit", "/ui/statusbar"):
@@ -172,6 +177,47 @@ class TestEndpointApiIntegration(unittest.TestCase):
                 self.assertTrue(api_contracts.has_ui_contract_shape(body), body)
                 self.assertEqual(body.get("schema_version"), 1)
                 self.assertEqual(body.get("endpoint"), path)
+
+    def test_ui_open_inspect_only_is_read_only(self):
+        status_version = api_contracts.expected_api_version("/status")
+        before = requests.get(
+            _endpoint_url(self.base_url, "/status"),
+            params={"_api_version": status_version},
+            headers={"X-Binja-MCP-Api-Version": str(status_version)},
+            timeout=5,
+        )
+        before.raise_for_status()
+        before_body = before.json()
+
+        open_case = {
+            "method": "POST",
+            "path": "/ui/open",
+            "payload": {
+                "inspect_only": True,
+                "click_open": False,
+                "filepath": "/bin/ls",
+                "platform": "x86_64",
+                "view_type": "Mapped",
+            },
+        }
+        open_response = _call_endpoint(self.base_url, open_case, include_version=True)
+        self.assertEqual(open_response.status_code, 200, open_response.text)
+        open_body = open_response.json()
+        self.assertTrue(api_contracts.has_ui_contract_shape(open_body), open_body)
+        self.assertNotIn("set_current_view", open_body.get("actions", []))
+        self.assertNotIn("set_loaded_view_arch", open_body.get("actions", []))
+        self.assertNotIn("set_loaded_view_platform", open_body.get("actions", []))
+
+        after = requests.get(
+            _endpoint_url(self.base_url, "/status"),
+            params={"_api_version": status_version},
+            headers={"X-Binja-MCP-Api-Version": str(status_version)},
+            timeout=5,
+        )
+        after.raise_for_status()
+        after_body = after.json()
+        self.assertEqual(before_body.get("loaded"), after_body.get("loaded"))
+        self.assertEqual(before_body.get("filename"), after_body.get("filename"))
 
 
 if __name__ == "__main__":

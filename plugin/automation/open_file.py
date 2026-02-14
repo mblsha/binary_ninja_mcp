@@ -90,6 +90,34 @@ def _set_combo_value(combo, requested: str, qapp) -> dict[str, Any]:
     }
 
 
+def _inspect_combo_value(combo, requested: str) -> dict[str, Any]:
+    idx = _find_item_index_combo(combo, requested)
+    before = str(combo.currentText() or "")
+    if idx < 0:
+        return {
+            "requested": requested,
+            "changed": False,
+            "before": before,
+            "after": before,
+            "would_change": False,
+            "reason": "not-found",
+            "inspect_only": True,
+        }
+
+    target = str(combo.itemText(idx) or "")
+    would_change = normalize_token(before) != normalize_token(target)
+    return {
+        "requested": requested,
+        "changed": False,
+        "before": before,
+        "after": before,
+        "would_change": would_change,
+        "would_set_to": target,
+        "index": idx,
+        "inspect_only": True,
+    }
+
+
 def _get_mcp_current_view():
     for module_name in ("binary_ninja_mcp.plugin", "plugin"):
         try:
@@ -374,10 +402,15 @@ def open_file_workflow(
                     "reason": "view-type-control-not-present",
                 }
             else:
-                view_set = _set_combo_value(view_combo, target_view_type, QApplication)
+                if inspect_only:
+                    view_set = _inspect_combo_value(view_combo, target_view_type)
+                else:
+                    view_set = _set_combo_value(view_combo, target_view_type, QApplication)
                 result["dialog"]["view_type_set"] = view_set
                 if view_set.get("changed"):
                     result["actions"].append("set_view_type")
+                elif inspect_only and view_set.get("would_change"):
+                    result["actions"].append("would_set_view_type")
                 elif view_set.get("reason") == "not-found":
                     result["warnings"].append(
                         f"requested view type '{target_view_type}' not available in dialog"
@@ -420,18 +453,33 @@ def open_file_workflow(
                 }
             else:
                 before = str(platform_combo.currentText() or "")
-                platform_combo.setCurrentIndex(platform_idx)
-                QApplication.processEvents()
-                after = str(platform_combo.currentText() or "")
-                result["dialog"]["platform_set"] = {
-                    "requested": target_platform,
-                    "changed": before != after,
-                    "before": before,
-                    "after": after,
-                    "index": platform_idx,
-                }
-                if before != after:
-                    result["actions"].append("set_platform")
+                target_value = str(platform_combo.itemText(platform_idx) or "")
+                if inspect_only:
+                    result["dialog"]["platform_set"] = {
+                        "requested": target_platform,
+                        "changed": False,
+                        "before": before,
+                        "after": before,
+                        "would_change": normalize_token(before) != normalize_token(target_value),
+                        "would_set_to": target_value,
+                        "index": platform_idx,
+                        "inspect_only": True,
+                    }
+                    if result["dialog"]["platform_set"].get("would_change"):
+                        result["actions"].append("would_set_platform")
+                else:
+                    platform_combo.setCurrentIndex(platform_idx)
+                    QApplication.processEvents()
+                    after = str(platform_combo.currentText() or "")
+                    result["dialog"]["platform_set"] = {
+                        "requested": target_platform,
+                        "changed": before != after,
+                        "before": before,
+                        "after": after,
+                        "index": platform_idx,
+                    }
+                    if before != after:
+                        result["actions"].append("set_platform")
 
         if inspect_only or (not click_open):
             return True
@@ -583,9 +631,13 @@ def open_file_workflow(
         if loaded_bv is None:
             loaded_bv = _get_mcp_current_view()
 
-        _apply_platform_to_loaded_view(loaded_bv, target_platform, result)
+        if inspect_only:
+            if target_platform:
+                result["actions"].append("inspect_only_skip_apply_platform")
+        else:
+            _apply_platform_to_loaded_view(loaded_bv, target_platform, result)
 
-        if loaded_bv is not None:
+        if loaded_bv is not None and not inspect_only:
             if _set_mcp_current_view(loaded_bv):
                 result["actions"].append("set_current_view")
             else:
@@ -634,6 +686,9 @@ def open_file_workflow(
 
     def run_non_ui_fallback_load():
         fallback_bv = None
+        if inspect_only:
+            result["actions"].append("inspect_only_skip_non_ui_fallback_load")
+            return fallback_bv
         if not target_file:
             return fallback_bv
         try:
@@ -677,7 +732,7 @@ def open_file_workflow(
         else:
             result["state"]["active_window"] = None
 
-    if loaded_bv is not None:
+    if loaded_bv is not None and not inspect_only:
         if _set_mcp_current_view(loaded_bv) and "set_current_view" not in result["actions"]:
             result["actions"].append("set_current_view")
 

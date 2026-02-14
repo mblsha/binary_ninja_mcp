@@ -10,15 +10,20 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 import requests
 from plumbum import cli, colors
 
-DEFAULT_ENDPOINT_API_VERSION = 1
-ENDPOINT_API_VERSION_OVERRIDES = {
-    "/ui/open": 2,
-    "/ui/quit": 2,
-    "/ui/statusbar": 2,
-}
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.api_versions import (  # noqa: E402
+    SUPPORTED_UI_CONTRACT_SCHEMA_VERSIONS,
+    expected_api_version,
+    normalize_endpoint_path,
+)
 
 
 def _float_env(name: str, default: float) -> float:
@@ -55,26 +60,48 @@ class BinaryNinjaCLI(cli.Application):
 
     @staticmethod
     def _normalize_endpoint_path(endpoint: str) -> str:
-        path = str(endpoint or "").strip()
-        if not path:
-            return "/"
-        if "?" in path:
-            path = path.split("?", 1)[0]
-        if not path.startswith("/"):
-            path = f"/{path}"
-        return path
+        return normalize_endpoint_path(endpoint)
 
     def _expected_api_version(self, endpoint: str) -> int:
-        path = self._normalize_endpoint_path(endpoint)
-        return ENDPOINT_API_VERSION_OVERRIDES.get(path, DEFAULT_ENDPOINT_API_VERSION)
+        return expected_api_version(endpoint)
 
     @staticmethod
     def _validate_ui_contract(payload: dict, endpoint: str) -> dict:
-        required_keys = {"ok", "actions", "warnings", "errors", "state", "result", "schema_version"}
+        required_keys = {
+            "ok",
+            "actions",
+            "warnings",
+            "errors",
+            "state",
+            "result",
+            "schema_version",
+            "endpoint",
+        }
         missing = [key for key in required_keys if key not in payload]
         if missing:
             raise RuntimeError(
                 f"invalid UI response contract for {endpoint}: missing keys {', '.join(missing)}"
+            )
+
+        try:
+            schema_version = int(payload.get("schema_version"))
+        except (TypeError, ValueError):
+            raise RuntimeError(
+                f"invalid UI response contract for {endpoint}: "
+                f"schema_version={payload.get('schema_version')!r}"
+            )
+        if schema_version not in SUPPORTED_UI_CONTRACT_SCHEMA_VERSIONS:
+            supported = sorted(SUPPORTED_UI_CONTRACT_SCHEMA_VERSIONS)
+            raise RuntimeError(
+                f"unsupported UI schema_version for {endpoint}: "
+                f"{schema_version} (supported: {supported})"
+            )
+
+        expected_endpoint = normalize_endpoint_path(endpoint)
+        actual_endpoint = normalize_endpoint_path(payload.get("endpoint"))
+        if actual_endpoint != expected_endpoint:
+            raise RuntimeError(
+                f"invalid UI response contract endpoint: expected {expected_endpoint}, got {actual_endpoint}"
             )
         return payload
 
