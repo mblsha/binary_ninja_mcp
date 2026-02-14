@@ -301,6 +301,7 @@ def open_file_workflow(
         open_timeout_s = 1.0
     if open_timeout_s > 120.0:
         open_timeout_s = 120.0
+    workflow_deadline = time.monotonic() + open_timeout_s
 
     result: dict[str, Any] = {
         "ok": True,
@@ -348,11 +349,17 @@ def open_file_workflow(
             },
         }
 
+    def _remaining_timeout_s() -> float:
+        return max(0.0, workflow_deadline - time.monotonic())
+
+    def _bounded_poll_deadline(max_wait_s: float) -> float:
+        return time.monotonic() + min(max_wait_s, _remaining_timeout_s())
+
     target_file = result["input"]["filepath"]
     target_platform = result["input"]["platform"]
     target_view_type = result["input"]["view_type"]
     prefer_ui_open_raw = _unused.get("prefer_ui_open")
-    prefer_ui_open = True if prefer_ui_open_raw is None else bool(prefer_ui_open_raw)
+    prefer_ui_open = False if prefer_ui_open_raw is None else bool(prefer_ui_open_raw)
 
     if bn is None:
         result["ok"] = False
@@ -623,8 +630,8 @@ def open_file_workflow(
                     if ui_open.get("ok"):
                         result["actions"].append("ui_context_open_filename")
                         # Wait briefly for UI context to materialize a tab/view for the target.
-                        ui_deadline = time.time() + 6.0
-                        while time.time() < ui_deadline:
+                        ui_deadline = _bounded_poll_deadline(6.0)
+                        while time.monotonic() < ui_deadline:
                             app.processEvents()
                             opened = _find_open_view_for_file(target_file)
                             if opened is not None:
@@ -658,8 +665,8 @@ def open_file_workflow(
                         result["errors"].append(f"bn.load failed: {exc}")
 
                 if app is not None:
-                    deadline = time.time() + 6.0
-                    while time.time() < deadline:
+                    deadline = _bounded_poll_deadline(6.0)
+                    while time.monotonic() < deadline:
                         app.processEvents()
                         post_dialog = _find_options_dialog(app)
                         if post_dialog is not None:

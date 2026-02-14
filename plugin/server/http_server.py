@@ -1566,7 +1566,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     view_type=str(params.get("view_type") or ""),
                     click_open=self._parse_bool(params.get("click_open"), True),
                     inspect_only=self._parse_bool(params.get("inspect_only"), False),
-                    prefer_ui_open=self._parse_bool(params.get("prefer_ui_open"), True),
+                    prefer_ui_open=self._parse_bool(params.get("prefer_ui_open"), False),
                     timeout=params.get("timeout") or params.get("timeout_s"),
                 )
                 result = self._normalize_ui_contract(path, raw_result)
