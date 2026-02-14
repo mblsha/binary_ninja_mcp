@@ -26,6 +26,14 @@ from shared.api_versions import (  # noqa: E402
     normalize_endpoint_path,
 )
 
+STARTUP_FATAL_PATTERNS = (
+    "could not connect to display",
+    "could not load the qt platform plugin",
+    "no qt platform plugin could be initialized",
+    "this application failed to start because no qt platform plugin could be initialized",
+    "fatal error",
+)
+
 
 def _float_env(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -267,20 +275,37 @@ class BinaryNinjaCLI(cli.Application):
             return False
 
     def _launch_binary_ninja_linux_wayland(self, filepath: str = "") -> dict:
-        """Best-effort Binary Ninja launch for Linux Wayland sessions."""
+        """Best-effort Binary Ninja launch for Linux desktop sessions."""
         if sys.platform != "linux":
             return {"ok": False, "error": "auto-launch is only supported on Linux"}
 
-        runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
         env = os.environ.copy()
-        env.pop("DISPLAY", None)
-        env["QT_QPA_PLATFORM"] = "wayland"
-        env["WAYLAND_DISPLAY"] = env.get("WAYLAND_DISPLAY") or "wayland-0"
-        env["XDG_RUNTIME_DIR"] = runtime_dir
-        env["DBUS_SESSION_BUS_ADDRESS"] = env.get(
-            "DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus"
-        )
-        env["XDG_SESSION_TYPE"] = env.get("XDG_SESSION_TYPE") or "wayland"
+        qpa_platform = os.environ.get("BINJA_QPA_PLATFORM", "").strip().lower()
+        if qpa_platform:
+            env["QT_QPA_PLATFORM"] = qpa_platform
+        else:
+            has_wayland = bool(env.get("WAYLAND_DISPLAY"))
+            has_x11 = bool(env.get("DISPLAY"))
+            if has_wayland:
+                runtime_dir = env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+                env["QT_QPA_PLATFORM"] = "wayland"
+                env["WAYLAND_DISPLAY"] = env.get("WAYLAND_DISPLAY") or "wayland-0"
+                env["XDG_RUNTIME_DIR"] = runtime_dir
+                env["DBUS_SESSION_BUS_ADDRESS"] = env.get(
+                    "DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus"
+                )
+                env["XDG_SESSION_TYPE"] = env.get("XDG_SESSION_TYPE") or "wayland"
+            elif has_x11:
+                # Keep host defaults; forcing a plugin here often causes startup popups.
+                env.pop("QT_QPA_PLATFORM", None)
+            else:
+                return {
+                    "ok": False,
+                    "error": (
+                        "no GUI session detected (missing WAYLAND_DISPLAY/DISPLAY); "
+                        "refusing to auto-launch Binary Ninja"
+                    ),
+                }
 
         candidates = [
             os.environ.get("BINJA_BINARY"),
@@ -347,6 +372,29 @@ class BinaryNinjaCLI(cli.Application):
             pass
         return terminated
 
+    @staticmethod
+    def _tail_log(log_path: str, max_lines: int = 60) -> str:
+        path = Path(log_path)
+        if not path.exists():
+            return ""
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except Exception:
+            return ""
+        if not lines:
+            return ""
+        return "\n".join(lines[-max_lines:])
+
+    def _detect_launch_failure(self, log_path: str) -> str | None:
+        tail = self._tail_log(log_path, max_lines=120)
+        if not tail:
+            return None
+        lowered = tail.lower()
+        for marker in STARTUP_FATAL_PATTERNS:
+            if marker in lowered:
+                return marker
+        return None
+
     def _ensure_server_for_open(self, filepath: str = "") -> dict:
         """Ensure MCP server is available before running open workflow."""
         if self._server_reachable(timeout=1.0):
@@ -360,6 +408,21 @@ class BinaryNinjaCLI(cli.Application):
 
         deadline = time.time() + 25.0
         while time.time() < deadline:
+            failure = self._detect_launch_failure(str(launch.get("log") or ""))
+            if failure:
+                killed = False
+                if _bool_env("BINJA_KILL_ON_LAUNCH_TIMEOUT", True):
+                    killed = self._terminate_launched_binary(int(launch.get("pid") or 0))
+                return {
+                    "ok": False,
+                    "error": (
+                        "Binary Ninja startup failed before MCP server came up: "
+                        f"{failure}"
+                    ),
+                    "log": launch.get("log"),
+                    "binary": launch.get("binary"),
+                    "killed_on_timeout": killed,
+                }
             if self._server_reachable(timeout=1.0):
                 out = dict(launch)
                 out["ok"] = True
