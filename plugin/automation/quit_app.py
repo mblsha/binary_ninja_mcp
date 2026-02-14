@@ -463,20 +463,23 @@ def quit_workflow(
                         close_requested = True
                     else:
                         result["warnings"].append(close_tab_reason)
-                        queued = 0
-                        for widget in app.topLevelWidgets():
-                            try:
-                                if not widget.isVisible():
+                        if quit_app:
+                            queued = 0
+                            for widget in app.topLevelWidgets():
+                                try:
+                                    if not widget.isVisible():
+                                        continue
+                                    cls_name = type(widget).__name__.lower()
+                                    if "mainwindow" not in cls_name:
+                                        continue
+                                    QTimer.singleShot(0, widget.close)
+                                    queued += 1
+                                except Exception:
                                     continue
-                                cls_name = type(widget).__name__.lower()
-                                if "mainwindow" not in cls_name:
-                                    continue
-                                QTimer.singleShot(0, widget.close)
-                                queued += 1
-                            except Exception:
-                                continue
-                        result["actions"].append(f"queued_close_main_windows:{queued}")
-                        close_requested = queued > 0
+                            result["actions"].append(f"queued_close_main_windows:{queued}")
+                            close_requested = queued > 0
+                        else:
+                            result["actions"].append("skipped_close_main_windows_without_quit_app")
 
                 deadline = time.time() + (wait_ms / 1000.0)
                 clicked_count = 0

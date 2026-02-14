@@ -17,6 +17,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.api_versions import expected_api_version  # noqa: E402
+from shared.platform import (  # noqa: E402
+    find_binary_ninja_pids,
+    get_platform_adapter,
+    prepare_log_file,
+    signal_pid,
+    terminate_pid_tree,
+)
 
 from mcp_client import McpClient  # noqa: E402
 
@@ -65,8 +72,8 @@ def _server_reachable(base_url: str, timeout_s: float = 3.0) -> bool:
         return False
 
 
-def _has_gui_session() -> bool:
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+def _platform_adapter():
+    return get_platform_adapter()
 
 
 def _tail_log(log_path: str, max_lines: int = 60) -> str:
@@ -95,53 +102,15 @@ def _detect_startup_failure(log_path: str) -> str | None:
 
 
 def _kill_pid_or_group(pid: int, sig: int) -> None:
-    if pid <= 1:
-        return
-    try:
-        if hasattr(os, "killpg"):
-            os.killpg(pid, sig)
-        else:
-            os.kill(pid, sig)
-    except ProcessLookupError:
-        return
-    except Exception:
-        return
+    signal_pid(pid, sig)
 
 
 def _find_running_binja_pids(binary_path: str, include_any: bool = False) -> list[int]:
-    path_hint = str(binary_path or "").strip()
-    path_hint_lower = path_hint.lower()
-    out: list[int] = []
-    try:
-        proc = subprocess.run(
-            ["ps", "-eo", "pid=,args="],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except Exception:
-        return out
-
-    for raw_line in proc.stdout.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        parts = line.split(None, 1)
-        if len(parts) != 2:
-            continue
-        pid_text, cmd = parts
-        try:
-            pid = int(pid_text)
-        except ValueError:
-            continue
-        cmd_lower = cmd.lower()
-        if path_hint and path_hint_lower in cmd_lower:
-            out.append(pid)
-            continue
-        if include_any and ("binaryninja" in cmd_lower or "binja" in cmd_lower):
-            out.append(pid)
-    return sorted(set(p for p in out if p > 1))
+    return find_binary_ninja_pids(
+        binary_path=binary_path,
+        include_any=include_any,
+        adapter=_platform_adapter(),
+    )
 
 
 def _kill_existing_binja_processes(binary_path: str, include_any: bool = False) -> int:
@@ -149,9 +118,7 @@ def _kill_existing_binja_processes(binary_path: str, include_any: bool = False) 
     killed = 0
     for pid in pids:
         try:
-            _kill_pid_or_group(pid, signal.SIGTERM)
-            time.sleep(0.1)
-            _kill_pid_or_group(pid, signal.SIGKILL)
+            terminate_pid_tree(pid, grace_s=0.1)
             killed += 1
         except Exception:
             continue
@@ -190,9 +157,7 @@ def _cleanup_stale_pid_file(pid_file: Path) -> None:
         old_pid = -1
 
     if old_pid > 1:
-        _kill_pid_or_group(old_pid, signal.SIGTERM)
-        time.sleep(0.5)
-        _kill_pid_or_group(old_pid, signal.SIGKILL)
+        terminate_pid_tree(old_pid, grace_s=0.5)
     try:
         pid_file.unlink()
     except Exception:
@@ -270,32 +235,28 @@ def binja_process(base_url: str) -> Generator[subprocess.Popen | None, None, Non
         yield None
         return
 
-    binja_binary = os.environ.get("BINJA_BINARY")
+    adapter = _platform_adapter()
+    binja_binary = adapter.resolve_binary_path(explicit_path=os.environ.get("BINJA_BINARY"))
     if not binja_binary:
-        raise RuntimeError("BINJA_SPAWN=1 requires BINJA_BINARY to be set")
+        raise RuntimeError("BINJA_SPAWN=1 requires BINJA_BINARY (or an install in PATH)")
     if not Path(binja_binary).exists():
         raise RuntimeError(f"BINJA_BINARY does not exist: {binja_binary}")
-
-    # In headless shells, spawning GUI Binary Ninja is expected to fail.
-    # Prefer attaching to an already-running MCP server if available.
-    if (not _has_gui_session()) and (not os.environ.get("BINJA_QPA_PLATFORM")):
-        if _server_reachable(base_url, timeout_s=3.0):
-            yield None
-            return
-        pytest.skip(
-            "No GUI session detected (DISPLAY/WAYLAND_DISPLAY unset) and no running MCP server."
-        )
 
     log_path = os.environ.get("BINJA_LOG_PATH", "/tmp/binja-integration.log")
     pid_file = Path(os.environ.get("BINJA_PID_FILE", "/tmp/binja-integration.pid"))
     _prepare_clean_restart(binary_path=binja_binary, pid_file=pid_file)
+    launch_env = adapter.prepare_gui_env(os.environ.copy())
+    try:
+        prepare_log_file(log_path)
+    except Exception:
+        pass
     with open(log_path, "ab") as log_fp:
         proc = subprocess.Popen(
             [binja_binary],
             stdout=log_fp,
             stderr=subprocess.STDOUT,
             start_new_session=True,
-            env=os.environ.copy(),
+            env=launch_env,
         )
     try:
         pid_file.write_text(str(proc.pid))

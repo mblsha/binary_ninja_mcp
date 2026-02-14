@@ -81,7 +81,7 @@ ENDPOINT_SPECS: tuple[EndpointSpec, ...] = (
     EndpointSpec("GET", "/console/stats", False),
     EndpointSpec("GET", "/console/errors", False, minimal_params={"count": 5}),
     EndpointSpec("GET", "/console/complete", False, minimal_params={"partial": "bv.fun"}),
-    EndpointSpec("POST", "/load", True, minimal_json={"filepath": "__FIXTURE_BINARY__"}),
+    EndpointSpec("POST", "/load", False, minimal_json={"filepath": "__FIXTURE_BINARY__"}),
     EndpointSpec("POST", "/rename/function", True),
     EndpointSpec("POST", "/renameFunction", True),
     EndpointSpec(

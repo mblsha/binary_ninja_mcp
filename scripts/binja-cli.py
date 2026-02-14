@@ -6,8 +6,6 @@ Uses the same HTTP API as the MCP bridge but provides a terminal interface
 
 import json
 import os
-import signal
-import shutil
 import subprocess
 import sys
 import time
@@ -24,6 +22,12 @@ from shared.api_versions import (  # noqa: E402
     SUPPORTED_UI_CONTRACT_SCHEMA_VERSIONS,
     expected_api_version,
     normalize_endpoint_path,
+)
+from shared.platform import (  # noqa: E402
+    find_binary_ninja_pids,
+    get_platform_adapter,
+    prepare_log_file,
+    terminate_pid_tree,
 )
 
 STARTUP_FATAL_PATTERNS = (
@@ -275,53 +279,20 @@ class BinaryNinjaCLI(cli.Application):
             return False
 
     @staticmethod
+    def _platform_adapter():
+        return get_platform_adapter()
+
+    @staticmethod
     def _resolve_binary_path() -> str | None:
-        candidates = [
-            os.environ.get("BINJA_BINARY"),
-            "/home/mblsha/src/binja/binaryninja/binaryninja",
-            shutil.which("binaryninja"),
-            shutil.which("BinaryNinja"),
-        ]
-        for candidate in candidates:
-            if not candidate:
-                continue
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                return candidate
-        return None
+        adapter = get_platform_adapter()
+        return adapter.resolve_binary_path(explicit_path=os.environ.get("BINJA_BINARY"))
 
     def _find_running_binja_pids(self, binary_path: str, include_any: bool = False) -> list[int]:
-        path_hint = str(binary_path or "").strip().lower()
-        out: list[int] = []
-        try:
-            proc = subprocess.run(
-                ["ps", "-eo", "pid=,args="],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except Exception:
-            return out
-
-        for raw_line in proc.stdout.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            parts = line.split(None, 1)
-            if len(parts) != 2:
-                continue
-            pid_text, cmd = parts
-            try:
-                pid = int(pid_text)
-            except ValueError:
-                continue
-            cmd_lower = cmd.lower()
-            if path_hint and path_hint in cmd_lower:
-                out.append(pid)
-                continue
-            if include_any and ("binaryninja" in cmd_lower or "binja" in cmd_lower):
-                out.append(pid)
-        return sorted(set(p for p in out if p > 1))
+        return find_binary_ninja_pids(
+            binary_path=binary_path,
+            include_any=include_any,
+            adapter=self._platform_adapter(),
+        )
 
     def _kill_existing_binja_processes(self, binary_path: str, include_any: bool = False) -> int:
         killed = 0
@@ -330,38 +301,16 @@ class BinaryNinjaCLI(cli.Application):
                 killed += 1
         return killed
 
-    def _launch_binary_ninja_linux_wayland(self, filepath: str = "") -> dict:
-        """Best-effort Binary Ninja launch for Linux desktop sessions."""
-        if sys.platform != "linux":
-            return {"ok": False, "error": "auto-launch is only supported on Linux"}
+    def _launch_binary_ninja(self, filepath: str = "", force_restart: bool = False) -> dict:
+        """Best-effort Binary Ninja launch for supported desktop platforms."""
+        adapter = self._platform_adapter()
+        if not adapter.supports_auto_launch():
+            return {
+                "ok": False,
+                "error": f"auto-launch is not supported on platform '{sys.platform}'",
+            }
 
-        env = os.environ.copy()
-        qpa_platform = os.environ.get("BINJA_QPA_PLATFORM", "").strip().lower()
-        if qpa_platform:
-            env["QT_QPA_PLATFORM"] = qpa_platform
-        else:
-            has_wayland = bool(env.get("WAYLAND_DISPLAY"))
-            has_x11 = bool(env.get("DISPLAY"))
-            if has_wayland:
-                runtime_dir = env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-                env["QT_QPA_PLATFORM"] = "wayland"
-                env["WAYLAND_DISPLAY"] = env.get("WAYLAND_DISPLAY") or "wayland-0"
-                env["XDG_RUNTIME_DIR"] = runtime_dir
-                env["DBUS_SESSION_BUS_ADDRESS"] = env.get(
-                    "DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus"
-                )
-                env["XDG_SESSION_TYPE"] = env.get("XDG_SESSION_TYPE") or "wayland"
-            elif has_x11:
-                # Keep host defaults; forcing a plugin here often causes startup popups.
-                env.pop("QT_QPA_PLATFORM", None)
-            else:
-                return {
-                    "ok": False,
-                    "error": (
-                        "no GUI session detected (missing WAYLAND_DISPLAY/DISPLAY); "
-                        "refusing to auto-launch Binary Ninja"
-                    ),
-                }
+        env = adapter.prepare_gui_env(os.environ.copy())
 
         binary_path = self._resolve_binary_path()
 
@@ -375,7 +324,8 @@ class BinaryNinjaCLI(cli.Application):
             }
 
         # Launch regular UI mode to keep plugin loading behavior consistent.
-        if _bool_env("BINJA_FORCE_RESTART_ON_OPEN", True):
+        should_restart = force_restart or _bool_env("BINJA_FORCE_RESTART_ON_OPEN", True)
+        if should_restart:
             include_any = _bool_env("BINJA_KILL_ANY_BINJA", False)
             killed = self._kill_existing_binja_processes(
                 binary_path=binary_path,
@@ -392,7 +342,11 @@ class BinaryNinjaCLI(cli.Application):
         if filepath:
             args.extend(["-e", filepath])
 
-        log_path = "/tmp/binja-cli-launch.log"
+        log_path = os.environ.get("BINJA_LAUNCH_LOG_PATH", "/tmp/binja-cli-launch.log")
+        try:
+            prepare_log_file(log_path)
+        except Exception:
+            pass
         try:
             with open(log_path, "ab") as log_fp:
                 proc = subprocess.Popen(
@@ -408,26 +362,7 @@ class BinaryNinjaCLI(cli.Application):
         return {"ok": True, "binary": binary_path, "log": log_path, "pid": int(proc.pid)}
 
     def _terminate_launched_binary(self, pid: int) -> bool:
-        if not isinstance(pid, int) or pid <= 1:
-            return False
-        terminated = False
-        try:
-            if hasattr(os, "killpg"):
-                os.killpg(pid, signal.SIGTERM)
-            else:
-                os.kill(pid, signal.SIGTERM)
-            terminated = True
-        except Exception:
-            return False
-        time.sleep(0.5)
-        try:
-            if hasattr(os, "killpg"):
-                os.killpg(pid, signal.SIGKILL)
-            else:
-                os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
-        return terminated
+        return terminate_pid_tree(pid, grace_s=0.5)
 
     @staticmethod
     def _tail_log(log_path: str, max_lines: int = 60) -> str:
@@ -459,7 +394,7 @@ class BinaryNinjaCLI(cli.Application):
 
         # Launching with -e <file> can present modal import dialogs before MCP
         # automation has control. Start without a file, then let open() drive load.
-        launch = self._launch_binary_ninja_linux_wayland(filepath="")
+        launch = self._launch_binary_ninja(filepath="", force_restart=True)
         if not launch.get("ok"):
             return launch
 
@@ -472,10 +407,7 @@ class BinaryNinjaCLI(cli.Application):
                     killed = self._terminate_launched_binary(int(launch.get("pid") or 0))
                 return {
                     "ok": False,
-                    "error": (
-                        "Binary Ninja startup failed before MCP server came up: "
-                        f"{failure}"
-                    ),
+                    "error": (f"Binary Ninja startup failed before MCP server came up: {failure}"),
                     "log": launch.get("log"),
                     "binary": launch.get("binary"),
                     "killed_on_timeout": killed,
@@ -637,7 +569,7 @@ class Open(cli.Application):
     """Open a file and auto-resolve Binary Ninja's "Open with Options" dialog.
 
     Behavior:
-    - If MCP is not reachable on Linux, auto-launches Binary Ninja with Wayland defaults.
+    - If MCP is not reachable, auto-launches Binary Ninja on supported platforms.
     - If an "Open with Options" dialog is visible, optionally sets view type/platform and clicks "Open".
     - If no dialog is visible, falls back to `bn.load(filepath)` and updates MCP current_view.
     - Always reports inspected state/actions in JSON-like output.
@@ -921,7 +853,12 @@ class Decompile(cli.Application):
     """Decompile a function"""
 
     def main(self, function_name: str):
-        data = self.parent._request("GET", "decompile", {"name": function_name})
+        data = self.parent._request(
+            "GET",
+            "decompile",
+            {"name": function_name},
+            timeout=max(self.parent.request_timeout, 30.0),
+        )
 
         if self.parent.json_output:
             self.parent._output(data)
@@ -938,7 +875,12 @@ class Assembly(cli.Application):
     """Get assembly code for a function"""
 
     def main(self, function_name: str):
-        data = self.parent._request("GET", "assembly", {"name": function_name})
+        data = self.parent._request(
+            "GET",
+            "assembly",
+            {"name": function_name},
+            timeout=max(self.parent.request_timeout, 30.0),
+        )
 
         if self.parent.json_output:
             self.parent._output(data)
