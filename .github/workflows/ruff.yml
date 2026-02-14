@@ -19,8 +19,12 @@ jobs:
       - name: Check for hidden Unicode controls
         run: uv run python scripts/check_unicode_safety.py .
 
-      - name: Check /ui contract snapshots
-        run: uv run python test_ui_contract_snapshots.py
+      - name: Run offline unit tests
+        run: |
+          uv run python -m unittest \
+            test_automation_logic.py \
+            test_console_capture_adapter_unit.py \
+            test_ui_contract_snapshots.py
 
       - name: Ruff check
         run: uv tool run ruff@0.14.10 check --output-format=github .

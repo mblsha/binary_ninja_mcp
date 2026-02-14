@@ -12,6 +12,7 @@ from ..api.endpoints import BinaryNinjaEndpoints
 from .api_contracts import (
     as_dict,
     as_list,
+    allows_missing_api_version,
     expected_api_version,
     normalize_endpoint_path,
     normalize_ui_contract,
@@ -173,6 +174,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         if "text/plain" in content_type.lower() or not content_type:
             return {"name": post_data.strip()}
 
+        # Fallback for uncommon content-types.
+        return {"name": post_data.strip()}
+
     @staticmethod
     def _as_list(value: Any) -> list:
         return as_list(value)
@@ -198,6 +202,8 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         if received_raw is None:
             received_raw = self.headers.get("X-Binja-MCP-Api-Version")
         if received_raw is None:
+            if allows_missing_api_version(endpoint_path):
+                return True
             self._send_json_response(
                 {
                     "error": "Missing endpoint API version",

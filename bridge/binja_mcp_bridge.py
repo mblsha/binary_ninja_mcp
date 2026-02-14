@@ -1,33 +1,23 @@
 import json
+import sys
+from pathlib import Path
 
 import requests
 from mcp.server.fastmcp import FastMCP
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.api_versions import expected_api_version, normalize_endpoint_path  # noqa: E402
 
 binja_server_url = "http://localhost:9009"
 mcp = FastMCP("binja-mcp")
-DEFAULT_ENDPOINT_API_VERSION = 1
-ENDPOINT_API_VERSION_OVERRIDES = {
-    "/ui/open": 2,
-    "/ui/quit": 2,
-    "/ui/statusbar": 2,
-}
-
-
-def _normalize_endpoint_path(endpoint: str) -> str:
-    path = str(endpoint or "").strip()
-    if not path:
-        return "/"
-    if "?" in path:
-        path = path.split("?", 1)[0]
-    if not path.startswith("/"):
-        path = f"/{path}"
-    return path
 
 
 def _expected_api_version(endpoint: str) -> int:
-    endpoint_path = _normalize_endpoint_path(endpoint)
-    return ENDPOINT_API_VERSION_OVERRIDES.get(endpoint_path, DEFAULT_ENDPOINT_API_VERSION)
+    return expected_api_version(endpoint)
 
 
 def _request_headers(endpoint: str) -> dict[str, str]:
@@ -41,7 +31,7 @@ def _request_params(endpoint: str, params: dict | None = None) -> dict:
 
 
 def _validate_versioned_response(endpoint: str, response: requests.Response) -> tuple[bool, str]:
-    endpoint_path = _normalize_endpoint_path(endpoint)
+    endpoint_path = normalize_endpoint_path(endpoint)
     expected = _expected_api_version(endpoint)
 
     header_raw = response.headers.get("X-Binja-MCP-Api-Version")

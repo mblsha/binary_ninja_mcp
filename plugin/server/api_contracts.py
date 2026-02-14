@@ -2,16 +2,48 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
-DEFAULT_ENDPOINT_API_VERSION = 1
-ENDPOINT_API_VERSION_OVERRIDES = {
-    "/ui/open": 2,
-    "/ui/quit": 2,
-    "/ui/statusbar": 2,
-}
+try:
+    from shared.api_versions import (
+        DEFAULT_ENDPOINT_API_VERSION,
+        ENDPOINT_API_VERSION_OVERRIDES,
+        UI_CONTRACT_SCHEMA_VERSION,
+        allows_missing_api_version,
+        expected_api_version,
+        normalize_endpoint_path,
+    )
+except ImportError:
+    # Binary Ninja can import plugin modules with plugin/ as sys.path[0].
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from shared.api_versions import (
+        DEFAULT_ENDPOINT_API_VERSION,
+        ENDPOINT_API_VERSION_OVERRIDES,
+        UI_CONTRACT_SCHEMA_VERSION,
+        allows_missing_api_version,
+        expected_api_version,
+        normalize_endpoint_path,
+    )
 
-UI_CONTRACT_SCHEMA_VERSION = 1
+__all__ = [
+    "DEFAULT_ENDPOINT_API_VERSION",
+    "ENDPOINT_API_VERSION_OVERRIDES",
+    "UI_CONTRACT_SCHEMA_VERSION",
+    "UI_CONTRACT_REQUIRED_KEYS",
+    "allows_missing_api_version",
+    "expected_api_version",
+    "normalize_endpoint_path",
+    "as_list",
+    "as_contract_list",
+    "as_dict",
+    "normalize_ui_contract",
+    "has_ui_contract_shape",
+]
+
 UI_CONTRACT_REQUIRED_KEYS = (
     "ok",
     "schema_version",
@@ -24,26 +56,22 @@ UI_CONTRACT_REQUIRED_KEYS = (
 )
 
 
-def normalize_endpoint_path(path: str) -> str:
-    raw = str(path or "").strip()
-    if not raw:
-        return "/"
-    if "?" in raw:
-        raw = raw.split("?", 1)[0]
-    if not raw.startswith("/"):
-        raw = f"/{raw}"
-    return raw
-
-
-def expected_api_version(path: str) -> int:
-    endpoint_path = normalize_endpoint_path(path)
-    return ENDPOINT_API_VERSION_OVERRIDES.get(endpoint_path, DEFAULT_ENDPOINT_API_VERSION)
-
-
 def as_list(value: Any) -> list:
     if isinstance(value, list):
         return value
-    return []
+    if isinstance(value, tuple):
+        return list(value)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    return [value]
+
+
+def as_contract_list(value: Any) -> list:
+    # UI contract keys must always be arrays in JSON.
+    return as_list(value)
 
 
 def as_dict(value: Any) -> dict:
@@ -55,13 +83,16 @@ def as_dict(value: Any) -> dict:
 def normalize_ui_contract(endpoint_path: str, raw_result: Any) -> dict[str, Any]:
     endpoint = normalize_endpoint_path(endpoint_path)
     raw = raw_result if isinstance(raw_result, dict) else {"ok": False, "errors": [str(raw_result)]}
+    actions = as_contract_list(raw.get("actions"))
+    warnings = as_contract_list(raw.get("warnings"))
+    errors = as_contract_list(raw.get("errors"))
     return {
-        "ok": bool(raw.get("ok", not bool(raw.get("errors")))),
+        "ok": bool(raw.get("ok", not bool(errors))),
         "schema_version": UI_CONTRACT_SCHEMA_VERSION,
         "endpoint": endpoint,
-        "actions": as_list(raw.get("actions")),
-        "warnings": as_list(raw.get("warnings")),
-        "errors": as_list(raw.get("errors")),
+        "actions": actions,
+        "warnings": warnings,
+        "errors": errors,
         "state": as_dict(raw.get("state")),
         "result": raw,
     }

@@ -2,12 +2,17 @@
 """Snapshot checks for normalized /ui endpoint contracts."""
 
 import importlib
-import importlib.util
 import json
 import sys
 import unittest
 from pathlib import Path
 
+from shared.api_versions import (
+    DEFAULT_ENDPOINT_API_VERSION,
+    ENDPOINT_API_VERSION_OVERRIDES,
+    UI_CONTRACT_SCHEMA_VERSION,
+    expected_api_version,
+)
 
 THIS_DIR = Path(__file__).resolve().parent
 PLUGIN_DIR = THIS_DIR / "plugin"
@@ -69,32 +74,32 @@ class TestUIContractSnapshots(unittest.TestCase):
     def test_ui_contract_shape_and_versions(self):
         for endpoint in ("/ui/open", "/ui/quit", "/ui/statusbar"):
             with self.subTest(endpoint=endpoint):
-                self.assertEqual(api_contracts.expected_api_version(endpoint), 2)
+                self.assertEqual(expected_api_version(endpoint), 2)
                 payload = api_contracts.normalize_ui_contract(endpoint, {"ok": True})
                 self.assertTrue(api_contracts.has_ui_contract_shape(payload))
+                self.assertEqual(payload.get("schema_version"), UI_CONTRACT_SCHEMA_VERSION)
 
-    def test_version_maps_are_consistent_across_server_cli_and_bridge(self):
-        cli_path = THIS_DIR / "scripts" / "binja-cli.py"
-        spec = importlib.util.spec_from_file_location("binja_cli", cli_path)
-        cli_module = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(cli_module)
-
-        bridge_module = importlib.import_module("bridge.binja_mcp_bridge")
-
+    def test_shared_version_constants(self):
+        self.assertEqual(api_contracts.DEFAULT_ENDPOINT_API_VERSION, DEFAULT_ENDPOINT_API_VERSION)
         self.assertEqual(
-            cli_module.DEFAULT_ENDPOINT_API_VERSION, api_contracts.DEFAULT_ENDPOINT_API_VERSION
-        )
-        self.assertEqual(
-            cli_module.ENDPOINT_API_VERSION_OVERRIDES, api_contracts.ENDPOINT_API_VERSION_OVERRIDES
-        )
-        self.assertEqual(
-            bridge_module.DEFAULT_ENDPOINT_API_VERSION, api_contracts.DEFAULT_ENDPOINT_API_VERSION
-        )
-        self.assertEqual(
-            bridge_module.ENDPOINT_API_VERSION_OVERRIDES,
             api_contracts.ENDPOINT_API_VERSION_OVERRIDES,
+            ENDPOINT_API_VERSION_OVERRIDES,
         )
+
+    def test_scalar_errors_and_warnings_are_normalized_to_lists(self):
+        payload = api_contracts.normalize_ui_contract(
+            "/ui/open",
+            {
+                "ok": False,
+                "actions": "would_set_view_type",
+                "warnings": "dialog not visible",
+                "errors": "something failed",
+                "state": {},
+            },
+        )
+        self.assertEqual(payload["actions"], ["would_set_view_type"])
+        self.assertEqual(payload["warnings"], ["dialog not visible"])
+        self.assertEqual(payload["errors"], ["something failed"])
 
 
 if __name__ == "__main__":
