@@ -394,7 +394,7 @@ class BinaryNinjaCLI(cli.Application):
 
         # Launching with -e <file> can present modal import dialogs before MCP
         # automation has control. Start without a file, then let open() drive load.
-        launch = self._launch_binary_ninja(filepath="", force_restart=True)
+        launch = self._launch_binary_ninja(filepath="")
         if not launch.get("ok"):
             return launch
 
