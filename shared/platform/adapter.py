@@ -233,29 +233,65 @@ def find_binary_ninja_pids(
     return sorted(set(pid for pid in out if pid > 1))
 
 
-def signal_pid(pid: int, sig: int) -> None:
+def _pid_exists(pid: int) -> bool:
     if not isinstance(pid, int) or pid <= 1:
-        return
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Exists, but we do not have permission.
+        return True
+    except Exception:
+        return False
+    return True
+
+
+def signal_pid(pid: int, sig: int) -> bool:
+    if not isinstance(pid, int) or pid <= 1:
+        return False
     try:
         if hasattr(os, "killpg"):
             os.killpg(pid, sig)
-        else:
-            os.kill(pid, sig)
+            return True
     except ProcessLookupError:
-        return
+        # Not a group leader or group missing; try direct pid below.
+        pass
+    except PermissionError:
+        return False
     except Exception:
-        return
+        pass
+    try:
+        os.kill(pid, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return False
+    except Exception:
+        return False
 
 
 def terminate_pid_tree(pid: int, grace_s: float = 0.5) -> bool:
     if not isinstance(pid, int) or pid <= 1:
         return False
-    terminated = False
-    try:
-        signal_pid(pid, signal.SIGTERM)
-        terminated = True
-    except Exception:
+    if not _pid_exists(pid):
+        return False
+
+    sent_term = signal_pid(pid, signal.SIGTERM)
+    if not sent_term:
         return False
     time.sleep(max(0.0, float(grace_s)))
-    signal_pid(pid, signal.SIGKILL)
-    return terminated
+    if not _pid_exists(pid):
+        return True
+
+    sent_kill = signal_pid(pid, signal.SIGKILL)
+    if not sent_kill:
+        return False
+
+    for _ in range(20):
+        if not _pid_exists(pid):
+            return True
+        time.sleep(0.05)
+    return not _pid_exists(pid)
