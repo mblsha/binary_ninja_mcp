@@ -1,4 +1,4 @@
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import urllib.parse
 import errno
@@ -1552,6 +1552,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     view_type=str(params.get("view_type") or ""),
                     click_open=self._parse_bool(params.get("click_open"), True),
                     inspect_only=self._parse_bool(params.get("inspect_only"), False),
+                    timeout=params.get("timeout") or params.get("timeout_s"),
                 )
                 result = self._normalize_ui_contract(path, raw_result)
                 self._send_json_response(result)
@@ -1636,7 +1637,7 @@ class MCPServer:
             )
 
             try:
-                self.server = HTTPServer(server_address, handler_class)
+                self.server = ThreadingHTTPServer(server_address, handler_class)
             except OSError as e:
                 if e.errno == errno.EADDRINUSE:
                     bn.log_error(
