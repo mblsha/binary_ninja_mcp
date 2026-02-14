@@ -20,6 +20,14 @@ from shared.api_versions import expected_api_version  # noqa: E402
 
 from mcp_client import McpClient  # noqa: E402
 
+STARTUP_FATAL_PATTERNS = (
+    "could not connect to display",
+    "could not load the qt platform plugin",
+    "no qt platform plugin could be initialized",
+    "this application failed to start because no qt platform plugin could be initialized",
+    "fatal error",
+)
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
@@ -61,6 +69,17 @@ def _tail_log(log_path: str, max_lines: int = 60) -> str:
         return ""
     tail = lines[-max_lines:]
     return "\n".join(tail)
+
+
+def _detect_startup_failure(log_path: str) -> str | None:
+    tail = _tail_log(log_path, max_lines=120)
+    if not tail:
+        return None
+    lowered = tail.lower()
+    for marker in STARTUP_FATAL_PATTERNS:
+        if marker in lowered:
+            return marker
+    return None
 
 
 def _kill_pid_or_group(pid: int, sig: int) -> None:
@@ -118,6 +137,39 @@ def _cleanup_stale_pid_file(pid_file: Path) -> None:
         pass
 
 
+def _wait_for_server_or_fail_fast(
+    base_url: str,
+    timeout_s: float,
+    log_path: str,
+    proc: subprocess.Popen,
+) -> None:
+    deadline = time.time() + timeout_s
+    ver = expected_api_version("/status")
+    while time.time() < deadline:
+        if _detect_startup_failure(log_path):
+            _terminate_process(proc, grace_s=1.0)
+            log_tail = _tail_log(log_path)
+            raise RuntimeError(
+                "Binary Ninja startup failed before MCP was reachable"
+                + (f"\n--- binja log tail ---\n{log_tail}" if log_tail else "")
+            )
+        try:
+            response = requests.get(
+                f"{base_url.rstrip('/')}/status",
+                params={"_api_version": ver},
+                headers={"X-Binja-MCP-Api-Version": str(ver)},
+                timeout=2,
+            )
+            if response.status_code == 200:
+                return
+        except Exception:
+            pass
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"MCP server did not become reachable at {base_url} within {timeout_s} seconds"
+    )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def require_integration_mode() -> None:
     if os.environ.get("BINJA_INTEGRATION") != "1":
@@ -168,7 +220,12 @@ def binja_process(base_url: str) -> Generator[subprocess.Popen | None, None, Non
         pass
 
     try:
-        _wait_for_server(base_url, timeout_s=45.0)
+        _wait_for_server_or_fail_fast(
+            base_url=base_url,
+            timeout_s=45.0,
+            log_path=log_path,
+            proc=proc,
+        )
     except Exception as exc:
         _terminate_process(proc)
         log_tail = _tail_log(log_path)
