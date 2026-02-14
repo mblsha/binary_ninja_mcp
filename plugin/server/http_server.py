@@ -1113,8 +1113,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             # Endpoints that don't require a binary to be loaded
             no_binary_required = ["/logs", "/console", "/ui", "/load"]
             path = urllib.parse.urlparse(self.path).path
+            query_params = self._parse_query_params()
 
-            params = self._parse_post_params()
+            params = dict(query_params)
+            params.update(self._parse_post_params())
             if not self._validate_endpoint_version(path, params):
                 return
             self._maybe_refresh_current_view(params)
