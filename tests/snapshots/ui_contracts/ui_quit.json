@@ -1,0 +1,31 @@
+{
+  "ok": false,
+  "schema_version": 1,
+  "endpoint": "/ui/quit",
+  "actions": [
+    "close_tab_action_queued"
+  ],
+  "warnings": [
+    "confirmation dialog still visible"
+  ],
+  "errors": [],
+  "state": {
+    "stuck_confirmation": true
+  },
+  "result": {
+    "ok": false,
+    "actions": [
+      "close_tab_action_queued"
+    ],
+    "warnings": [
+      "confirmation dialog still visible"
+    ],
+    "errors": [],
+    "state": {
+      "stuck_confirmation": true
+    },
+    "policy": {
+      "resolved_decision": "dont-save"
+    }
+  }
+}

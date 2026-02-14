@@ -9,14 +9,14 @@ from ..core.binary_operations import BinaryOperations
 from ..core.console_capture_adapter import ConsoleCaptureAdapter
 from ..core.config import Config
 from ..api.endpoints import BinaryNinjaEndpoints
+from .api_contracts import (
+    as_dict,
+    as_list,
+    expected_api_version,
+    normalize_endpoint_path,
+    normalize_ui_contract,
+)
 from ..utils.string_utils import parse_int_or_default
-
-DEFAULT_ENDPOINT_API_VERSION = 1
-ENDPOINT_API_VERSION_OVERRIDES = {
-    "/ui/open": 2,
-    "/ui/quit": 2,
-    "/ui/statusbar": 2,
-}
 
 try:
     from ..core.log_capture import get_log_capture
@@ -175,30 +175,18 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _as_list(value: Any) -> list:
-        if isinstance(value, list):
-            return value
-        return []
+        return as_list(value)
 
     @staticmethod
     def _as_dict(value: Any) -> dict:
-        if isinstance(value, dict):
-            return value
-        return {}
+        return as_dict(value)
 
     @staticmethod
     def _normalize_endpoint_path(path: str) -> str:
-        raw = str(path or "").strip()
-        if not raw:
-            return "/"
-        if "?" in raw:
-            raw = raw.split("?", 1)[0]
-        if not raw.startswith("/"):
-            raw = f"/{raw}"
-        return raw
+        return normalize_endpoint_path(path)
 
     def _expected_api_version(self, path: str) -> int:
-        endpoint_path = self._normalize_endpoint_path(path)
-        return ENDPOINT_API_VERSION_OVERRIDES.get(endpoint_path, DEFAULT_ENDPOINT_API_VERSION)
+        return expected_api_version(path)
 
     def _validate_endpoint_version(self, path: str, params: Optional[Dict[str, Any]]) -> bool:
         endpoint_path = self._normalize_endpoint_path(path)
@@ -249,17 +237,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         return True
 
     def _normalize_ui_contract(self, endpoint_path: str, raw_result: Any) -> Dict[str, Any]:
-        raw = raw_result if isinstance(raw_result, dict) else {"ok": False, "errors": [str(raw_result)]}
-        return {
-            "ok": bool(raw.get("ok", not bool(raw.get("errors")))),
-            "schema_version": 1,
-            "endpoint": endpoint_path,
-            "actions": self._as_list(raw.get("actions")),
-            "warnings": self._as_list(raw.get("warnings")),
-            "errors": self._as_list(raw.get("errors")),
-            "state": self._as_dict(raw.get("state")),
-            "result": raw,
-        }
+        return normalize_ui_contract(endpoint_path, raw_result)
 
     @staticmethod
     def _parse_bool(value: Any, default: bool = False) -> bool:

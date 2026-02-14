@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "schema_version": 1,
+  "endpoint": "/ui/statusbar",
+  "actions": [],
+  "warnings": [
+    "no status bar text found"
+  ],
+  "errors": [],
+  "state": {},
+  "result": {
+    "ok": true,
+    "actions": [],
+    "warnings": [
+      "no status bar text found"
+    ],
+    "errors": [],
+    "state": {},
+    "status_source": "status_bar",
+    "status_text": "",
+    "status_items": []
+  }
+}

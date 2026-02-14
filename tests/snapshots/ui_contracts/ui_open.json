@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "schema_version": 1,
+  "endpoint": "/ui/open",
+  "actions": [
+    "dialog_detected",
+    "click_open"
+  ],
+  "warnings": [],
+  "errors": [],
+  "state": {
+    "loaded_filename": "/tmp/sample.bin"
+  },
+  "result": {
+    "ok": true,
+    "actions": [
+      "dialog_detected",
+      "click_open"
+    ],
+    "warnings": [],
+    "errors": [],
+    "state": {
+      "loaded_filename": "/tmp/sample.bin"
+    },
+    "dialog": {
+      "present": true
+    }
+  }
+}
