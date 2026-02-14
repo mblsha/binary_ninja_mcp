@@ -96,6 +96,56 @@ def _kill_pid_or_group(pid: int, sig: int) -> None:
         return
 
 
+def _find_running_binja_pids(binary_path: str, include_any: bool = False) -> list[int]:
+    path_hint = str(binary_path or "").strip()
+    path_hint_lower = path_hint.lower()
+    out: list[int] = []
+    try:
+        proc = subprocess.run(
+            ["ps", "-eo", "pid=,args="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return out
+
+    for raw_line in proc.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_text, cmd = parts
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        cmd_lower = cmd.lower()
+        if path_hint and path_hint_lower in cmd_lower:
+            out.append(pid)
+            continue
+        if include_any and ("binaryninja" in cmd_lower or "binja" in cmd_lower):
+            out.append(pid)
+    return sorted(set(p for p in out if p > 1))
+
+
+def _kill_existing_binja_processes(binary_path: str, include_any: bool = False) -> int:
+    pids = _find_running_binja_pids(binary_path=binary_path, include_any=include_any)
+    killed = 0
+    for pid in pids:
+        try:
+            _kill_pid_or_group(pid, signal.SIGTERM)
+            time.sleep(0.1)
+            _kill_pid_or_group(pid, signal.SIGKILL)
+            killed += 1
+        except Exception:
+            continue
+    return killed
+
+
 def _terminate_process(proc: subprocess.Popen | None, grace_s: float = 8.0) -> None:
     if proc is None:
         return
@@ -135,6 +185,13 @@ def _cleanup_stale_pid_file(pid_file: Path) -> None:
         pid_file.unlink()
     except Exception:
         pass
+
+
+def _prepare_clean_restart(binary_path: str, pid_file: Path) -> None:
+    _cleanup_stale_pid_file(pid_file)
+    if _env_flag("BINJA_FORCE_RESTART", default=True):
+        include_any = _env_flag("BINJA_KILL_ANY_BINJA", default=False)
+        _kill_existing_binja_processes(binary_path=binary_path, include_any=include_any)
 
 
 def _wait_for_server_or_fail_fast(
@@ -205,7 +262,7 @@ def binja_process(base_url: str) -> Generator[subprocess.Popen | None, None, Non
 
     log_path = os.environ.get("BINJA_LOG_PATH", "/tmp/binja-integration.log")
     pid_file = Path(os.environ.get("BINJA_PID_FILE", "/tmp/binja-integration.pid"))
-    _cleanup_stale_pid_file(pid_file)
+    _prepare_clean_restart(binary_path=binja_binary, pid_file=pid_file)
     with open(log_path, "ab") as log_fp:
         proc = subprocess.Popen(
             [binja_binary],

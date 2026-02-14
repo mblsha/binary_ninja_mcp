@@ -274,6 +274,62 @@ class BinaryNinjaCLI(cli.Application):
         except Exception:
             return False
 
+    @staticmethod
+    def _resolve_binary_path() -> str | None:
+        candidates = [
+            os.environ.get("BINJA_BINARY"),
+            "/home/mblsha/src/binja/binaryninja/binaryninja",
+            shutil.which("binaryninja"),
+            shutil.which("BinaryNinja"),
+        ]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+
+    def _find_running_binja_pids(self, binary_path: str, include_any: bool = False) -> list[int]:
+        path_hint = str(binary_path or "").strip().lower()
+        out: list[int] = []
+        try:
+            proc = subprocess.run(
+                ["ps", "-eo", "pid=,args="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except Exception:
+            return out
+
+        for raw_line in proc.stdout.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            pid_text, cmd = parts
+            try:
+                pid = int(pid_text)
+            except ValueError:
+                continue
+            cmd_lower = cmd.lower()
+            if path_hint and path_hint in cmd_lower:
+                out.append(pid)
+                continue
+            if include_any and ("binaryninja" in cmd_lower or "binja" in cmd_lower):
+                out.append(pid)
+        return sorted(set(p for p in out if p > 1))
+
+    def _kill_existing_binja_processes(self, binary_path: str, include_any: bool = False) -> int:
+        killed = 0
+        for pid in self._find_running_binja_pids(binary_path=binary_path, include_any=include_any):
+            if self._terminate_launched_binary(pid):
+                killed += 1
+        return killed
+
     def _launch_binary_ninja_linux_wayland(self, filepath: str = "") -> dict:
         """Best-effort Binary Ninja launch for Linux desktop sessions."""
         if sys.platform != "linux":
@@ -307,19 +363,7 @@ class BinaryNinjaCLI(cli.Application):
                     ),
                 }
 
-        candidates = [
-            os.environ.get("BINJA_BINARY"),
-            "/home/mblsha/src/binja/binaryninja/binaryninja",
-            shutil.which("binaryninja"),
-            shutil.which("BinaryNinja"),
-        ]
-        binary_path = None
-        for candidate in candidates:
-            if not candidate:
-                continue
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                binary_path = candidate
-                break
+        binary_path = self._resolve_binary_path()
 
         if binary_path is None:
             return {
@@ -331,6 +375,19 @@ class BinaryNinjaCLI(cli.Application):
             }
 
         # Launch regular UI mode to keep plugin loading behavior consistent.
+        if _bool_env("BINJA_FORCE_RESTART_ON_OPEN", True):
+            include_any = _bool_env("BINJA_KILL_ANY_BINJA", False)
+            killed = self._kill_existing_binja_processes(
+                binary_path=binary_path,
+                include_any=include_any,
+            )
+            if killed and self.verbose:
+                print(
+                    colors.yellow
+                    | f"Killed {killed} existing Binary Ninja process(es) before launch.",
+                    file=sys.stderr,
+                )
+
         args = [binary_path]
         if filepath:
             args.extend(["-e", filepath])

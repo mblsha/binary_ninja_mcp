@@ -17,6 +17,9 @@ jobs:
       BINJA_BINARY: ${{ vars.BINJA_BINARY }}
       BINJA_LOG_PATH: ${{ vars.BINJA_LOG_PATH || '/tmp/binja-integration.log' }}
       BINJA_UI_DESTRUCTIVE: ${{ vars.BINJA_UI_DESTRUCTIVE || '1' }}
+      BINJA_FORCE_RESTART: ${{ vars.BINJA_FORCE_RESTART || '1' }}
+      BINJA_KILL_ANY_BINJA: ${{ vars.BINJA_KILL_ANY_BINJA || '0' }}
+      BINJA_QPA_PLATFORM: ${{ vars.BINJA_QPA_PLATFORM }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
