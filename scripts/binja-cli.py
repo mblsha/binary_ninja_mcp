@@ -624,6 +624,7 @@ class Open(cli.Application):
             "view_type": self.view_type or "",
             "click_open": not self.no_click,
             "inspect_only": self.inspect_only,
+            "prefer_ui_open": True,
         }
 
         parsed = self.parent._request(

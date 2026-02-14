@@ -358,8 +358,10 @@ def open_file_workflow(
     target_file = result["input"]["filepath"]
     target_platform = result["input"]["platform"]
     target_view_type = result["input"]["view_type"]
+    # Prefer UIContext-based opening by default so files are visible in the UI,
+    # not only loaded in backend state via bn.load fallback.
     prefer_ui_open_raw = _unused.get("prefer_ui_open")
-    prefer_ui_open = False if prefer_ui_open_raw is None else bool(prefer_ui_open_raw)
+    prefer_ui_open = True if prefer_ui_open_raw is None else bool(prefer_ui_open_raw)
 
     if bn is None:
         result["ok"] = False
