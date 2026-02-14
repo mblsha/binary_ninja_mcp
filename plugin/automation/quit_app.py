@@ -531,12 +531,14 @@ def quit_workflow(
             except Exception:
                 result["state"]["quit_on_last_window_closed_after"] = None
 
-            if quit_app:
+            if quit_app and (not inspect_only):
                 try:
                     QTimer.singleShot(quit_delay_ms, app.quit)
                     result["actions"].append(f"scheduled_app_quit:{quit_delay_ms}ms")
                 except Exception as exc:
                     result["warnings"].append(f"unable to schedule app.quit(): {exc}")
+            elif quit_app and inspect_only:
+                result["actions"].append("skipped_app_quit_inspect_only")
 
         if result["errors"]:
             result["ok"] = False
