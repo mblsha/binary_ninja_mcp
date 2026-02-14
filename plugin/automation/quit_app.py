@@ -310,7 +310,9 @@ def quit_workflow(
             chosen_dialog["_widget"], resolved_decision
         )
         if chosen_button is None:
-            warn = f"confirmation dialog detected but no matching '{resolved_decision}' button found"
+            warn = (
+                f"confirmation dialog detected but no matching '{resolved_decision}' button found"
+            )
             if warn not in result["warnings"]:
                 result["warnings"].append(warn)
             return False
@@ -409,9 +411,13 @@ def quit_workflow(
             )
             result["policy"]["save_target"] = save_target
             if current_bv is None:
-                result["warnings"].append("save policy selected but no current BinaryView is available")
+                result["warnings"].append(
+                    "save policy selected but no current BinaryView is available"
+                )
             elif not save_target:
-                result["warnings"].append("save policy selected but no save target could be resolved")
+                result["warnings"].append(
+                    "save policy selected but no save target could be resolved"
+                )
             else:
                 try:
                     save_ok = bool(current_bv.create_database(str(save_target)))

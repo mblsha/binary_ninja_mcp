@@ -365,7 +365,7 @@ def open_file_workflow(
 
         view_combo = None
         if target_view_type:
-            best_view_score = -10**9
+            best_view_score = -(10**9)
             for combo in combos:
                 idx = _find_item_index_combo(combo, target_view_type)
                 if idx < 0:
@@ -419,7 +419,7 @@ def open_file_workflow(
         if target_platform:
             platform_combo = None
             platform_idx = -1
-            best_score = -10**9
+            best_score = -(10**9)
             for combo in combos:
                 if view_combo is not None and combo is view_combo:
                     continue
@@ -626,7 +626,9 @@ def open_file_workflow(
                     time.sleep(0.02)
 
             if _find_options_dialog(app) is not None:
-                result["warnings"].append("open dialog remained visible after final resolution pass")
+                result["warnings"].append(
+                    "open dialog remained visible after final resolution pass"
+                )
 
         if loaded_bv is None:
             loaded_bv = _get_mcp_current_view()

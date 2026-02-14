@@ -60,8 +60,7 @@ def main() -> int:
                     continue
                 name = unicodedata.name(ch, "UNKNOWN")
                 failures.append(
-                    f"{path.relative_to(root)}:{line_num}:{col_num} "
-                    f"U+{codepoint:04X} {name}"
+                    f"{path.relative_to(root)}:{line_num}:{col_num} U+{codepoint:04X} {name}"
                 )
 
     if failures:

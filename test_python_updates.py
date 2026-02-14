@@ -124,7 +124,10 @@ def test_mcp_bridge():
 
             if response.status_code == 200:
                 data = response.json()
-                if int(response.headers.get("X-Binja-MCP-Api-Version", -1)) != DEFAULT_ENDPOINT_API_VERSION:
+                if (
+                    int(response.headers.get("X-Binja-MCP-Api-Version", -1))
+                    != DEFAULT_ENDPOINT_API_VERSION
+                ):
                     print(
                         "❌ Endpoint API version mismatch (header): "
                         f"{response.headers.get('X-Binja-MCP-Api-Version')}"

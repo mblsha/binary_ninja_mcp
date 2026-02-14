@@ -170,7 +170,9 @@ class BinaryNinjaCLI(cli.Application):
                     f"client={expected_api_version}, server_header={header_version}"
                 )
 
-            body_version_raw = response_data.get("_api_version") if isinstance(response_data, dict) else None
+            body_version_raw = (
+                response_data.get("_api_version") if isinstance(response_data, dict) else None
+            )
             if body_version_raw is None:
                 raise RuntimeError(f"missing _api_version response field for {endpoint_path}")
             try:

@@ -294,6 +294,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
         try:
             import binaryninjaui  # type: ignore
+
             if not hasattr(binaryninjaui, "UIContext"):
                 return
 
@@ -1562,7 +1563,11 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._maybe_refresh_current_view(clear_if_missing=True)
                 if self.binary_ops and self.binary_ops.current_view is None:
-                    actions = self._as_list(raw_result.get("actions")) if isinstance(raw_result, dict) else []
+                    actions = (
+                        self._as_list(raw_result.get("actions"))
+                        if isinstance(raw_result, dict)
+                        else []
+                    )
                     if "cleared_current_view" not in actions:
                         actions.append("cleared_current_view")
                     if isinstance(raw_result, dict):
