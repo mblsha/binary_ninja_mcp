@@ -1,4 +1,4 @@
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import urllib.parse
 import errno
@@ -334,7 +334,19 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     current_view = tab_views[0]
                 self.binary_ops.current_view = current_view
             elif clear_if_missing:
-                self.binary_ops.current_view = None
+                existing = self.binary_ops.current_view
+                keep_existing = False
+                if existing is not None:
+                    try:
+                        file_obj = getattr(existing, "file", None)
+                        filename = (
+                            getattr(file_obj, "filename", None) if file_obj is not None else None
+                        )
+                        keep_existing = bool(filename)
+                    except Exception:
+                        keep_existing = False
+                if not keep_existing:
+                    self.binary_ops.current_view = None
         except Exception:
             # UI not available (headless) or API mismatch; ignore.
             pass
@@ -1099,7 +1111,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             # Endpoints that don't require a binary to be loaded
-            no_binary_required = ["/logs", "/console", "/ui"]
+            no_binary_required = ["/logs", "/console", "/ui", "/load"]
             path = urllib.parse.urlparse(self.path).path
 
             params = self._parse_post_params()
@@ -1637,7 +1649,7 @@ class MCPServer:
             )
 
             try:
-                self.server = ThreadingHTTPServer(server_address, handler_class)
+                self.server = HTTPServer(server_address, handler_class)
             except OSError as e:
                 if e.errno == errno.EADDRINUSE:
                     bn.log_error(

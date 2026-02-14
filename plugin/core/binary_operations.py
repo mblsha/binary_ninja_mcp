@@ -100,30 +100,37 @@ class BinaryOperations:
     def load_binary(self, filepath: str) -> bn.BinaryView:
         """Load a binary file using the appropriate method based on the Binary Ninja API version"""
         try:
-            if hasattr(bn, "open_view"):
+            loaded_view: Optional[bn.BinaryView] = None
+            if hasattr(bn, "load"):
+                bn.log_info("Using bn.load method")
+                loaded_view = bn.load(filepath)
+            elif hasattr(bn, "open_view"):
                 bn.log_info("Using bn.open_view method")
-                self._current_view = bn.open_view(filepath)
+                loaded_view = bn.open_view(filepath)
             elif hasattr(bn, "BinaryViewType") and hasattr(bn.BinaryViewType, "get_view_of_file"):
                 bn.log_info("Using BinaryViewType.get_view_of_file method")
                 file_metadata = bn.FileMetadata()
                 try:
                     if hasattr(bn.BinaryViewType, "get_default_options"):
                         options = bn.BinaryViewType.get_default_options()
-                        self._current_view = bn.BinaryViewType.get_view_of_file(
+                        loaded_view = bn.BinaryViewType.get_view_of_file(
                             filepath, file_metadata, options
                         )
                     else:
-                        self._current_view = bn.BinaryViewType.get_view_of_file(
-                            filepath, file_metadata
-                        )
+                        loaded_view = bn.BinaryViewType.get_view_of_file(filepath, file_metadata)
                 except TypeError:
-                    self._current_view = bn.BinaryViewType.get_view_of_file(filepath)
+                    loaded_view = bn.BinaryViewType.get_view_of_file(filepath)
             else:
-                bn.log_info("Using legacy method")
-                # Try the simplest approach that should work
-                self._current_view = bn.BinaryViewType.get_view_of_file(filepath)
+                raise RuntimeError(
+                    "Binary Ninja API does not expose bn.load, bn.open_view, "
+                    "or BinaryViewType.get_view_of_file"
+                )
 
-            return self._current_view
+            if loaded_view is None:
+                raise RuntimeError(f"failed to load binary view for '{filepath}'")
+
+            self.current_view = loaded_view
+            return loaded_view
         except Exception as e:
             bn.log_error(f"Failed to load binary: {e}")
             raise
