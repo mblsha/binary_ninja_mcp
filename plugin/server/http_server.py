@@ -14,6 +14,7 @@ from .api_contracts import (
     as_list,
     allows_missing_api_version,
     expected_api_version,
+    get_endpoint_registry_json,
     normalize_endpoint_path,
     normalize_ui_contract,
 )
@@ -341,7 +342,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             # Endpoints that don't require a binary to be loaded
-            no_binary_required = ["/status", "/logs", "/console"]
+            no_binary_required = ["/status", "/logs", "/console", "/meta"]
             params = self._parse_query_params()
             path = urllib.parse.urlparse(self.path).path
             if not self._validate_endpoint_version(path, params):
@@ -364,6 +365,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     else None,
                 }
                 self._send_json_response(status)
+
+            elif path == "/meta/endpoints":
+                self._send_json_response({"endpoints": get_endpoint_registry_json()})
 
             elif path == "/functions" or path == "/methods":
                 functions = self.binary_ops.get_function_names(offset, limit)

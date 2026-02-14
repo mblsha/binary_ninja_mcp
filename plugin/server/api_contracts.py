@@ -15,6 +15,7 @@ try:
         expected_api_version,
         normalize_endpoint_path,
     )
+    from shared.endpoints_manifest import get_endpoint_registry_json
 except ImportError:
     # Binary Ninja can import plugin modules with plugin/ as sys.path[0].
     repo_root = Path(__file__).resolve().parents[2]
@@ -28,6 +29,7 @@ except ImportError:
         expected_api_version,
         normalize_endpoint_path,
     )
+    from shared.endpoints_manifest import get_endpoint_registry_json
 
 __all__ = [
     "DEFAULT_ENDPOINT_API_VERSION",
@@ -37,6 +39,7 @@ __all__ = [
     "allows_missing_api_version",
     "expected_api_version",
     "normalize_endpoint_path",
+    "get_endpoint_registry_json",
     "as_list",
     "as_contract_list",
     "as_dict",

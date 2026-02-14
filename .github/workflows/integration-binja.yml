@@ -1,0 +1,27 @@
+name: Binary Ninja Integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * *"
+
+jobs:
+  integration:
+    runs-on: self-hosted
+    timeout-minutes: 60
+    env:
+      BINJA_INTEGRATION: "1"
+      BINJA_MCP_BASE_URL: ${{ vars.BINJA_MCP_BASE_URL || 'http://localhost:9009' }}
+      BINJA_FIXTURE_BINARY: ${{ vars.BINJA_FIXTURE_BINARY || '/bin/ls' }}
+      BINJA_SPAWN: ${{ vars.BINJA_SPAWN || '0' }}
+      BINJA_BINARY: ${{ vars.BINJA_BINARY }}
+      BINJA_LOG_PATH: ${{ vars.BINJA_LOG_PATH || '/tmp/binja-integration.log' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Run integration tests
+        run: uv run --with pytest pytest -m binja tests/integration -q
