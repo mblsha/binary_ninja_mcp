@@ -772,11 +772,10 @@ def open_file_workflow(
                 result["actions"].append("scheduled_open_workflow_on_main_thread")
                 scheduled = True
             except Exception as exc:
-                result["warnings"].append(
-                    f"failed to schedule open workflow on main thread: {exc}"
-                )
+                result["warnings"].append(f"failed to schedule open workflow on main thread: {exc}")
 
         if (not scheduled) and hasattr(bn, "execute_on_main_thread_and_wait"):
+
             def _worker() -> None:
                 try:
                     bn.execute_on_main_thread_and_wait(_main_thread_runner)

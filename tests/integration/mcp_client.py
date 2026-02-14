@@ -58,16 +58,16 @@ class McpClient:
         assert isinstance(body, dict), f"{method} {endpoint}: expected object JSON body"
 
         header_version = int(response.headers.get("X-Binja-MCP-Api-Version", "-1"))
-        assert (
-            header_version == expected_version
-        ), f"{method} {endpoint}: header version {header_version} != {expected_version}"
+        assert header_version == expected_version, (
+            f"{method} {endpoint}: header version {header_version} != {expected_version}"
+        )
         body_version = int(body.get("_api_version", -1))
-        assert (
-            body_version == expected_version
-        ), f"{method} {endpoint}: body version {body_version} != {expected_version}"
+        assert body_version == expected_version, (
+            f"{method} {endpoint}: body version {body_version} != {expected_version}"
+        )
         body_endpoint = normalize_endpoint_path(body.get("_endpoint"))
-        assert (
-            body_endpoint == endpoint
-        ), f"{method} {endpoint}: body endpoint {body_endpoint!r} != {endpoint!r}"
+        assert body_endpoint == endpoint, (
+            f"{method} {endpoint}: body endpoint {body_endpoint!r} != {endpoint!r}"
+        )
 
         return response, body
