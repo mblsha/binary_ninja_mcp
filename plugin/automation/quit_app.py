@@ -247,8 +247,10 @@ def quit_workflow(
                     is_modal = bool(widget.isModal())
                 except Exception:
                     is_modal = False
-                if ("messagebox" not in cls_norm) and ("modified" not in title_norm) and (
-                    "dialog" not in cls_norm or not is_modal
+                if (
+                    ("messagebox" not in cls_norm)
+                    and ("modified" not in title_norm)
+                    and ("dialog" not in cls_norm or not is_modal)
                 ):
                     continue
 

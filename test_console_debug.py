@@ -5,6 +5,7 @@ Debug script to understand console capture initialization issues
 
 import sys
 
+
 def main() -> int:
     try:
         import binaryninja as bn
