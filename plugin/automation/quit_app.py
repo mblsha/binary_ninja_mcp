@@ -205,7 +205,8 @@ def quit_workflow(
                 continue
 
             try:
-                push_buttons = widget.findChildren(QPushButton, options=Qt.FindDirectChildrenOnly)
+                # Search recursively; some Qt dialogs nest buttons in a button-box.
+                push_buttons = widget.findChildren(QPushButton)
             except Exception:
                 push_buttons = []
 
@@ -230,7 +231,14 @@ def quit_workflow(
             if not buttons:
                 title_norm = normalize_label(widget.windowTitle())
                 cls_norm = type(widget).__name__.lower()
-                if "messagebox" not in cls_norm and "modified" not in title_norm:
+                is_modal = False
+                try:
+                    is_modal = bool(widget.isModal())
+                except Exception:
+                    is_modal = False
+                if ("messagebox" not in cls_norm) and ("modified" not in title_norm) and (
+                    "dialog" not in cls_norm or not is_modal
+                ):
                     continue
 
             tokens = {b["norm"] for b in buttons}
@@ -366,7 +374,6 @@ def quit_workflow(
             return False, "close_tab_action_disabled"
         try:
             QTimer.singleShot(0, best.trigger)
-            QApplication.processEvents()
             return True, "close_tab_action_queued"
         except Exception as exc:
             return False, f"close_tab_action_trigger_failed:{exc}"
@@ -482,30 +489,40 @@ def quit_workflow(
                         else:
                             result["actions"].append("skipped_close_main_windows_without_quit_app")
 
-                deadline = time.time() + (wait_ms / 1000.0)
-                clicked_count = 0
-                quiet_cycles = 0
-                while time.time() < deadline:
-                    app.processEvents()
-                    if click_confirmation_dialog(app, resolved):
-                        clicked_count += 1
-                        quiet_cycles = 0
-                        for _ in range(4):
-                            app.processEvents()
-                            time.sleep(0.01)
-                        continue
+                click_count_holder = {"count": 0}
+                dialog_watch_timer = QTimer()
+                dialog_watch_timer.setInterval(30)
 
-                    dialogs = collect_confirmation_dialogs(app)
-                    if dialogs:
-                        quiet_cycles = 0
-                    else:
-                        quiet_cycles += 1
-                        if close_requested and quiet_cycles >= 5:
-                            break
-                    time.sleep(0.03)
+                def _watch_dialogs() -> None:
+                    try:
+                        if click_confirmation_dialog(app, resolved):
+                            click_count_holder["count"] += 1
+                    except Exception:
+                        # Keep the watcher alive even if one click attempt fails.
+                        return
+
+                dialog_watch_timer.timeout.connect(_watch_dialogs)
+                dialog_watch_timer.start()
+
+                deadline = time.time() + (wait_ms / 1000.0)
+                quiet_cycles = 0
+                try:
+                    while time.time() < deadline:
+                        app.processEvents()
+
+                        dialogs = collect_confirmation_dialogs(app)
+                        if dialogs:
+                            quiet_cycles = 0
+                        else:
+                            quiet_cycles += 1
+                            if close_requested and quiet_cycles >= 5:
+                                break
+                        time.sleep(0.03)
+                finally:
+                    dialog_watch_timer.stop()
 
                 dialogs = collect_confirmation_dialogs(app)
-                if clicked_count == 0 and not dialogs:
+                if click_count_holder["count"] == 0 and not dialogs:
                     result["actions"].append("no_confirmation_dialog_detected_after_close")
 
         dialogs_after = collect_confirmation_dialogs(app)
