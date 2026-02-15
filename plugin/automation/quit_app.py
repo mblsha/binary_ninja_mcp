@@ -196,7 +196,7 @@ def quit_workflow(
     }
 
     try:
-        from PySide6.QtCore import QTimer, Qt
+        from PySide6.QtCore import QTimer
         from PySide6.QtGui import QAction
         from PySide6.QtWidgets import QApplication, QPushButton
     except Exception as exc:
