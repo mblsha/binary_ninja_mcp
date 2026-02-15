@@ -7,6 +7,7 @@ management for CLI and integration harnesses.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -103,34 +104,162 @@ class LinuxAdapter(_BaseAdapter):
             "/opt/binaryninja/binaryninja",
         ]
 
+    @staticmethod
+    def _runtime_dir(env: Mapping[str, str]) -> str:
+        return str(env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+
+    @staticmethod
+    def _parse_display_number(display_value: str | None) -> int | None:
+        raw = str(display_value or "").strip()
+        if not raw:
+            return None
+        if raw.startswith(":"):
+            suffix = raw[1:]
+        elif ":" in raw:
+            suffix = raw.split(":", 1)[1]
+        else:
+            return None
+        number_text = suffix.split(".", 1)[0]
+        if not number_text.isdigit():
+            return None
+        return int(number_text)
+
+    @staticmethod
+    def _is_network_x11_display(display_value: str | None) -> bool:
+        raw = str(display_value or "").strip()
+        return bool(raw and not raw.startswith(":"))
+
+    def _has_x11_socket(self, display_value: str | None) -> bool:
+        number = self._parse_display_number(display_value)
+        if number is None:
+            return False
+        return Path(f"/tmp/.X11-unix/X{number}").exists()
+
+    @staticmethod
+    def _has_wayland_socket(runtime_dir: str, display_name: str | None) -> bool:
+        raw = str(display_name or "").strip()
+        if not raw:
+            return False
+        return Path(runtime_dir, raw).exists()
+
+    def _detect_wayland_display(self, env: Mapping[str, str], runtime_dir: str) -> str | None:
+        current = str(env.get("WAYLAND_DISPLAY", "")).strip()
+        candidates: list[str] = []
+        if current:
+            candidates.append(current)
+        if "wayland-0" not in candidates:
+            candidates.append("wayland-0")
+
+        for candidate in candidates:
+            if self._has_wayland_socket(runtime_dir, candidate):
+                return candidate
+
+        # Keep an explicit caller-provided display as a best-effort fallback.
+        if current:
+            return current
+        return None
+
+    @staticmethod
+    def _tigervnc_process_running(display_value: str) -> bool:
+        display = str(display_value or "").strip()
+        if not display:
+            return False
+
+        pattern = LinuxAdapter._display_token_pattern(display)
+        if pattern is None:
+            return False
+
+        try:
+            proc = subprocess.run(
+                ["ps", "-eo", "args="],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except Exception:
+            return False
+
+        if not proc.stdout:
+            return False
+
+        for line in proc.stdout.splitlines():
+            lowered = line.lower()
+            has_tigervnc_marker = ("xtigervnc" in lowered) or (
+                "tigervnc" in lowered and "vncserver" in lowered
+            )
+            if has_tigervnc_marker and pattern.search(lowered):
+                return True
+        return False
+
+    @staticmethod
+    def _display_token_pattern(display_value: str) -> re.Pattern[str] | None:
+        number = LinuxAdapter._parse_display_number(display_value)
+        if number is None:
+            return None
+        # Match :N or :N.screen but avoid accidental matches like :10 when looking for :1.
+        return re.compile(rf"(?<![0-9]):{number}(?:\.[0-9]+)?(?![0-9])")
+
+    def _detect_tigervnc_display(self) -> str | None:
+        display = ":1"
+        if self._has_x11_socket(display):
+            return display
+        if self._tigervnc_process_running(display):
+            return display
+        return None
+
+    def _detect_existing_x11_display(self, env: Mapping[str, str]) -> str | None:
+        display = str(env.get("DISPLAY", "")).strip()
+        if not display:
+            return None
+        if self._is_network_x11_display(display):
+            return display
+        if self._has_x11_socket(display):
+            return display
+        return None
+
+    def _detect_display_backend(self, env: Mapping[str, str]) -> tuple[str | None, str | None]:
+        runtime_dir = self._runtime_dir(env)
+
+        # Priority 1: Wayland (validated by socket where possible).
+        wayland_display = self._detect_wayland_display(env, runtime_dir)
+        if wayland_display:
+            return "wayland", wayland_display
+
+        x11_display = self._detect_existing_x11_display(env)
+        if x11_display:
+            return "x11", x11_display
+
+        # Priority 2 fallback (only when no usable DISPLAY): TigerVNC on :1.
+        tigervnc_display = self._detect_tigervnc_display()
+        if tigervnc_display:
+            return "x11", tigervnc_display
+
+        return None, None
+
     def prepare_gui_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
         env = dict(source_env)
-        runtime_dir = env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-        has_wayland = bool(env.get("WAYLAND_DISPLAY"))
-        has_x11 = bool(env.get("DISPLAY"))
+        runtime_dir = self._runtime_dir(env)
+        backend, display_value = self._detect_display_backend(env)
 
-        if not has_wayland and not has_x11:
-            # Linux default for non-login shells where display vars are missing.
-            env["WAYLAND_DISPLAY"] = "wayland-0"
+        if backend == "wayland":
+            env["WAYLAND_DISPLAY"] = str(display_value or "wayland-0")
             env["XDG_RUNTIME_DIR"] = runtime_dir
             env["DBUS_SESSION_BUS_ADDRESS"] = env.get(
                 "DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus"
             )
             env["XDG_SESSION_TYPE"] = env.get("XDG_SESSION_TYPE") or "wayland"
-            has_wayland = True
+            env.pop("DISPLAY", None)
+        elif backend == "x11":
+            env["DISPLAY"] = str(display_value or "")
+            env.pop("WAYLAND_DISPLAY", None)
 
         qpa_platform = str(env.get("BINJA_QPA_PLATFORM", "")).strip().lower()
         if qpa_platform:
             env["QT_QPA_PLATFORM"] = qpa_platform
-        elif has_wayland:
+        elif backend == "wayland":
             env["QT_QPA_PLATFORM"] = "wayland"
-            env["WAYLAND_DISPLAY"] = env.get("WAYLAND_DISPLAY") or "wayland-0"
-            env["XDG_RUNTIME_DIR"] = runtime_dir
-            env["DBUS_SESSION_BUS_ADDRESS"] = env.get(
-                "DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus"
-            )
-            env["XDG_SESSION_TYPE"] = env.get("XDG_SESSION_TYPE") or "wayland"
-        elif has_x11:
+        elif backend == "x11":
             env.pop("QT_QPA_PLATFORM", None)
 
         return env
