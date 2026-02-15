@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -544,19 +545,58 @@ def quit_workflow(
             result["ok"] = False
         return result
 
-    if bn is not None and hasattr(bn, "execute_on_main_thread_and_wait"):
-        holder = {"result": None}
+    if bn is not None and (
+        hasattr(bn, "execute_on_main_thread") or hasattr(bn, "execute_on_main_thread_and_wait")
+    ):
+        state = {"result": None, "exception": None}
+        finished = threading.Event()
 
-        def _main_thread():
-            holder["result"] = _runner()
+        def _main_thread_runner() -> None:
+            try:
+                state["result"] = _runner()
+            except Exception as exc:
+                state["exception"] = exc
+            finally:
+                finished.set()
 
-        try:
-            bn.execute_on_main_thread_and_wait(_main_thread)
-            if isinstance(holder["result"], dict):
-                return holder["result"]
-        except Exception as exc:
-            result["ok"] = False
-            result["errors"].append(f"quit main-thread execution failed: {exc}")
-            return result
+        scheduled = False
+        if hasattr(bn, "execute_on_main_thread"):
+            try:
+                bn.execute_on_main_thread(_main_thread_runner)
+                result["actions"].append("scheduled_quit_workflow_on_main_thread")
+                scheduled = True
+            except Exception as exc:
+                result["warnings"].append(f"failed to schedule quit workflow on main thread: {exc}")
+
+        if (not scheduled) and hasattr(bn, "execute_on_main_thread_and_wait"):
+
+            def _worker() -> None:
+                try:
+                    bn.execute_on_main_thread_and_wait(_main_thread_runner)
+                except Exception as exc:
+                    state["exception"] = exc
+                    finished.set()
+
+            threading.Thread(target=_worker, daemon=True).start()
+            result["actions"].append("scheduled_quit_workflow_via_helper_thread")
+            scheduled = True
+
+        if scheduled:
+            # Keep a bounded wait to avoid hanging HTTP clients indefinitely.
+            wait_timeout_s = max(5.0, (wait_ms / 1000.0) + 10.0)
+            if not finished.wait(wait_timeout_s):
+                result["ok"] = False
+                result["errors"].append(
+                    f"quit workflow timed out after {wait_timeout_s:.1f}s on main thread"
+                )
+                return result
+
+            if state["exception"] is not None:
+                result["ok"] = False
+                result["errors"].append(f"quit main-thread execution failed: {state['exception']}")
+                return result
+
+            if isinstance(state["result"], dict):
+                return state["result"]
 
     return _runner()
