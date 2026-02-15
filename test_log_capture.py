@@ -6,6 +6,7 @@ Run this from Binary Ninja's Python console to test log capture
 
 import sys
 
+
 def main() -> int:
     try:
         import binaryninja as bn
