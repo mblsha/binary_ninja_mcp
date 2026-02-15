@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -59,6 +61,51 @@ def _endpoint_url(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}{path}"
 
 
+def _server_reachable(base_url: str, timeout: float = 3.0) -> bool:
+    status_path = "/status"
+    expected = api_contracts.expected_api_version(status_path)
+    try:
+        response = requests.get(
+            _endpoint_url(base_url, status_path),
+            params={"_api_version": expected},
+            headers={"X-Binja-MCP-Api-Version": str(expected)},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_server_ready(base_url: str) -> None:
+    if _server_reachable(base_url):
+        return
+
+    cli_path = THIS_DIR / "scripts" / "binja-cli.py"
+    cmd = [sys.executable, str(cli_path), "--json", "open", "--inspect-only"]
+    proc = subprocess.run(
+        cmd,
+        cwd=str(THIS_DIR),
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        if _server_reachable(base_url, timeout=2.0):
+            return
+        time.sleep(0.5)
+
+    raise RuntimeError(
+        "Binary Ninja MCP server is not reachable and auto-start failed.\n"
+        f"Command: {' '.join(cmd)}\n"
+        f"Exit code: {proc.returncode}\n"
+        f"Stdout:\n{proc.stdout}\n"
+        f"Stderr:\n{proc.stderr}"
+    )
+
+
 def _call_endpoint(
     base_url: str,
     endpoint_case: dict[str, Any],
@@ -102,18 +149,7 @@ class TestEndpointApiIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.base_url = os.environ.get("BINJA_MCP_BASE_URL", "http://localhost:9009").rstrip("/")
-        status_path = "/status"
-        expected = api_contracts.expected_api_version(status_path)
-        try:
-            response = requests.get(
-                _endpoint_url(cls.base_url, status_path),
-                params={"_api_version": expected},
-                headers={"X-Binja-MCP-Api-Version": str(expected)},
-                timeout=3,
-            )
-            response.raise_for_status()
-        except Exception as exc:
-            raise unittest.SkipTest(f"Binary Ninja MCP server is not reachable: {exc}")
+        _ensure_server_ready(cls.base_url)
 
     def test_version_handshake_accepts_expected_version(self):
         for case in ENDPOINT_CASES:
