@@ -151,6 +151,17 @@ def quit_workflow(
     decision_in = normalize_decision(decision)
     wait_ms = max(0, int(wait_ms or 2000))
     quit_delay_ms = max(0, int(quit_delay_ms or 300))
+    # Optional override for main-thread quit workflow completion timeout.
+    # Kept separate from dialog wait_ms because pre-save can be significantly slower.
+    timeout_override_raw = _unused.get("workflow_timeout_s")
+    if timeout_override_raw is None:
+        timeout_override_raw = _unused.get("main_thread_timeout_s")
+    try:
+        workflow_timeout_override_s = (
+            float(timeout_override_raw) if timeout_override_raw is not None else None
+        )
+    except Exception:
+        workflow_timeout_override_s = None
 
     result: dict[str, Any] = {
         "ok": True,
@@ -599,8 +610,17 @@ def quit_workflow(
             scheduled = True
 
         if scheduled:
-            # Keep a bounded wait to avoid hanging HTTP clients indefinitely.
-            wait_timeout_s = max(5.0, (wait_ms / 1000.0) + 10.0)
+            # Keep a bounded wait to avoid hanging clients indefinitely, but allow
+            # significantly longer runtime for save flows where create_database()
+            # can legitimately take much longer than dialog wait_ms.
+            if (workflow_timeout_override_s is not None) and (workflow_timeout_override_s > 0):
+                wait_timeout_s = float(workflow_timeout_override_s)
+            elif inspect_only:
+                wait_timeout_s = max(30.0, (wait_ms / 1000.0) + 15.0)
+            elif decision_in in {"save", "auto"}:
+                wait_timeout_s = max(600.0, (wait_ms / 1000.0) + 30.0)
+            else:
+                wait_timeout_s = max(120.0, (wait_ms / 1000.0) + 30.0)
             if not finished.wait(wait_timeout_s):
                 result["ok"] = False
                 result["errors"].append(
