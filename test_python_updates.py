@@ -24,8 +24,8 @@ def _server_reachable(url: str = "http://localhost:9009") -> bool:
         return False
 
 
-def test_cli_python_command():
-    """Test the CLI python command"""
+def _run_cli_python_command() -> bool:
+    """Run CLI python command checks."""
     print("Testing CLI Python Command")
     print("=" * 50)
 
@@ -91,8 +91,8 @@ def test_cli_python_command():
     return failed == 0
 
 
-def test_mcp_bridge():
-    """Test the MCP bridge execute_python_command"""
+def _run_mcp_bridge() -> bool:
+    """Run MCP bridge execute_python_command checks."""
     print("\n\nTesting MCP Bridge")
     print("=" * 50)
 
@@ -182,8 +182,8 @@ def test_mcp_bridge():
     return failed == 0
 
 
-def test_interactive_mode():
-    """Test interactive Python mode"""
+def _run_interactive_mode() -> bool:
+    """Run interactive mode availability check."""
     print("\n\nTesting Interactive Mode")
     print("=" * 50)
 
@@ -200,6 +200,21 @@ def test_interactive_mode():
     return True
 
 
+def test_cli_python_command():
+    """Test the CLI python command."""
+    assert _run_cli_python_command()
+
+
+def test_mcp_bridge():
+    """Test the MCP bridge execute_python_command."""
+    assert _run_mcp_bridge()
+
+
+def test_interactive_mode():
+    """Test interactive Python mode."""
+    assert _run_interactive_mode()
+
+
 def main():
     """Run all tests"""
     print("Testing Python Executor Updates")
@@ -210,13 +225,13 @@ def main():
         return 0
 
     # Test CLI
-    cli_ok = test_cli_python_command()
+    cli_ok = _run_cli_python_command()
 
     # Test Bridge/HTTP
-    bridge_ok = test_mcp_bridge()
+    bridge_ok = _run_mcp_bridge()
 
     # Note about interactive mode
-    interactive_ok = test_interactive_mode()
+    interactive_ok = _run_interactive_mode()
 
     print(f"\n{'=' * 70}")
     print("Summary:")
