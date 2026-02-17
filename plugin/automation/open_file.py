@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from .text import find_item_index, normalize_token
+from .text import find_item_index, normalize_label, normalize_token
 
 try:
     import binaryninja as bn
@@ -44,6 +44,78 @@ def _find_options_dialog(app):
             title = str(widget.windowTitle() or "")
             cls_name = type(widget).__name__.lower()
             if "open with options" in title.lower() or "optionsdialog" in cls_name:
+                return widget
+        except Exception:
+            continue
+    return None
+
+
+def _looks_like_existing_database_dialog(widget) -> bool:
+    if widget is None:
+        return False
+    try:
+        if not widget.isVisible():
+            return False
+    except Exception:
+        return False
+
+    try:
+        cls_name = type(widget).__name__.lower()
+    except Exception:
+        cls_name = ""
+
+    try:
+        title_norm = normalize_label(widget.windowTitle())
+    except Exception:
+        title_norm = ""
+
+    fragments = [title_norm]
+    try:
+        for child in widget.findChildren(object):
+            if not hasattr(child, "text"):
+                continue
+            try:
+                text = normalize_label(child.text())
+            except Exception:
+                continue
+            if text:
+                fragments.append(text)
+    except Exception:
+        pass
+
+    combined = " ".join(part for part in fragments if part)
+    if "existing database" not in combined:
+        return False
+
+    # This prompt is typically a QMessageBox with Yes/No choices.
+    if ("messagebox" not in cls_name) and ("dialog" not in cls_name):
+        return False
+
+    yes_no = 0
+    try:
+        from PySide6.QtWidgets import QPushButton
+
+        for button in widget.findChildren(QPushButton):
+            try:
+                if not button.isVisible():
+                    continue
+                label = normalize_label(button.text())
+            except Exception:
+                continue
+            if label in {"yes", "no"}:
+                yes_no += 1
+    except Exception:
+        pass
+
+    return yes_no >= 2 or "open existing database" in combined
+
+
+def _find_existing_database_dialog(app):
+    if app is None:
+        return None
+    for widget in app.topLevelWidgets():
+        try:
+            if _looks_like_existing_database_dialog(widget):
                 return widget
         except Exception:
             continue
@@ -196,7 +268,7 @@ def _find_open_view_for_file(filepath: str):
     return None
 
 
-def _open_with_ui_context(filepath: str) -> dict[str, Any]:
+def _open_with_ui_context(filepath: str, on_poll=None) -> dict[str, Any]:
     try:
         import binaryninjaui as bnui
     except Exception:
@@ -212,11 +284,45 @@ def _open_with_ui_context(filepath: str) -> dict[str, Any]:
 
     last_exc = None
     for ctx in contexts:
+        poll_timer = None
+        if on_poll is not None:
+            try:
+                from PySide6.QtCore import QTimer
+
+                poll_timer = QTimer()
+                poll_timer.setInterval(30)
+
+                def _tick():
+                    try:
+                        on_poll()
+                    except Exception:
+                        pass
+
+                poll_timer.timeout.connect(_tick)
+                poll_timer.start()
+                _tick()
+            except Exception:
+                poll_timer = None
         try:
-            opened = bool(ctx.openFilename(filepath))
+            # Request "Open with Options" path to avoid the blocking
+            # "Open existing database?" modal when a sibling .bndb exists.
+            opened = bool(ctx.openFilename(filepath, True))
         except Exception as exc:
             last_exc = exc
+            if poll_timer is not None:
+                try:
+                    poll_timer.stop()
+                    poll_timer.deleteLater()
+                except Exception:
+                    pass
             continue
+        finally:
+            if poll_timer is not None:
+                try:
+                    poll_timer.stop()
+                    poll_timer.deleteLater()
+                except Exception:
+                    pass
         if opened:
             return {"ok": True, "reason": "opened"}
 
@@ -294,9 +400,9 @@ def open_file_workflow(
     if timeout_raw is None:
         timeout_raw = _unused.get("timeout_s")
     try:
-        open_timeout_s = float(timeout_raw) if timeout_raw is not None else 12.0
+        open_timeout_s = float(timeout_raw) if timeout_raw is not None else 30.0
     except (TypeError, ValueError):
-        open_timeout_s = 12.0
+        open_timeout_s = 30.0
     if open_timeout_s < 1.0:
         open_timeout_s = 1.0
     if open_timeout_s > 120.0:
@@ -385,11 +491,74 @@ def open_file_workflow(
             return result
 
     try:
-        from PySide6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication, QPushButton
     except Exception as exc:
         result["ok"] = False
         result["errors"].append(f"PySide6 unavailable: {exc}")
         return result
+
+    def handle_existing_database_dialog(dialog, detected_action: str, app) -> bool:
+        if dialog is None or (not _is_qt_object_alive(dialog)):
+            return False
+        if not _looks_like_existing_database_dialog(dialog):
+            return False
+
+        if detected_action not in result["actions"]:
+            result["actions"].append(detected_action)
+
+        no_button = None
+        try:
+            buttons = dialog.findChildren(QPushButton)
+        except Exception:
+            buttons = []
+        for button in buttons:
+            try:
+                if not button.isVisible():
+                    continue
+                label = normalize_label(button.text())
+            except Exception:
+                continue
+            if label == "no":
+                no_button = button
+                break
+
+        if no_button is None:
+            result["warnings"].append(
+                "existing database dialog detected but 'No' button was not found"
+            )
+            return True
+
+        if inspect_only or (not click_open):
+            result["actions"].append("would_click_existing_database_no")
+            return True
+
+        if not no_button.isEnabled():
+            result["warnings"].append("existing database dialog 'No' button is disabled")
+            return True
+
+        try:
+            no_button.click()
+            result["actions"].append("clicked_existing_database_no")
+        except Exception as exc:
+            result["warnings"].append(f"failed to click existing database dialog 'No': {exc}")
+            return True
+
+        if app is not None:
+            for _ in range(10):
+                app.processEvents()
+                time.sleep(0.02)
+
+        try:
+            still_visible = bool(dialog.isVisible())
+        except Exception:
+            still_visible = False
+        if still_visible and hasattr(dialog, "reject"):
+            try:
+                dialog.reject()
+                result["actions"].append("rejected_existing_database_dialog")
+            except Exception as exc:
+                result["warnings"].append(f"existing database dialog reject() failed: {exc}")
+        return True
 
     def handle_open_with_options_dialog(dialog, detected_action: str, app) -> bool:
         if dialog is None or not _is_qt_object_alive(dialog):
@@ -604,6 +773,14 @@ def open_file_workflow(
         if app is not None and app.activeWindow() is not None:
             result["state"]["active_window"] = str(app.activeWindow().windowTitle() or "")
 
+        existing_dialog = _find_existing_database_dialog(app)
+        if existing_dialog is not None:
+            handle_existing_database_dialog(
+                existing_dialog,
+                "detected_existing_database_dialog",
+                app,
+            )
+
         dialog = _find_options_dialog(app)
         loaded_bv = None
 
@@ -628,13 +805,32 @@ def open_file_workflow(
 
                 ui_open = {"ok": False, "reason": "skipped"}
                 if loaded_bv is None and app is not None and prefer_ui_open:
-                    ui_open = _open_with_ui_context(target_file)
+                    def _poll_existing_database_prompt() -> None:
+                        existing_now = _find_existing_database_dialog(app)
+                        if existing_now is not None:
+                            handle_existing_database_dialog(
+                                existing_now,
+                                "resolved_existing_database_dialog_during_uicontext_open",
+                                app,
+                            )
+
+                    ui_open = _open_with_ui_context(
+                        target_file,
+                        on_poll=_poll_existing_database_prompt,
+                    )
                     if ui_open.get("ok"):
                         result["actions"].append("ui_context_open_filename")
                         # Wait briefly for UI context to materialize a tab/view for the target.
                         ui_deadline = _bounded_poll_deadline(6.0)
                         while time.monotonic() < ui_deadline:
                             app.processEvents()
+                            existing_dialog = _find_existing_database_dialog(app)
+                            if existing_dialog is not None:
+                                handle_existing_database_dialog(
+                                    existing_dialog,
+                                    "resolved_existing_database_dialog_after_open",
+                                    app,
+                                )
                             opened = _find_open_view_for_file(target_file)
                             if opened is not None:
                                 loaded_bv = opened.get("view")
@@ -670,6 +866,13 @@ def open_file_workflow(
                     deadline = _bounded_poll_deadline(6.0)
                     while time.monotonic() < deadline:
                         app.processEvents()
+                        existing_dialog = _find_existing_database_dialog(app)
+                        if existing_dialog is not None:
+                            handle_existing_database_dialog(
+                                existing_dialog,
+                                "resolved_existing_database_dialog_post_open",
+                                app,
+                            )
                         post_dialog = _find_options_dialog(app)
                         if post_dialog is not None:
                             handle_open_with_options_dialog(
@@ -691,9 +894,16 @@ def open_file_workflow(
         if app is not None and (not inspect_only) and click_open:
             deadline = time.time() + 8.0
             while time.time() < deadline:
+                lingering_existing = _find_existing_database_dialog(app)
                 lingering = _find_options_dialog(app)
-                if lingering is None:
+                if lingering_existing is None and lingering is None:
                     break
+                if lingering_existing is not None:
+                    handle_existing_database_dialog(
+                        lingering_existing,
+                        "resolved_existing_database_dialog_final_pass",
+                        app,
+                    )
                 handle_open_with_options_dialog(
                     lingering,
                     "resolved_open_with_options_dialog_final_pass",
@@ -706,6 +916,10 @@ def open_file_workflow(
             if _find_options_dialog(app) is not None:
                 result["warnings"].append(
                     "open dialog remained visible after final resolution pass"
+                )
+            if _find_existing_database_dialog(app) is not None:
+                result["warnings"].append(
+                    "existing database dialog remained visible after final resolution pass"
                 )
 
         if loaded_bv is None:
