@@ -822,6 +822,7 @@ def open_file_workflow(
 
                 ui_open = {"ok": False, "reason": "skipped"}
                 if loaded_bv is None and app is not None and prefer_ui_open:
+
                     def _poll_existing_database_prompt() -> None:
                         existing_now = _find_existing_database_dialog(app)
                         if existing_now is not None:
