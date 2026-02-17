@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -150,6 +151,7 @@ def quit_workflow(
     decision_in = normalize_decision(decision)
     wait_ms = max(0, int(wait_ms or 2000))
     quit_delay_ms = max(0, int(quit_delay_ms or 300))
+    workflow_timeout_s = max(5.0, (wait_ms / 1000.0) + 5.0)
 
     result: dict[str, Any] = {
         "ok": True,
@@ -431,6 +433,14 @@ def quit_workflow(
                             pass
                 except Exception as exc:
                     result["warnings"].append(f"pre-save failed: {exc}")
+        elif (not inspect_only) and (resolved == "dont-save"):
+            current_bv = _get_current_bv()
+            if current_bv is not None and getattr(current_bv, "file", None) is not None:
+                try:
+                    current_bv.file.modified = False
+                    result["actions"].append("cleared_modified_for_dont_save_policy")
+                except Exception as exc:
+                    result["warnings"].append(f"unable to clear modified state: {exc}")
 
         dialogs = collect_confirmation_dialogs(app)
         result["state"]["dialogs_before_action"] = [
@@ -544,19 +554,60 @@ def quit_workflow(
             result["ok"] = False
         return result
 
-    if bn is not None and hasattr(bn, "execute_on_main_thread_and_wait"):
-        holder = {"result": None}
+    if bn is not None and (
+        hasattr(bn, "execute_on_main_thread") or hasattr(bn, "execute_on_main_thread_and_wait")
+    ):
+        state = {"result": None, "exception": None}
+        finished = threading.Event()
 
-        def _main_thread():
-            holder["result"] = _runner()
+        def _main_thread_runner():
+            try:
+                state["result"] = _runner()
+            except Exception as exc:
+                state["exception"] = exc
+            finally:
+                finished.set()
 
-        try:
-            bn.execute_on_main_thread_and_wait(_main_thread)
-            if isinstance(holder["result"], dict):
-                return holder["result"]
-        except Exception as exc:
+        scheduled = False
+        if hasattr(bn, "execute_on_main_thread"):
+            try:
+                bn.execute_on_main_thread(_main_thread_runner)
+                result["actions"].append("scheduled_quit_workflow_on_main_thread")
+                scheduled = True
+            except Exception as exc:
+                result["warnings"].append(
+                    f"failed to schedule quit workflow on main thread: {exc}"
+                )
+
+        if (not scheduled) and hasattr(bn, "execute_on_main_thread_and_wait"):
+
+            def _worker() -> None:
+                try:
+                    bn.execute_on_main_thread_and_wait(_main_thread_runner)
+                except Exception as exc:
+                    state["exception"] = exc
+                    finished.set()
+
+            threading.Thread(target=_worker, daemon=True).start()
+            result["actions"].append("scheduled_quit_workflow_via_helper_thread")
+            scheduled = True
+
+        if not scheduled:
+            _main_thread_runner()
+
+        if not finished.wait(workflow_timeout_s):
             result["ok"] = False
-            result["errors"].append(f"quit main-thread execution failed: {exc}")
+            result["errors"].append(
+                f"quit workflow timed out after {workflow_timeout_s:.1f}s waiting for UI thread"
+            )
+            result["actions"].append("quit_workflow_main_thread_timeout")
             return result
+
+        if state["exception"] is not None:
+            result["ok"] = False
+            result["errors"].append(f"quit main-thread execution failed: {state['exception']}")
+            return result
+        if isinstance(state["result"], dict):
+            return state["result"]
 
     return _runner()
