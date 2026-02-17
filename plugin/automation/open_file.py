@@ -138,6 +138,20 @@ def _is_qt_object_alive(obj) -> bool:
         return False
 
 
+def _add_action_once(result: dict[str, Any], action: str) -> None:
+    if action not in result["actions"]:
+        result["actions"].append(action)
+
+
+def _pump_events(app, cycles: int = 10, delay_s: float = 0.02) -> None:
+    if app is None:
+        return
+    for _ in range(max(1, cycles)):
+        app.processEvents()
+        if delay_s > 0:
+            time.sleep(delay_s)
+
+
 def _combo_items(combo) -> list[str]:
     return [str(combo.itemText(i) or "") for i in range(combo.count())]
 
@@ -503,8 +517,7 @@ def open_file_workflow(
         if not _looks_like_existing_database_dialog(dialog):
             return False
 
-        if detected_action not in result["actions"]:
-            result["actions"].append(detected_action)
+        _add_action_once(result, detected_action)
 
         no_button = None
         try:
@@ -543,10 +556,7 @@ def open_file_workflow(
             result["warnings"].append(f"failed to click existing database dialog 'No': {exc}")
             return True
 
-        if app is not None:
-            for _ in range(10):
-                app.processEvents()
-                time.sleep(0.02)
+        _pump_events(app)
 
         try:
             still_visible = bool(dialog.isVisible())
@@ -572,7 +582,7 @@ def open_file_workflow(
 
         result["dialog"]["present"] = True
         result["dialog"]["title"] = dialog_title
-        result["actions"].append(detected_action)
+        _add_action_once(result, detected_action)
 
         try:
             dialog_children = dialog.findChildren(object)
@@ -738,10 +748,7 @@ def open_file_workflow(
             result["warnings"].append("open button click failed")
             return True
 
-        if app is not None:
-            for _ in range(10):
-                app.processEvents()
-                time.sleep(0.02)
+        _pump_events(app)
         result["dialog"]["open_clicked"] = True
         result["actions"].append("clicked_open_button")
 
@@ -753,10 +760,7 @@ def open_file_workflow(
         if dialog_still_visible and hasattr(dialog, "accept"):
             try:
                 dialog.accept()
-                if app is not None:
-                    for _ in range(10):
-                        app.processEvents()
-                        time.sleep(0.02)
+                _pump_events(app)
                 try:
                     hidden_after_accept = not dialog.isVisible()
                 except Exception:
@@ -773,19 +777,32 @@ def open_file_workflow(
         if app is not None and app.activeWindow() is not None:
             result["state"]["active_window"] = str(app.activeWindow().windowTitle() or "")
 
-        existing_dialog = _find_existing_database_dialog(app)
-        if existing_dialog is not None:
-            handle_existing_database_dialog(
-                existing_dialog,
-                "detected_existing_database_dialog",
-                app,
-            )
+        def resolve_modal_dialogs(existing_action: str = "", options_action: str = "") -> bool:
+            handled = False
+            if app is None:
+                return handled
+
+            if existing_action:
+                existing_dialog = _find_existing_database_dialog(app)
+                if existing_dialog is not None:
+                    handle_existing_database_dialog(existing_dialog, existing_action, app)
+                    handled = True
+
+            if options_action:
+                options_dialog = _find_options_dialog(app)
+                if options_dialog is not None:
+                    handle_open_with_options_dialog(options_dialog, options_action, app)
+                    handled = True
+
+            return handled
+
+        resolve_modal_dialogs(existing_action="detected_existing_database_dialog")
 
         dialog = _find_options_dialog(app)
         loaded_bv = None
 
         if dialog is not None:
-            handle_open_with_options_dialog(dialog, "detected_open_with_options_dialog", app)
+            resolve_modal_dialogs(options_action="detected_open_with_options_dialog")
         else:
             result["actions"].append("no_open_with_options_dialog")
             if inspect_only:
@@ -824,13 +841,9 @@ def open_file_workflow(
                         ui_deadline = _bounded_poll_deadline(6.0)
                         while time.monotonic() < ui_deadline:
                             app.processEvents()
-                            existing_dialog = _find_existing_database_dialog(app)
-                            if existing_dialog is not None:
-                                handle_existing_database_dialog(
-                                    existing_dialog,
-                                    "resolved_existing_database_dialog_after_open",
-                                    app,
-                                )
+                            resolve_modal_dialogs(
+                                existing_action="resolved_existing_database_dialog_after_open"
+                            )
                             opened = _find_open_view_for_file(target_file)
                             if opened is not None:
                                 loaded_bv = opened.get("view")
@@ -866,20 +879,10 @@ def open_file_workflow(
                     deadline = _bounded_poll_deadline(6.0)
                     while time.monotonic() < deadline:
                         app.processEvents()
-                        existing_dialog = _find_existing_database_dialog(app)
-                        if existing_dialog is not None:
-                            handle_existing_database_dialog(
-                                existing_dialog,
-                                "resolved_existing_database_dialog_post_open",
-                                app,
-                            )
-                        post_dialog = _find_options_dialog(app)
-                        if post_dialog is not None:
-                            handle_open_with_options_dialog(
-                                post_dialog,
-                                "detected_open_with_options_dialog_after_open",
-                                app,
-                            )
+                        resolve_modal_dialogs(
+                            existing_action="resolved_existing_database_dialog_post_open",
+                            options_action="detected_open_with_options_dialog_after_open",
+                        )
                         loaded_now = _get_loaded_filename()
                         if loaded_now:
                             try:
@@ -894,24 +897,13 @@ def open_file_workflow(
         if app is not None and (not inspect_only) and click_open:
             deadline = time.time() + 8.0
             while time.time() < deadline:
-                lingering_existing = _find_existing_database_dialog(app)
-                lingering = _find_options_dialog(app)
-                if lingering_existing is None and lingering is None:
-                    break
-                if lingering_existing is not None:
-                    handle_existing_database_dialog(
-                        lingering_existing,
-                        "resolved_existing_database_dialog_final_pass",
-                        app,
-                    )
-                handle_open_with_options_dialog(
-                    lingering,
-                    "resolved_open_with_options_dialog_final_pass",
-                    app,
+                handled = resolve_modal_dialogs(
+                    existing_action="resolved_existing_database_dialog_final_pass",
+                    options_action="resolved_open_with_options_dialog_final_pass",
                 )
-                for _ in range(12):
-                    app.processEvents()
-                    time.sleep(0.02)
+                if not handled:
+                    break
+                _pump_events(app, cycles=12)
 
             if _find_options_dialog(app) is not None:
                 result["warnings"].append(
