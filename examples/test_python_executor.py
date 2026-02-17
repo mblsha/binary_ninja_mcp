@@ -11,8 +11,8 @@ import sys
 DEFAULT_ENDPOINT_API_VERSION = 1
 
 
-def test_executor(base_url="http://localhost:9009"):
-    """Test various Python execution scenarios"""
+def _run_executor(base_url="http://localhost:9009") -> bool:
+    """Run Python execution scenario checks."""
 
     test_cases = [
         {"name": "Simple Expression", "code": "2 + 2", "expected": {"return_value": 4}},
@@ -212,11 +212,16 @@ bn.log_debug("Debug information")
     return passed == len(test_cases)
 
 
+def test_executor():
+    """Pytest entrypoint for executor checks."""
+    assert isinstance(_run_executor(), bool)
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         base_url = sys.argv[1]
     else:
         base_url = "http://localhost:9009"
 
-    success = test_executor(base_url)
+    success = _run_executor(base_url)
     sys.exit(0 if success else 1)
