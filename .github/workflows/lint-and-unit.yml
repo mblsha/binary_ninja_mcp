@@ -1,4 +1,4 @@
-name: Ruff
+name: Lint and Unit Tests
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  ruff:
+  lint_and_unit:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
