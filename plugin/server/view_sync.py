@@ -37,16 +37,44 @@ def make_filename_candidates(raw: Optional[str]) -> set[str]:
     return candidates
 
 
-def matches_requested_filename(view: Any, requested_filename: Optional[str]) -> bool:
-    """Return True if a UI view appears to correspond to requested filename."""
+def make_path_candidates(raw: Optional[str]) -> set[str]:
+    """Build case-insensitive path-like candidates (excluding basename-only variants)."""
+    if not raw:
+        return set()
+    text = str(raw)
+    candidates = {text, text.lower()}
+    try:
+        resolved = str(Path(text).resolve())
+        candidates.add(resolved)
+        candidates.add(resolved.lower())
+    except Exception:
+        pass
+    return candidates
+
+
+def filename_match_tier(view: Any, requested_filename: Optional[str]) -> int:
+    """Return match strength: 2 path/exact match, 1 basename/loose match, 0 no match."""
     if not requested_filename:
-        return False
+        return 0
     view_name = extract_view_filename(view)
     if not view_name:
-        return False
+        return 0
+
+    wanted_path = make_path_candidates(requested_filename)
+    observed_path = make_path_candidates(view_name)
+    if wanted_path.intersection(observed_path):
+        return 2
+
     wanted = make_filename_candidates(requested_filename)
     observed = make_filename_candidates(view_name)
-    return bool(wanted.intersection(observed))
+    if wanted.intersection(observed):
+        return 1
+    return 0
+
+
+def matches_requested_filename(view: Any, requested_filename: Optional[str]) -> bool:
+    """Return True if a UI view appears to correspond to requested filename."""
+    return filename_match_tier(view, requested_filename) > 0
 
 
 def get_view_from_frame(view_frame: Any) -> Any:
@@ -149,6 +177,9 @@ def list_ui_views(binaryninjaui_module: Any) -> list[Any]:
 def select_preferred_view(ui_views: list[Any], requested_filename: Optional[str] = None) -> Any:
     """Select best candidate: filename match first, otherwise first available view."""
     if requested_filename:
+        for view in ui_views:
+            if filename_match_tier(view, requested_filename) >= 2:
+                return view
         for view in ui_views:
             if matches_requested_filename(view, requested_filename):
                 return view

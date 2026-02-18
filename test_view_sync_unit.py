@@ -128,6 +128,12 @@ class TestViewSync(unittest.TestCase):
         chosen = view_sync.select_preferred_view([v1, v2], requested_filename="target.bin")
         self.assertIs(chosen, v2)
 
+    def test_select_preferred_view_prioritizes_exact_path_over_basename(self):
+        v1 = _FakeView("/tmp/a/app.bin")
+        v2 = _FakeView("/tmp/b/app.bin")
+        chosen = view_sync.select_preferred_view([v1, v2], requested_filename="/tmp/b/app.bin")
+        self.assertIs(chosen, v2)
+
     def test_select_preferred_view_falls_back_to_first(self):
         v1 = _FakeView("/tmp/first.bin")
         v2 = _FakeView("/tmp/second.bin")
