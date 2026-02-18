@@ -18,6 +18,11 @@ from .api_contracts import (
     normalize_endpoint_path,
     normalize_ui_contract,
 )
+from .view_sync import (
+    extract_view_filename,
+    list_ui_views,
+    select_preferred_view,
+)
 from ..utils.string_utils import parse_int_or_default
 
 try:
@@ -296,55 +301,23 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         try:
             import binaryninjaui  # type: ignore
 
-            if not hasattr(binaryninjaui, "UIContext"):
+            ui_views = list_ui_views(binaryninjaui)
+            for view in ui_views:
+                try:
+                    self.binary_ops.register_view(view)
+                except Exception:
+                    continue
+            chosen_view = select_preferred_view(ui_views, str(requested_filename or ""))
+
+            if chosen_view is not None:
+                self.binary_ops.current_view = chosen_view
                 return
 
-            tab_views = []
-            try:
-                contexts = list(binaryninjaui.UIContext.allContexts())
-            except Exception:
-                contexts = []
-
-            for ctx in contexts:
-                try:
-                    tabs = list(ctx.getTabs())
-                except Exception:
-                    tabs = []
-                for tab in tabs:
-                    try:
-                        view_frame = ctx.getViewFrameForTab(tab)
-                        if view_frame is None:
-                            continue
-                        view = view_frame.getCurrentBinaryView()
-                        if view is not None:
-                            tab_views.append(view)
-                    except Exception:
-                        continue
-
-            if tab_views:
-                current_view = None
-                if hasattr(binaryninjaui.UIContext, "currentBinaryView"):
-                    try:
-                        candidate = binaryninjaui.UIContext.currentBinaryView()
-                        if candidate in tab_views:
-                            current_view = candidate
-                    except Exception:
-                        current_view = None
-                if current_view is None:
-                    current_view = tab_views[0]
-                self.binary_ops.current_view = current_view
-            elif clear_if_missing:
+            if clear_if_missing:
                 existing = self.binary_ops.current_view
-                keep_existing = False
-                if existing is not None:
-                    try:
-                        file_obj = getattr(existing, "file", None)
-                        filename = (
-                            getattr(file_obj, "filename", None) if file_obj is not None else None
-                        )
-                        keep_existing = bool(filename)
-                    except Exception:
-                        keep_existing = False
+                keep_existing = (
+                    bool(extract_view_filename(existing)) if existing is not None else False
+                )
                 if not keep_existing:
                     self.binary_ops.current_view = None
         except Exception:
