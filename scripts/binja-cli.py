@@ -618,6 +618,9 @@ class Open(cli.Application):
                 | f"Started Binary Ninja ({ensure.get('binary')}); waiting for MCP server succeeded."
             )
 
+        # Keep UI open workflow long enough for dialog automation + initial analysis.
+        open_timeout_s = max(self.parent.request_timeout, 300.0)
+
         config = {
             "filepath": filepath,
             "platform": self.platform or "",
@@ -625,13 +628,15 @@ class Open(cli.Application):
             "click_open": not self.no_click,
             "inspect_only": self.inspect_only,
             "prefer_ui_open": True,
+            "timeout_s": open_timeout_s,
         }
 
         parsed = self.parent._request(
             "POST",
             "ui/open",
             data=config,
-            timeout=max(self.parent.request_timeout, 30.0),
+            # Allow slight headroom above workflow timeout for HTTP response propagation.
+            timeout=open_timeout_s + 5.0,
         )
         if not isinstance(parsed, dict):
             print(colors.yellow | "Open endpoint returned an unexpected payload.")

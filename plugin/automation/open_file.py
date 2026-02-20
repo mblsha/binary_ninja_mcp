@@ -414,13 +414,13 @@ def open_file_workflow(
     if timeout_raw is None:
         timeout_raw = _unused.get("timeout_s")
     try:
-        open_timeout_s = float(timeout_raw) if timeout_raw is not None else 30.0
+        open_timeout_s = float(timeout_raw) if timeout_raw is not None else 300.0
     except (TypeError, ValueError):
-        open_timeout_s = 30.0
+        open_timeout_s = 300.0
     if open_timeout_s < 1.0:
         open_timeout_s = 1.0
-    if open_timeout_s > 120.0:
-        open_timeout_s = 120.0
+    if open_timeout_s > 600.0:
+        open_timeout_s = 600.0
     workflow_deadline = time.monotonic() + open_timeout_s
 
     result: dict[str, Any] = {
