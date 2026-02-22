@@ -37,6 +37,17 @@ def _ui_open_contract(filepath: str) -> dict:
     }
 
 
+class _MockStateCode:
+    def __init__(self, value: int):
+        self.value = int(value)
+
+    def __int__(self):
+        return self.value
+
+    def __str__(self):
+        return str(self.value)
+
+
 def test_wait_for_open_target_in_views_matches_requested_file():
     app = _new_app()
     target = "/tmp/target.bin"
@@ -222,6 +233,107 @@ def test_wait_for_analysis_prefers_analysis_state_code_over_status_text():
     assert out.get("analysis_state_name") == "IdleState"
     # Kept for compatibility; completion is driven by analysis_state_code.
     assert out.get("analysis_status") == "still-running"
+
+
+def test_wait_for_analysis_transition_5_6_2_succeeds_with_mock_state_types():
+    app = _new_app()
+    resolved_idle = 2
+
+    with (
+        patch.object(app, "_resolve_idle_analysis_state_value", return_value=resolved_idle),
+        patch.object(
+            app,
+            "_request",
+            side_effect=[
+                {
+                    "views": [
+                        {
+                            "filename": "/tmp/target.bin",
+                            "view_id": "22",
+                            "analysis_state_code": _MockStateCode(5),
+                            "analysis_state_name": "AnalyzeState",
+                            "analysis_status": "running",
+                        }
+                    ],
+                    "_api_version": 1,
+                },
+                {
+                    "views": [
+                        {
+                            "filename": "/tmp/target.bin",
+                            "view_id": "22",
+                            "analysis_state_code": _MockStateCode(6),
+                            "analysis_state_name": "ExtendedAnalyzeState",
+                            "analysis_status": "running",
+                        }
+                    ],
+                    "_api_version": 1,
+                },
+                {
+                    "views": [
+                        {
+                            "filename": "/tmp/target.bin",
+                            "view_id": "22",
+                            "analysis_state_code": _MockStateCode(2),
+                            "analysis_state_name": "IdleState",
+                            "analysis_status": "running",
+                        }
+                    ],
+                    "_api_version": 1,
+                },
+            ],
+        ) as req_mock,
+    ):
+        out = app._wait_for_analysis_on_target(
+            filename="/tmp/target.bin",
+            view_id="22",
+            timeout=2.0,
+        )
+
+    assert out.get("success") is True
+    assert int(out.get("analysis_state_code")) == 2
+    assert out.get("analysis_state_name") == "IdleState"
+    assert req_mock.call_count == 3
+
+
+def test_wait_for_analysis_persistent_5_6_times_out_with_mock_state_types():
+    app = _new_app()
+    resolved_idle = 2
+    call_count = {"value": 0}
+
+    def _views_payload(*_args, **_kwargs):
+        call_count["value"] += 1
+        code = 5 if (call_count["value"] % 2) else 6
+        name = "AnalyzeState" if code == 5 else "ExtendedAnalyzeState"
+        return {
+            "views": [
+                {
+                    "filename": "/tmp/target.bin",
+                    "view_id": "22",
+                    "analysis_state_code": _MockStateCode(code),
+                    "analysis_state_name": name,
+                    "analysis_status": "running",
+                }
+            ],
+            "_api_version": 1,
+        }
+
+    with (
+        patch.object(app, "_resolve_idle_analysis_state_value", return_value=resolved_idle),
+        patch.object(app, "_request", side_effect=_views_payload),
+    ):
+        out = app._wait_for_analysis_on_target(
+            filename="/tmp/target.bin",
+            view_id="22",
+            timeout=1.0,
+        )
+
+    assert out.get("success") is False
+    assert int(out.get("analysis_state_code")) in {5, 6}
+    assert out.get("analysis_state_name") in {"AnalyzeState", "ExtendedAnalyzeState"}
+    err = out.get("error", {})
+    assert err.get("type") == "TimeoutError"
+    assert "analysis wait timed out" in err.get("message", "")
 
 
 def test_resolve_idle_analysis_state_value_queries_console_execute():
