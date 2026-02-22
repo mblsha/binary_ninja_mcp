@@ -124,6 +124,25 @@ def _coerce_analysis_state_name(value: Any, fallback_text: Optional[str]) -> Opt
     return text
 
 
+def _analysis_state_name_from_code(state_code: Optional[int]) -> Optional[str]:
+    if state_code is None:
+        return None
+
+    try:
+        from binaryninja.enums import AnalysisState as _BNAnalysisState
+    except Exception as exc:
+        raise RuntimeError(
+            "binaryninja.enums.AnalysisState import failed while resolving analysis_state_name"
+        ) from exc
+
+    try:
+        return str(_BNAnalysisState(int(state_code)).name)
+    except Exception as exc:
+        raise RuntimeError(
+            f"unable to resolve analysis_state_name for analysis_state_code={state_code!r}"
+        ) from exc
+
+
 def _extract_view_type(view: Any) -> Optional[str]:
     if view is None:
         return None
@@ -161,46 +180,6 @@ def _extract_architecture(view: Any) -> Optional[str]:
     if name:
         return name
     return _coerce_text(arch)
-
-
-def _extract_analysis_status(view: Any) -> str:
-    if view is None:
-        return "none"
-
-    for attr in ("analysis_state", "analysis_status"):
-        try:
-            raw = getattr(view, attr, None)
-        except Exception:
-            raw = None
-        text = _coerce_text(raw)
-        if text:
-            return text
-
-    info = None
-    try:
-        info = getattr(view, "analysis_info", None)
-        if callable(info):
-            info = info()
-    except Exception:
-        info = None
-    if info is not None:
-        state = _coerce_text(getattr(info, "state", None))
-        if state:
-            return state
-        info_text = _coerce_text(info)
-        if info_text:
-            return info_text
-
-    progress = None
-    try:
-        progress = getattr(view, "analysis_progress", None)
-    except Exception:
-        progress = None
-    progress_text = _coerce_text(progress)
-    if progress_text:
-        return progress_text
-
-    return "unknown"
 
 
 def _extract_analysis_state_fields(view: Any) -> tuple[Optional[int], Optional[str], str]:
@@ -252,6 +231,9 @@ def _extract_analysis_state_fields(view: Any) -> tuple[Optional[int], Optional[s
             state_name = _coerce_analysis_state_name(raw, text)
         if state_status is None and text:
             state_status = text
+
+    if state_name is None:
+        state_name = _analysis_state_name_from_code(state_code)
 
     if state_status is None:
         state_status = "unknown"

@@ -3,9 +3,11 @@
 
 import importlib
 import sys
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -38,6 +40,35 @@ class _MockAnalysisState:
 
     def __str__(self):
         return f"AnalysisState.{self.name}"
+
+
+class _MockNumericAnalysisState:
+    def __init__(self, code: int):
+        self._code = int(code)
+
+    def __int__(self):
+        return self._code
+
+    def __str__(self):
+        return str(self._code)
+
+
+class _FakeAnalysisStateEnum:
+    _names = {
+        0: "InitialState",
+        1: "HoldState",
+        2: "IdleState",
+        3: "DiscoveryState",
+        4: "DisassembleState",
+        5: "AnalyzeState",
+        6: "ExtendedAnalyzeState",
+    }
+
+    def __init__(self, code: int):
+        code_int = int(code)
+        if code_int not in self._names:
+            raise ValueError(f"unknown code {code_int}")
+        self.name = self._names[code_int]
 
 
 class _FakeViewInterface:
@@ -138,6 +169,30 @@ class TestViewSync(unittest.TestCase):
         self.assertEqual(meta["analysis_state_code"], 2)
         self.assertEqual(meta["analysis_state_name"], "IdleState")
         self.assertEqual(meta["analysis_status"], "AnalysisState.IdleState")
+
+    def test_describe_view_derives_state_name_from_numeric_mock_state_code(self):
+        view = _FakeView("/tmp/roms/numeric.bin", view_id="404")
+        view.analysis_state = _MockNumericAnalysisState(2)
+
+        bn_module = types.ModuleType("binaryninja")
+        bn_enums = types.ModuleType("binaryninja.enums")
+        bn_enums.AnalysisState = _FakeAnalysisStateEnum
+        bn_module.enums = bn_enums
+
+        with patch.dict(sys.modules, {"binaryninja": bn_module, "binaryninja.enums": bn_enums}):
+            meta = view_sync.describe_view(view)
+
+        self.assertEqual(meta["analysis_state_code"], 2)
+        self.assertEqual(meta["analysis_state_name"], "IdleState")
+        self.assertEqual(meta["analysis_status"], "2")
+
+    def test_describe_view_raises_when_numeric_state_present_and_enum_import_missing(self):
+        view = _FakeView("/tmp/roms/numeric.bin", view_id="505")
+        view.analysis_state = _MockNumericAnalysisState(2)
+
+        with patch.dict(sys.modules, {"binaryninja": None, "binaryninja.enums": None}):
+            with self.assertRaises(RuntimeError):
+                view_sync.describe_view(view)
 
     def test_resolve_target_view_prefers_explicit_view_id(self):
         v1 = _FakeView("/tmp/first.bin", view_id="101")
