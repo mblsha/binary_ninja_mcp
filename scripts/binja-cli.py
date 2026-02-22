@@ -117,28 +117,19 @@ class BinaryNinjaCLI(cli.Application):
 
     no_auto_errors = cli.Flag(
         ["--no-auto-errors"],
-        help=(
-            "Disable automatic post-command checks for new Binary Ninja "
-            "console/log errors."
-        ),
+        help=("Disable automatic post-command checks for new Binary Ninja console/log errors."),
     )
 
     fail_on_new_errors = cli.Flag(
         ["--fail-on-new-errors"],
-        help=(
-            "Return non-zero if new Binary Ninja console/log errors appear "
-            "during the command."
-        ),
+        help=("Return non-zero if new Binary Ninja console/log errors appear during the command."),
     )
 
     error_probe_count = cli.SwitchAttr(
         ["--error-probe-count"],
         int,
         default=50,
-        help=(
-            "How many recent entries to compare in each post-command error "
-            "probe (default: 50)."
-        ),
+        help=("How many recent entries to compare in each post-command error probe (default: 50)."),
     )
 
     @staticmethod
@@ -236,8 +227,8 @@ class BinaryNinjaCLI(cli.Application):
                 and endpoint_path not in {"/status", "/views", "/ui/open", "/load"}
             )
             if strict_requires_precheck:
-                strict_selected_filename, strict_selected_view_id = self._assert_strict_target_selected(
-                    timeout=request_timeout
+                strict_selected_filename, strict_selected_view_id = (
+                    self._assert_strict_target_selected(timeout=request_timeout)
                 )
 
             if method == "GET":
@@ -296,7 +287,9 @@ class BinaryNinjaCLI(cli.Application):
                 observed_filename = (
                     self._extract_observed_filename(response_data) or strict_selected_filename
                 )
-                observed_view_id = self._extract_observed_view_id(response_data) or strict_selected_view_id
+                observed_view_id = (
+                    self._extract_observed_view_id(response_data) or strict_selected_view_id
+                )
 
                 should_validate_target = (
                     enforce_strict_target and targeting_requested and endpoint_path != "/views"
@@ -324,7 +317,9 @@ class BinaryNinjaCLI(cli.Application):
                             observed_view_id = observed_view_id or resolved_view_id
                         else:
                             # Some endpoints (e.g. /ui/open) may not return loaded filename immediately.
-                            observed_filename = self._resolve_target_via_status(timeout=request_timeout)
+                            observed_filename = self._resolve_target_via_status(
+                                timeout=request_timeout
+                            )
 
                     if self.target_filename and not self._filename_matches_requested(
                         observed_filename, self.target_filename
@@ -469,7 +464,9 @@ class BinaryNinjaCLI(cli.Application):
 
     @classmethod
     def _view_id_matches_requested(cls, observed: object | None, requested: object | None) -> bool:
-        return bool(cls._view_id_candidates(observed).intersection(cls._view_id_candidates(requested)))
+        return bool(
+            cls._view_id_candidates(observed).intersection(cls._view_id_candidates(requested))
+        )
 
     def _resolve_target_via_views(self, timeout: float) -> tuple[str | None, object | None]:
         endpoint_path = "/views"
@@ -748,7 +745,8 @@ class BinaryNinjaCLI(cli.Application):
                     requested_view_id is not None
                     and self._view_id_matches_requested(current_id, requested_view_id)
                 ) or (
-                    requested_filename and self._filename_matches_requested(current_name, requested_filename)
+                    requested_filename
+                    and self._filename_matches_requested(current_name, requested_filename)
                 ):
                     target = {
                         "filename": current_name,
@@ -801,7 +799,9 @@ class BinaryNinjaCLI(cli.Application):
         elapsed = time.monotonic() - start
         return {
             "success": False,
-            "analysis_state_code": _coerce_state_code((last_target or {}).get("analysis_state_code")),
+            "analysis_state_code": _coerce_state_code(
+                (last_target or {}).get("analysis_state_code")
+            ),
             "analysis_state_name": (last_target or {}).get("analysis_state_name"),
             "analysis_status": last_status,
             "selected_view_filename": (last_target or {}).get("filename"),
@@ -810,8 +810,7 @@ class BinaryNinjaCLI(cli.Application):
             "error": {
                 "type": "TimeoutError",
                 "message": (
-                    f"analysis wait timed out after {timeout_s:.1f}s "
-                    f"(last_status={last_status!r})"
+                    f"analysis wait timed out after {timeout_s:.1f}s (last_status={last_status!r})"
                 ),
             },
         }
@@ -836,8 +835,7 @@ class BinaryNinjaCLI(cli.Application):
 
         request_data = {
             "command": (
-                "from binaryninja.enums import AnalysisState\n"
-                "print(int(AnalysisState.IdleState))\n"
+                "from binaryninja.enums import AnalysisState\nprint(int(AnalysisState.IdleState))\n"
             ),
             "timeout": timeout_s,
         }
@@ -908,7 +906,9 @@ class BinaryNinjaCLI(cli.Application):
             if wrapped_direct:
                 return wrapped_direct
             nested_result = wrapped.get("result")
-            wrapped_nested = pick_from_dict(nested_result if isinstance(nested_result, dict) else None)
+            wrapped_nested = pick_from_dict(
+                nested_result if isinstance(nested_result, dict) else None
+            )
             if wrapped_nested:
                 return wrapped_nested
 
@@ -1190,10 +1190,7 @@ class BinaryNinjaCLI(cli.Application):
                 "message": str(entry.get("message") or ""),
                 "text": str(entry.get("text") or ""),
             }
-            if any(
-                normalized.get(key)
-                for key in ("level", "type", "logger", "message", "text")
-            ):
+            if any(normalized.get(key) for key in ("level", "type", "logger", "message", "text")):
                 return json.dumps(normalized, sort_keys=True)
             try:
                 return f"{source}:{json.dumps(entry, sort_keys=True, default=str)}"
@@ -1214,7 +1211,7 @@ class BinaryNinjaCLI(cli.Application):
         )
         after_counts = Counter()
         new_entries = []
-        for entry in (after_entries or []):
+        for entry in after_entries or []:
             sig = cls._error_entry_signature(entry, source)
             after_counts[sig] += 1
             if after_counts[sig] > before_counts.get(sig, 0):
@@ -1559,8 +1556,7 @@ class Open(cli.Application):
         effective_view_id = (
             confirmed_view_id
             if confirmed_view_id is not None
-            else state.get("confirmed_target_view_id")
-            or loaded_view_id_raw
+            else state.get("confirmed_target_view_id") or loaded_view_id_raw
         )
 
         if effective_filename:
@@ -1700,7 +1696,9 @@ class Open(cli.Application):
                 view_id=matched_view_id,
                 timeout=float(self.analysis_timeout or 120.0),
             )
-            if not isinstance(analysis_wait_result, dict) or not analysis_wait_result.get("success"):
+            if not isinstance(analysis_wait_result, dict) or not analysis_wait_result.get(
+                "success"
+            ):
                 failure_payload = {
                     "error": "analysis wait failed after open",
                     "requested_filename": filepath,
