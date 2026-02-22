@@ -37,6 +37,9 @@ def _new_app():
     app.request_timeout = 5.0
     app.verbose = False
     app.json_output = True
+    app.no_auto_errors = True
+    app.fail_on_new_errors = False
+    app.error_probe_count = 50
     return app
 
 

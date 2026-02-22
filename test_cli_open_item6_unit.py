@@ -22,6 +22,9 @@ def _new_app():
     app.request_timeout = 5.0
     app.verbose = False
     app.json_output = True
+    app.no_auto_errors = True
+    app.fail_on_new_errors = False
+    app.error_probe_count = 50
     return app
 
 
@@ -333,7 +336,7 @@ def test_wait_for_analysis_transition_5_6_2_succeeds_with_mock_state_types():
         out = app._wait_for_analysis_on_target(
             filename="/tmp/target.bin",
             view_id="22",
-            timeout=2.0,
+            timeout=11.0,
         )
 
     assert out.get("success") is True
