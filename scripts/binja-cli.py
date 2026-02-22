@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 import requests
 from plumbum import cli, colors
@@ -112,6 +113,32 @@ class BinaryNinjaCLI(cli.Application):
         float,
         default=_float_env("BINJA_CLI_TIMEOUT", 5.0),
         help=("HTTP request timeout in seconds (default: 5; can also set BINJA_CLI_TIMEOUT)"),
+    )
+
+    no_auto_errors = cli.Flag(
+        ["--no-auto-errors"],
+        help=(
+            "Disable automatic post-command checks for new Binary Ninja "
+            "console/log errors."
+        ),
+    )
+
+    fail_on_new_errors = cli.Flag(
+        ["--fail-on-new-errors"],
+        help=(
+            "Return non-zero if new Binary Ninja console/log errors appear "
+            "during the command."
+        ),
+    )
+
+    error_probe_count = cli.SwitchAttr(
+        ["--error-probe-count"],
+        int,
+        default=50,
+        help=(
+            "How many recent entries to compare in each post-command error "
+            "probe (default: 50)."
+        ),
     )
 
     @staticmethod
@@ -534,7 +561,7 @@ class BinaryNinjaCLI(cli.Application):
         requested_filename: str,
         *,
         timeout: float = 6.0,
-        poll_interval: float = 0.1,
+        poll_interval: float = 5.0,
     ) -> dict:
         requested = str(requested_filename or "").strip()
         if not requested:
@@ -557,9 +584,9 @@ class BinaryNinjaCLI(cli.Application):
         try:
             sleep_s = float(poll_interval)
         except (TypeError, ValueError):
+            sleep_s = 5.0
+        if sleep_s < 0.1:
             sleep_s = 0.1
-        if sleep_s < 0.01:
-            sleep_s = 0.01
 
         deadline = time.monotonic() + timeout_s
         last_payload: dict = {}
@@ -675,7 +702,7 @@ class BinaryNinjaCLI(cli.Application):
                 },
             }
 
-        poll_interval = 0.1
+        poll_interval = 5.0
         deadline = time.monotonic() + timeout_s
         start = time.monotonic()
         last_status = None
@@ -1084,6 +1111,208 @@ class BinaryNinjaCLI(cli.Application):
             data={"command": code, "timeout": exec_timeout},
         )
 
+    def _probe_error_endpoint(
+        self,
+        endpoint: str,
+        *,
+        count: int,
+        timeout: float,
+    ) -> tuple[list, str | None]:
+        endpoint_path = self._normalize_endpoint_path(endpoint)
+        expected_api_version = self._expected_api_version(endpoint_path)
+        url = f"{self.server_url}/{endpoint.lstrip('/')}"
+        params = {
+            "count": int(count),
+            "_api_version": expected_api_version,
+        }
+        headers = {"X-Binja-MCP-Api-Version": str(expected_api_version)}
+
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            return [], f"{endpoint}: {exc}"
+
+        if not isinstance(payload, dict):
+            return [], f"{endpoint}: unexpected non-object payload"
+
+        entries = payload.get("errors", [])
+        if not isinstance(entries, list):
+            return [], f"{endpoint}: expected list in 'errors'"
+        return entries, None
+
+    def _capture_error_snapshot(self, *, count: int | None = None) -> dict | None:
+        if bool(getattr(self, "no_auto_errors", False)):
+            return None
+
+        raw_count = count if count is not None else getattr(self, "error_probe_count", 50)
+        try:
+            count_n = int(raw_count)
+        except (TypeError, ValueError):
+            count_n = 50
+        if count_n < 1:
+            count_n = 1
+
+        try:
+            timeout_s = float(getattr(self, "request_timeout", 1.0))
+        except (TypeError, ValueError):
+            timeout_s = 1.0
+        timeout_s = max(0.25, min(timeout_s, 3.0))
+
+        console_errors, console_probe_error = self._probe_error_endpoint(
+            "console/errors",
+            count=count_n,
+            timeout=timeout_s,
+        )
+        log_errors, log_probe_error = self._probe_error_endpoint(
+            "logs/errors",
+            count=count_n,
+            timeout=timeout_s,
+        )
+
+        warnings = [item for item in (console_probe_error, log_probe_error) if item]
+        return {
+            "count": count_n,
+            "console_errors": console_errors,
+            "log_errors": log_errors,
+            "probe_warnings": warnings,
+        }
+
+    @staticmethod
+    def _error_entry_signature(entry: object, source: str) -> str:
+        if isinstance(entry, dict):
+            normalized = {
+                "source": source,
+                "level": str(entry.get("level") or ""),
+                "type": str(entry.get("type") or ""),
+                "logger": str(entry.get("logger") or ""),
+                "message": str(entry.get("message") or ""),
+                "text": str(entry.get("text") or ""),
+            }
+            if any(
+                normalized.get(key)
+                for key in ("level", "type", "logger", "message", "text")
+            ):
+                return json.dumps(normalized, sort_keys=True)
+            try:
+                return f"{source}:{json.dumps(entry, sort_keys=True, default=str)}"
+            except Exception:
+                return f"{source}:{entry!r}"
+        return f"{source}:{entry!r}"
+
+    @classmethod
+    def _new_error_entries(
+        cls,
+        before_entries: list,
+        after_entries: list,
+        *,
+        source: str,
+    ) -> list:
+        before_counts = Counter(
+            cls._error_entry_signature(entry, source) for entry in (before_entries or [])
+        )
+        after_counts = Counter()
+        new_entries = []
+        for entry in (after_entries or []):
+            sig = cls._error_entry_signature(entry, source)
+            after_counts[sig] += 1
+            if after_counts[sig] > before_counts.get(sig, 0):
+                new_entries.append(entry)
+        return new_entries
+
+    @staticmethod
+    def _format_error_entry(entry: object) -> str:
+        if not isinstance(entry, dict):
+            return str(entry)
+
+        timestamp = str(entry.get("timestamp") or "").strip()
+        level = str(entry.get("level") or entry.get("type") or "").strip()
+        text = str(entry.get("message") or entry.get("text") or "").strip()
+
+        parts = []
+        if timestamp:
+            parts.append(timestamp[:19])
+        if level:
+            parts.append(f"[{level}]")
+        if text:
+            parts.append(text)
+
+        if parts:
+            return " ".join(parts)
+        try:
+            return json.dumps(entry, sort_keys=True, default=str)
+        except Exception:
+            return str(entry)
+
+    def _apply_post_command_error_report(
+        self,
+        command_name: str,
+        before_snapshot: dict | None,
+        *,
+        output_payload: dict | None = None,
+    ) -> bool:
+        if before_snapshot is None:
+            return False
+
+        after_snapshot = self._capture_error_snapshot(count=before_snapshot.get("count"))
+        if after_snapshot is None:
+            return False
+
+        new_console_errors = self._new_error_entries(
+            before_snapshot.get("console_errors", []),
+            after_snapshot.get("console_errors", []),
+            source="console",
+        )
+        new_log_errors = self._new_error_entries(
+            before_snapshot.get("log_errors", []),
+            after_snapshot.get("log_errors", []),
+            source="log",
+        )
+
+        warnings = []
+        warnings.extend(before_snapshot.get("probe_warnings", []))
+        warnings.extend(after_snapshot.get("probe_warnings", []))
+
+        report = {
+            "command": command_name,
+            "new_console_error_count": len(new_console_errors),
+            "new_log_error_count": len(new_log_errors),
+            "new_error_count": len(new_console_errors) + len(new_log_errors),
+            "new_console_errors": new_console_errors,
+            "new_log_errors": new_log_errors,
+        }
+        if warnings:
+            report["probe_warnings"] = warnings
+
+        has_new_errors = report["new_error_count"] > 0
+
+        if isinstance(output_payload, dict) and (has_new_errors or warnings):
+            output_payload["new_errors"] = report
+
+        if has_new_errors and not self.json_output:
+            print(
+                colors.red
+                | (
+                    f"Detected {report['new_error_count']} new Binary Ninja error(s) "
+                    f"after {command_name}:"
+                )
+            )
+            if new_console_errors:
+                print(colors.red | f"  Console errors: {len(new_console_errors)}")
+                for entry in new_console_errors[:5]:
+                    print(colors.red | f"    - {self._format_error_entry(entry)}")
+            if new_log_errors:
+                print(colors.red | f"  Log errors: {len(new_log_errors)}")
+                for entry in new_log_errors[:5]:
+                    print(colors.red | f"    - {self._format_error_entry(entry)}")
+        elif warnings and self.verbose and not self.json_output:
+            print(colors.yellow | f"Error probe warnings after {command_name}:")
+            for warning in warnings:
+                print(colors.yellow | f"  - {warning}")
+
+        return bool(has_new_errors and bool(getattr(self, "fail_on_new_errors", False)))
+
     def _output(self, data: dict):
         """Output data in JSON or formatted text"""
         if self.json_output:
@@ -1376,6 +1605,7 @@ class Open(cli.Application):
                 file=sys.stderr,
             )
             return 1
+        error_snapshot = self.parent._capture_error_snapshot()
         if ensure.get("launched") and self.parent.verbose:
             print(
                 colors.yellow
@@ -1425,6 +1655,11 @@ class Open(cli.Application):
                     "open_result": parsed,
                 }
                 if self.parent.json_output:
+                    self.parent._apply_post_command_error_report(
+                        "open",
+                        error_snapshot,
+                        output_payload=failure_payload,
+                    )
                     self.parent._output(failure_payload)
                 else:
                     print(colors.red | "✗ Open target confirmation failed")
@@ -1433,6 +1668,10 @@ class Open(cli.Application):
                     if observed:
                         print(f"  Observed Current: {observed}")
                     print("  Use `views` to inspect currently loaded tabs.")
+                    self.parent._apply_post_command_error_report(
+                        "open",
+                        error_snapshot,
+                    )
                 return 1
 
             matched_view_obj = target_confirm.get("matched_view", {})
@@ -1469,6 +1708,11 @@ class Open(cli.Application):
                     "open_result": parsed,
                 }
                 if self.parent.json_output:
+                    self.parent._apply_post_command_error_report(
+                        "open",
+                        error_snapshot,
+                        output_payload=failure_payload,
+                    )
                     self.parent._output(failure_payload)
                 else:
                     print(colors.red | "✗ Analysis wait failed after open")
@@ -1476,6 +1720,10 @@ class Open(cli.Application):
                         err_obj = analysis_wait_result.get("error")
                         if err_obj:
                             print(f"  Error: {err_obj}")
+                    self.parent._apply_post_command_error_report(
+                        "open",
+                        error_snapshot,
+                    )
                 return 1
 
         if self.parent.json_output:
@@ -1485,7 +1733,14 @@ class Open(cli.Application):
                 out["effective_target_view_id"] = parsed["state"].get("effective_target_view_id")
             if analysis_wait_result is not None:
                 out["analysis_wait_result"] = analysis_wait_result
+            should_fail = self.parent._apply_post_command_error_report(
+                "open",
+                error_snapshot,
+                output_payload=out,
+            )
             self.parent._output(out)
+            if should_fail:
+                return 1
             return
 
         ok = bool(parsed.get("ok"))
@@ -1535,6 +1790,13 @@ class Open(cli.Application):
                 print(colors.green | "  Analysis: wait complete")
             else:
                 print(colors.red | "  Analysis: wait failed")
+
+        should_fail = self.parent._apply_post_command_error_report(
+            "open",
+            error_snapshot,
+        )
+        if should_fail:
+            return 1
 
 
 @BinaryNinjaCLI.subcommand("quit")
@@ -1715,6 +1977,7 @@ class Decompile(cli.Application):
     """Decompile a function"""
 
     def main(self, function_name: str):
+        error_snapshot = self.parent._capture_error_snapshot()
         data = self.parent._request(
             "GET",
             "decompile",
@@ -1723,13 +1986,26 @@ class Decompile(cli.Application):
         )
 
         if self.parent.json_output:
+            should_fail = self.parent._apply_post_command_error_report(
+                "decompile",
+                error_snapshot,
+                output_payload=data if isinstance(data, dict) else None,
+            )
             self.parent._output(data)
+            if should_fail:
+                return 1
         else:
             if "error" in data:
                 print(colors.red | f"Error: {data['error']}")
             else:
                 print(colors.cyan | f"Decompiled code for {function_name}:")
                 print(data.get("decompiled", "No decompilation available"))
+            should_fail = self.parent._apply_post_command_error_report(
+                "decompile",
+                error_snapshot,
+            )
+            if should_fail:
+                return 1
 
 
 @BinaryNinjaCLI.subcommand("assembly")
@@ -1737,6 +2013,7 @@ class Assembly(cli.Application):
     """Get assembly code for a function"""
 
     def main(self, function_name: str):
+        error_snapshot = self.parent._capture_error_snapshot()
         data = self.parent._request(
             "GET",
             "assembly",
@@ -1745,13 +2022,26 @@ class Assembly(cli.Application):
         )
 
         if self.parent.json_output:
+            should_fail = self.parent._apply_post_command_error_report(
+                "assembly",
+                error_snapshot,
+                output_payload=data if isinstance(data, dict) else None,
+            )
             self.parent._output(data)
+            if should_fail:
+                return 1
         else:
             if "error" in data:
                 print(colors.red | f"Error: {data['error']}")
             else:
                 print(colors.cyan | f"Assembly for {function_name}:")
                 print(data.get("assembly", "No assembly available"))
+            should_fail = self.parent._apply_post_command_error_report(
+                "assembly",
+                error_snapshot,
+            )
+            if should_fail:
+                return 1
 
 
 @BinaryNinjaCLI.subcommand("rename")
@@ -2019,18 +2309,32 @@ class Python(cli.Application):
 
         # Handle completion request
         if self.complete is not None:
+            error_snapshot = self.parent._capture_error_snapshot()
             data = self.parent._request(
                 "GET", "console/complete", params={"partial": self.complete}
             )
             completions = data.get("completions", [])
             if self.parent.json_output:
+                should_fail = self.parent._apply_post_command_error_report(
+                    "python.complete",
+                    error_snapshot,
+                    output_payload=data if isinstance(data, dict) else None,
+                )
                 self.parent._output(data)
+                if should_fail:
+                    return 1
             else:
                 if completions:
                     for comp in completions:
                         print(comp)
                 else:
                     print(f"No completions for '{self.complete}'")
+                should_fail = self.parent._apply_post_command_error_report(
+                    "python.complete",
+                    error_snapshot,
+                )
+                if should_fail:
+                    return 1
             return 0
 
         # Determine source of code
@@ -2111,6 +2415,7 @@ class Python(cli.Application):
             return 1
 
         # Execute the code
+        error_snapshot = self.parent._capture_error_snapshot()
         data = self.parent._request(
             "POST",
             "console/execute",
@@ -2118,7 +2423,14 @@ class Python(cli.Application):
         )
 
         if self.parent.json_output:
+            should_fail = self.parent._apply_post_command_error_report(
+                "python.execute",
+                error_snapshot,
+                output_payload=data if isinstance(data, dict) else None,
+            )
             self.parent._output(data)
+            if should_fail:
+                return 1
         else:
             if data.get("success"):
                 # Show output
@@ -2151,6 +2463,13 @@ class Python(cli.Application):
                         print(colors.dim | error["traceback"])
                 else:
                     print(colors.red | f"Error: {error}")
+
+            should_fail = self.parent._apply_post_command_error_report(
+                "python.execute",
+                error_snapshot,
+            )
+            if should_fail:
+                return 1
 
     def _interactive_mode(self):
         """Interactive Python session"""
