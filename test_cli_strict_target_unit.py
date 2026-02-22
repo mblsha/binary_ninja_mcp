@@ -98,7 +98,9 @@ def test_strict_target_passes_and_sets_selected_view_context_fields():
     with patch.object(
         binja_cli.requests,
         "get",
-        return_value=_FakeResponse({"loaded": True, "filename": "/tmp/target.bin", "_api_version": 1}),
+        return_value=_FakeResponse(
+            {"loaded": True, "filename": "/tmp/target.bin", "_api_version": 1}
+        ),
     ):
         with patch.object(
             binja_cli.requests,
@@ -231,7 +233,9 @@ def test_strict_target_blocks_mismatched_view_id_before_command():
             "get",
             return_value=_FakeResponse(
                 {
-                    "views": [{"view_id": "0x2222", "filename": "/tmp/other.bin", "is_current": True}],
+                    "views": [
+                        {"view_id": "0x2222", "filename": "/tmp/other.bin", "is_current": True}
+                    ],
                     "count": 1,
                     "current_view_id": "0x2222",
                     "current_filename": "/tmp/other.bin",

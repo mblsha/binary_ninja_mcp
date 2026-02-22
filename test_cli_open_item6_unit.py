@@ -49,7 +49,9 @@ def _ui_open_contract_with_state(
     warnings: list[str] | None = None,
 ) -> dict:
     payload = _ui_open_contract(filepath)
-    payload["state"]["loaded_filename"] = loaded_filename if loaded_filename is not None else filepath
+    payload["state"]["loaded_filename"] = (
+        loaded_filename if loaded_filename is not None else filepath
+    )
     payload["warnings"] = list(warnings or [])
     payload["result"]["warnings"] = list(warnings or [])
     payload["result"]["state"] = dict(payload["state"])

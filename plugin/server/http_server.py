@@ -1582,7 +1582,11 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
                 binary_view, target_error = self._resolve_python_view(params)
                 if target_error is not None:
-                    status_code = 409 if target_error.get("error") == "Conflicting BinaryView targets" else 404
+                    status_code = (
+                        409
+                        if target_error.get("error") == "Conflicting BinaryView targets"
+                        else 404
+                    )
                     self._send_json_response(target_error, status_code)
                     return
 
