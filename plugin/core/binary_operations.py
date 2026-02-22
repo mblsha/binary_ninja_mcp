@@ -14,6 +14,33 @@ class BinaryOperations:
         # if the underlying BinaryView type doesn't support weakref.
         self._views_by_path: Dict[str, object] = {}
         self._views_by_basename: Dict[str, object] = {}
+        self._views_by_id: Dict[str, object] = {}
+
+    @staticmethod
+    def _view_id_candidates(raw: Any) -> List[str]:
+        if raw is None:
+            return []
+        text = str(raw).strip()
+        if not text:
+            return []
+
+        keys = [text]
+        lower = text.lower()
+        if lower not in keys:
+            keys.append(lower)
+
+        try:
+            value = int(text, 0)
+            value_text = str(value)
+            if value_text not in keys:
+                keys.append(value_text)
+            value_hex = hex(value)
+            if value_hex not in keys:
+                keys.append(value_hex)
+        except Exception:
+            pass
+
+        return keys
 
     def register_view(self, bv: bn.BinaryView):
         """Register a BinaryView for later selection (e.g., via ?filename=...)."""
@@ -35,6 +62,12 @@ class BinaryOperations:
             base = Path(filename_str).name
             self._views_by_basename[base] = view_ref
             self._views_by_basename[base.lower()] = view_ref
+
+            explicit_view_id = getattr(bv, "view_id", None)
+            for key in self._view_id_candidates(explicit_view_id):
+                self._views_by_id[key] = view_ref
+            for key in self._view_id_candidates(id(bv)):
+                self._views_by_id[key] = view_ref
         except Exception:
             # Best-effort only; view registration should never break core operations.
             return
@@ -77,6 +110,23 @@ class BinaryOperations:
 
     def select_view_by_filename(self, filename: str) -> Optional[bn.BinaryView]:
         view = self.get_registered_view(filename)
+        if view:
+            self.current_view = view
+        return view
+
+    def get_registered_view_by_id(self, view_id: str) -> Optional[bn.BinaryView]:
+        for key in self._view_id_candidates(view_id):
+            ref = self._views_by_id.get(key)
+            if not ref:
+                continue
+            view = self._deref_view(ref)
+            if view:
+                return view
+            self._views_by_id.pop(key, None)
+        return None
+
+    def select_view_by_id(self, view_id: str) -> Optional[bn.BinaryView]:
+        view = self.get_registered_view_by_id(view_id)
         if view:
             self.current_view = view
         return view

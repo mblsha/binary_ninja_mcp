@@ -20,7 +20,9 @@ from .api_contracts import (
 )
 from .view_sync import (
     extract_view_filename,
+    extract_view_id,
     list_ui_views,
+    resolve_target_view,
     select_preferred_view,
 )
 from ..utils.string_utils import parse_int_or_default
@@ -280,15 +282,26 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
     ):
         """Best-effort refresh of current BinaryView for multi-tab UI workflows.
 
+        - If `view_id` (or `viewId`) is provided, attempt to select a previously-seen view.
         - If `filename` (or `file`) is provided, attempt to select a previously-seen view.
         - Otherwise (or as fallback), use `binaryninjaui.UIContext.currentBinaryView()` when available.
         """
         if not self.binary_ops:
             return
 
+        requested_view_id = None
         requested_filename = None
         if params:
+            requested_view_id = params.get("view_id") or params.get("viewId")
             requested_filename = params.get("filename") or params.get("file")
+
+        if requested_view_id:
+            try:
+                selected = self.binary_ops.select_view_by_id(str(requested_view_id))
+                if selected:
+                    return
+            except Exception:
+                pass
 
         if requested_filename:
             try:
@@ -307,7 +320,11 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     self.binary_ops.register_view(view)
                 except Exception:
                     continue
-            chosen_view = select_preferred_view(ui_views, str(requested_filename or ""))
+            chosen_view = select_preferred_view(
+                ui_views,
+                requested_filename=str(requested_filename or ""),
+                requested_view_id=str(requested_view_id or ""),
+            )
 
             if chosen_view is not None:
                 self.binary_ops.current_view = chosen_view
@@ -323,6 +340,32 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             # UI not available (headless) or API mismatch; ignore.
             pass
+
+    @staticmethod
+    def _view_context_fields(view: Any) -> Dict[str, Any]:
+        return {
+            "selected_view_filename": extract_view_filename(view),
+            "selected_view_id": extract_view_id(view),
+        }
+
+    def _resolve_python_view(self, params: Optional[Dict[str, Any]]) -> tuple[Any, Optional[dict]]:
+        """Resolve BinaryView for /console/execute without relying only on global current_view."""
+        if not self.binary_ops:
+            return None, None
+
+        requested_view_id = None
+        requested_filename = None
+        if params:
+            requested_view_id = params.get("view_id") or params.get("viewId")
+            requested_filename = params.get("filename") or params.get("file")
+
+        return resolve_target_view(
+            requested_view_id=str(requested_view_id) if requested_view_id else None,
+            requested_filename=str(requested_filename) if requested_filename else None,
+            get_view_by_id=lambda raw: self.binary_ops.get_registered_view_by_id(raw),
+            get_view_by_filename=lambda raw: self.binary_ops.get_registered_view(raw),
+            fallback_view=self.binary_ops.current_view,
+        )
 
     def do_GET(self):
         try:
@@ -1506,8 +1549,12 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 if hasattr(console_capture, "set_server_context"):
                     console_capture.set_server_context(self)
 
-                # Pass binary view directly if available
-                binary_view = self.binary_ops.current_view if self.binary_ops else None
+                binary_view, target_error = self._resolve_python_view(params)
+                if target_error is not None:
+                    status_code = 409 if target_error.get("error") == "Conflicting BinaryView targets" else 404
+                    self._send_json_response(target_error, status_code)
+                    return
+
                 try:
                     result = console_adapter.execute_command(
                         command,
@@ -1517,6 +1564,11 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 except RuntimeError as exc:
                     self._send_json_response({"error": str(exc)}, 500)
                     return
+
+                if isinstance(result, dict):
+                    view_ctx = self._view_context_fields(binary_view)
+                    result.setdefault("selected_view_filename", view_ctx["selected_view_filename"])
+                    result.setdefault("selected_view_id", view_ctx["selected_view_id"])
 
                 self._send_json_response(result)
 

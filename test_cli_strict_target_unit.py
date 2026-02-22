@@ -142,3 +142,21 @@ def test_strict_target_open_falls_back_to_status_when_response_has_no_filename()
 
     assert get_mock.call_count == 1
     assert out.get("selected_view_filename") == "/tmp/target.bin"
+
+
+def test_console_execute_injects_view_id_target():
+    app = _new_app()
+    app.target_view_id = "0x1234"
+
+    with patch.object(
+        binja_cli.requests,
+        "post",
+        return_value=_FakeResponse(
+            {"success": True, "selected_view_id": "0x1234", "_api_version": 1}
+        ),
+    ) as post_mock:
+        out = app._request("POST", "console/execute", data={"command": "id(bv)"})
+
+    sent_json = post_mock.call_args.kwargs.get("json", {})
+    assert sent_json.get("view_id") == "0x1234"
+    assert out.get("selected_view_id") == "0x1234"

@@ -22,8 +22,10 @@ class _FakeFile:
 
 
 class _FakeView:
-    def __init__(self, filename: str):
+    def __init__(self, filename: str, view_id: str | None = None):
         self.file = _FakeFile(filename)
+        if view_id is not None:
+            self.view_id = view_id
 
 
 class _FakeViewInterface:
@@ -93,6 +95,43 @@ class TestViewSync(unittest.TestCase):
         self.assertTrue(view_sync.matches_requested_filename(view, "/tmp/some/file/libBinary.so"))
         self.assertFalse(view_sync.matches_requested_filename(view, "other.so"))
 
+    def test_view_id_matching_accepts_decimal_and_hex_forms(self):
+        view = _FakeView("/tmp/rom.bin", view_id="4660")
+        self.assertTrue(view_sync.matches_requested_view_id(view, "4660"))
+        self.assertTrue(view_sync.matches_requested_view_id(view, "0x1234"))
+        self.assertFalse(view_sync.matches_requested_view_id(view, "0x1235"))
+
+    def test_resolve_target_view_prefers_explicit_view_id(self):
+        v1 = _FakeView("/tmp/first.bin", view_id="101")
+        v2 = _FakeView("/tmp/second.bin", view_id="202")
+
+        by_id = {"101": v1, "202": v2}
+        by_name = {"first.bin": v1, "second.bin": v2}
+        selected, error = view_sync.resolve_target_view(
+            "202",
+            None,
+            get_view_by_id=lambda raw: by_id.get(raw),
+            get_view_by_filename=lambda raw: by_name.get(raw),
+            fallback_view=v1,
+        )
+
+        self.assertIsNone(error)
+        self.assertIs(selected, v2)
+
+    def test_resolve_target_view_reports_conflicting_targets(self):
+        v1 = _FakeView("/tmp/first.bin", view_id="101")
+        v2 = _FakeView("/tmp/second.bin", view_id="202")
+        selected, error = view_sync.resolve_target_view(
+            "202",
+            "first.bin",
+            get_view_by_id=lambda raw: v2 if raw == "202" else None,
+            get_view_by_filename=lambda raw: v1 if raw == "first.bin" else None,
+            fallback_view=v1,
+        )
+
+        self.assertIsNone(selected)
+        self.assertEqual(error.get("error"), "Conflicting BinaryView targets")
+
     def test_list_ui_views_active_context_first_and_deduped(self):
         v_active = _FakeView("/tmp/active.bin")
         v_other = _FakeView("/tmp/other.bin")
@@ -126,6 +165,16 @@ class TestViewSync(unittest.TestCase):
         v1 = _FakeView("/tmp/first.bin")
         v2 = _FakeView("/tmp/target.bin")
         chosen = view_sync.select_preferred_view([v1, v2], requested_filename="target.bin")
+        self.assertIs(chosen, v2)
+
+    def test_select_preferred_view_prioritizes_view_id(self):
+        v1 = _FakeView("/tmp/first.bin", view_id="101")
+        v2 = _FakeView("/tmp/target.bin", view_id="202")
+        chosen = view_sync.select_preferred_view(
+            [v1, v2],
+            requested_filename="first.bin",
+            requested_view_id="0xca",
+        )
         self.assertIs(chosen, v2)
 
     def test_select_preferred_view_prioritizes_exact_path_over_basename(self):
