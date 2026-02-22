@@ -38,49 +38,6 @@ STARTUP_FATAL_PATTERNS = (
     "fatal error",
 )
 
-ANALYSIS_IDLE_STATE_VALUE = None
-ANALYSIS_IDLE_STATE_TEXTS = {
-    "idle",
-    "analysisstate.idle",
-    "idlestate",
-    "analysisstate.idlestate",
-}
-
-
-def _init_analysis_idle_state_metadata() -> None:
-    global ANALYSIS_IDLE_STATE_VALUE
-    try:
-        from binaryninja.enums import AnalysisState as _BNAnalysisState
-    except Exception:
-        return
-
-    try:
-        idle_state = _BNAnalysisState.IdleState
-    except Exception:
-        return
-
-    try:
-        ANALYSIS_IDLE_STATE_VALUE = int(idle_state)
-    except Exception:
-        ANALYSIS_IDLE_STATE_VALUE = None
-
-    for candidate in (
-        idle_state,
-        getattr(idle_state, "name", None),
-        f"AnalysisState.{getattr(idle_state, 'name', '')}",
-    ):
-        if candidate is None:
-            continue
-        try:
-            text = str(candidate).strip().lower()
-        except Exception:
-            continue
-        if text:
-            ANALYSIS_IDLE_STATE_TEXTS.add(text)
-
-
-_init_analysis_idle_state_metadata()
-
 
 def _float_env(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -671,36 +628,21 @@ class BinaryNinjaCLI(cli.Application):
         view_id: object | None = None,
         timeout: float = 120.0,
     ) -> dict:
-        idle_state_value = ANALYSIS_IDLE_STATE_VALUE
-
-        def _status_done(raw_status: object, raw_state_code: object = None) -> bool:
-            if raw_state_code is not None:
-                if idle_state_value is None:
-                    return False
-                try:
-                    return int(raw_state_code) == idle_state_value
-                except Exception:
-                    try:
-                        return int(str(raw_state_code).strip(), 0) == idle_state_value
-                    except Exception:
-                        pass
-
-            raw = raw_status
+        def _coerce_state_code(raw: object) -> int | None:
             if raw is None:
-                return False
-            text = str(raw).strip()
-            if not text:
-                return False
-            lowered = text.lower()
-            if lowered in ANALYSIS_IDLE_STATE_TEXTS:
-                return True
+                return None
+            if isinstance(raw, bool):
+                return None
+            if isinstance(raw, int):
+                return raw
             try:
-                value = int(text, 0)
+                return int(raw)
             except Exception:
-                return False
-            if idle_state_value is None:
-                return False
-            return value == idle_state_value
+                pass
+            try:
+                return int(str(raw).strip(), 0)
+            except Exception:
+                return None
 
         try:
             timeout_s = float(timeout)
@@ -712,13 +654,26 @@ class BinaryNinjaCLI(cli.Application):
         requested_filename = str(filename or "").strip()
         requested_view_id = view_id
 
-        resolved_idle = self._resolve_idle_analysis_state_value(
-            filename=requested_filename,
-            view_id=requested_view_id,
-            timeout=min(timeout_s, 10.0),
-        )
-        if resolved_idle is not None:
-            idle_state_value = resolved_idle
+        try:
+            idle_state_value = self._resolve_idle_analysis_state_value(
+                filename=requested_filename,
+                view_id=requested_view_id,
+                timeout=min(timeout_s, 10.0),
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "analysis_state_code": None,
+                "analysis_state_name": None,
+                "analysis_status": None,
+                "selected_view_filename": None,
+                "selected_view_id": None,
+                "wait_seconds": 0.0,
+                "error": {
+                    "type": "RuntimeContractError",
+                    "message": f"failed to resolve runtime AnalysisState.IdleState: {exc}",
+                },
+            }
 
         poll_interval = 0.1
         deadline = time.monotonic() + timeout_s
@@ -778,10 +733,29 @@ class BinaryNinjaCLI(cli.Application):
 
             if isinstance(target, dict):
                 last_target = target
-                state_code = target.get("analysis_state_code")
+                state_code = _coerce_state_code(target.get("analysis_state_code"))
                 state_name = target.get("analysis_state_name")
                 last_status = target.get("analysis_status")
-                if _status_done(last_status, state_code) or _status_done(state_name):
+                if state_code is None:
+                    elapsed = time.monotonic() - start
+                    return {
+                        "success": False,
+                        "analysis_state_code": None,
+                        "analysis_state_name": state_name,
+                        "analysis_status": last_status,
+                        "selected_view_filename": target.get("filename"),
+                        "selected_view_id": target.get("view_id"),
+                        "wait_seconds": elapsed,
+                        "error": {
+                            "type": "RuntimeContractError",
+                            "message": (
+                                "views payload missing numeric analysis_state_code "
+                                "for selected target; update binary_ninja_mcp plugin."
+                            ),
+                        },
+                    }
+
+                if state_code == idle_state_value:
                     elapsed = time.monotonic() - start
                     return {
                         "success": True,
@@ -800,7 +774,7 @@ class BinaryNinjaCLI(cli.Application):
         elapsed = time.monotonic() - start
         return {
             "success": False,
-            "analysis_state_code": (last_target or {}).get("analysis_state_code"),
+            "analysis_state_code": _coerce_state_code((last_target or {}).get("analysis_state_code")),
             "analysis_state_name": (last_target or {}).get("analysis_state_name"),
             "analysis_status": last_status,
             "selected_view_filename": (last_target or {}).get("filename"),
@@ -821,15 +795,10 @@ class BinaryNinjaCLI(cli.Application):
         filename: str = "",
         view_id: object | None = None,
         timeout: float = 5.0,
-    ) -> int | None:
+    ) -> int:
         cached = getattr(self, "_cached_idle_analysis_state_value", None)
         if isinstance(cached, int):
             return cached
-
-        if ANALYSIS_IDLE_STATE_VALUE is not None:
-            value = int(ANALYSIS_IDLE_STATE_VALUE)
-            self._cached_idle_analysis_state_value = value
-            return value
 
         try:
             timeout_s = float(timeout)
@@ -857,11 +826,16 @@ class BinaryNinjaCLI(cli.Application):
             timeout=max(self.request_timeout, timeout_s + 2.0),
         )
         if not isinstance(result, dict):
-            return None
+            raise RuntimeError("unexpected /console/execute payload while resolving IdleState")
+
+        if not bool(result.get("success", False)):
+            raise RuntimeError(
+                f"/console/execute failed while resolving IdleState: {result.get('error')!r}"
+            )
 
         stdout_text = str(result.get("stdout") or "").strip()
         if not stdout_text:
-            return None
+            raise RuntimeError("/console/execute returned empty stdout while resolving IdleState")
 
         for line in reversed(stdout_text.splitlines()):
             candidate = line.strip()
@@ -873,7 +847,9 @@ class BinaryNinjaCLI(cli.Application):
                 continue
             self._cached_idle_analysis_state_value = value
             return value
-        return None
+        raise RuntimeError(
+            "could not parse integer AnalysisState.IdleState value from /console/execute output"
+        )
 
     @staticmethod
     def _extract_observed_filename(payload: dict | None) -> str | None:

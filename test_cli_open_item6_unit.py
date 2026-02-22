@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -89,6 +91,31 @@ def test_wait_for_open_target_in_views_matches_requested_file():
     assert out.get("matched_view", {}).get("view_id") == "22"
 
 
+def test_open_help_does_not_expose_no_ui_switch():
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "open", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    text = (result.stdout or "") + (result.stderr or "")
+    assert "--no-ui" not in text
+    assert "UI-only open workflow" in text
+
+
+def test_open_rejects_no_ui_switch():
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "open", "--no-ui"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    text = (result.stdout or "") + (result.stderr or "")
+    assert "Unknown switch --no-ui" in text
+
+
 def test_wait_for_analysis_on_target_polls_views_until_idle():
     app = _new_app()
     resolved_idle = 2
@@ -105,6 +132,7 @@ def test_wait_for_analysis_on_target_polls_views_until_idle():
                         {
                             "filename": "/tmp/target.bin",
                             "view_id": "22",
+                            "analysis_state_code": 5,
                             "analysis_status": "5",
                         }
                     ],
@@ -115,6 +143,7 @@ def test_wait_for_analysis_on_target_polls_views_until_idle():
                         {
                             "filename": "/tmp/target.bin",
                             "view_id": "22",
+                            "analysis_state_code": resolved_idle,
                             "analysis_status": idle_token,
                         }
                     ],
@@ -145,9 +174,10 @@ def test_wait_for_analysis_on_target_polls_views_until_idle():
 
 def test_wait_for_analysis_uses_runtime_idle_enum_value_not_literal_zero():
     app = _new_app()
+    resolved_idle = 7
 
     with (
-        patch.object(binja_cli, "ANALYSIS_IDLE_STATE_VALUE", 7),
+        patch.object(app, "_resolve_idle_analysis_state_value", return_value=resolved_idle),
         patch.object(
             app,
             "_request",
@@ -157,6 +187,7 @@ def test_wait_for_analysis_uses_runtime_idle_enum_value_not_literal_zero():
                         {
                             "filename": "/tmp/target.bin",
                             "view_id": "22",
+                            "analysis_state_code": 6,
                             "analysis_status": "6",
                         }
                     ],
@@ -167,6 +198,7 @@ def test_wait_for_analysis_uses_runtime_idle_enum_value_not_literal_zero():
                         {
                             "filename": "/tmp/target.bin",
                             "view_id": "22",
+                            "analysis_state_code": resolved_idle,
                             "analysis_status": "7",
                         }
                     ],
@@ -340,7 +372,6 @@ def test_resolve_idle_analysis_state_value_queries_console_execute():
     app = _new_app()
 
     with (
-        patch.object(binja_cli, "ANALYSIS_IDLE_STATE_VALUE", None),
         patch.object(
             app,
             "_request",
@@ -364,6 +395,39 @@ def test_resolve_idle_analysis_state_value_queries_console_execute():
     assert "AnalysisState.IdleState" in payload.get("command", "")
     assert payload.get("filename") == "/tmp/target.bin"
     assert payload.get("view_id") == "22"
+
+
+def test_wait_for_analysis_returns_contract_error_when_state_code_missing():
+    app = _new_app()
+
+    with (
+        patch.object(app, "_resolve_idle_analysis_state_value", return_value=2),
+        patch.object(
+            app,
+            "_request",
+            return_value={
+                "views": [
+                    {
+                        "filename": "/tmp/target.bin",
+                        "view_id": "22",
+                        "analysis_state_name": "AnalyzeState",
+                        "analysis_status": "running",
+                    }
+                ],
+                "_api_version": 1,
+            },
+        ),
+    ):
+        out = app._wait_for_analysis_on_target(
+            filename="/tmp/target.bin",
+            view_id="22",
+            timeout=1.0,
+        )
+
+    assert out.get("success") is False
+    err = out.get("error", {})
+    assert err.get("type") == "RuntimeContractError"
+    assert "analysis_state_code" in err.get("message", "")
 
 
 def test_open_main_confirms_target_and_reports_view_context():
@@ -461,19 +525,23 @@ def test_open_main_returns_structured_error_when_target_not_confirmed():
 def test_wait_for_analysis_on_target_times_out_with_structured_error():
     app = _new_app()
 
-    with patch.object(
-        app,
-        "_request",
-        return_value={
-            "views": [
-                {
-                    "filename": "/tmp/target.bin",
-                    "view_id": "22",
-                    "analysis_status": "5",
-                }
-            ],
-            "_api_version": 1,
-        },
+    with (
+        patch.object(app, "_resolve_idle_analysis_state_value", return_value=2),
+        patch.object(
+            app,
+            "_request",
+            return_value={
+                "views": [
+                    {
+                        "filename": "/tmp/target.bin",
+                        "view_id": "22",
+                        "analysis_state_code": 5,
+                        "analysis_status": "5",
+                    }
+                ],
+                "_api_version": 1,
+            },
+        ),
     ):
         out = app._wait_for_analysis_on_target(
             filename="/tmp/target.bin",
