@@ -177,7 +177,12 @@ class BinaryNinjaCLI(cli.Application):
                 print(f"Data: {request_data}", file=sys.stderr)
 
         try:
-            if self.strict_target and self.target_filename and endpoint_path != "/status":
+            strict_requires_precheck = (
+                self.strict_target
+                and self.target_filename
+                and endpoint_path not in {"/status", "/ui/open", "/load"}
+            )
+            if strict_requires_precheck:
                 strict_selected_filename = self._assert_strict_target_selected(
                     timeout=request_timeout
                 )
@@ -236,19 +241,22 @@ class BinaryNinjaCLI(cli.Application):
 
             if isinstance(response_data, dict):
                 observed_filename = (
-                    response_data.get("selected_view_filename")
-                    or response_data.get("filename")
-                    or strict_selected_filename
+                    self._extract_observed_filename(response_data) or strict_selected_filename
                 )
-                response_data.setdefault("selected_view_filename", observed_filename)
-                response_data.setdefault("selected_view_id", response_data.get("selected_view_id"))
+                observed_view_id = self._extract_observed_view_id(response_data)
 
                 if self.strict_target and self.target_filename:
+                    if not self._filename_matches_requested(observed_filename, self.target_filename):
+                        # Some endpoints (e.g. /ui/open) may not return loaded filename immediately.
+                        observed_filename = self._resolve_target_via_status(timeout=request_timeout)
                     if not self._filename_matches_requested(observed_filename, self.target_filename):
                         raise RuntimeError(
                             "strict target mismatch: "
                             f"requested '{self.target_filename}', observed '{observed_filename}'"
                         )
+
+                response_data.setdefault("selected_view_filename", observed_filename)
+                response_data.setdefault("selected_view_id", observed_view_id)
 
             return response_data
 
@@ -354,7 +362,7 @@ class BinaryNinjaCLI(cli.Application):
         payload = response.json()
         if not isinstance(payload, dict):
             raise RuntimeError("strict target check failed: unexpected /status payload")
-        return payload.get("selected_view_filename") or payload.get("filename")
+        return self._extract_observed_filename(payload)
 
     def _assert_strict_target_selected(self, timeout: float) -> str:
         observed_filename = self._resolve_target_via_status(timeout=timeout)
@@ -364,6 +372,59 @@ class BinaryNinjaCLI(cli.Application):
                 f"requested '{self.target_filename}', observed '{observed_filename}'"
             )
         return str(observed_filename)
+
+    @staticmethod
+    def _extract_observed_filename(payload: dict | None) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+
+        def pick_from_dict(item: dict | None) -> str | None:
+            if not isinstance(item, dict):
+                return None
+            direct = item.get("selected_view_filename") or item.get("filename")
+            if isinstance(direct, str) and direct.strip():
+                return direct
+            state = item.get("state")
+            if isinstance(state, dict):
+                loaded = state.get("loaded_filename")
+                if isinstance(loaded, str) and loaded.strip():
+                    return loaded
+            return None
+
+        direct = pick_from_dict(payload)
+        if direct:
+            return direct
+
+        for wrapper_key in ("open_result", "quit_result", "statusbar_result"):
+            wrapped = payload.get(wrapper_key)
+            if not isinstance(wrapped, dict):
+                continue
+            wrapped_direct = pick_from_dict(wrapped)
+            if wrapped_direct:
+                return wrapped_direct
+            nested_result = wrapped.get("result")
+            wrapped_nested = pick_from_dict(nested_result if isinstance(nested_result, dict) else None)
+            if wrapped_nested:
+                return wrapped_nested
+
+        nested_result = payload.get("result")
+        nested = pick_from_dict(nested_result if isinstance(nested_result, dict) else None)
+        if nested:
+            return nested
+        return None
+
+    @staticmethod
+    def _extract_observed_view_id(payload: dict | None):
+        if not isinstance(payload, dict):
+            return None
+        direct = payload.get("selected_view_id")
+        if direct is not None:
+            return direct
+        for wrapper_key in ("open_result", "quit_result", "statusbar_result"):
+            wrapped = payload.get(wrapper_key)
+            if isinstance(wrapped, dict) and wrapped.get("selected_view_id") is not None:
+                return wrapped.get("selected_view_id")
+        return None
 
     def _server_reachable(self, timeout: float = 2.0) -> bool:
         """Check whether MCP server is reachable without exiting."""

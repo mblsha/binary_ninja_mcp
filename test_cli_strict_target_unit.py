@@ -87,3 +87,58 @@ def test_strict_target_passes_and_sets_selected_view_context_fields():
     assert out.get("success") is True
     assert out.get("selected_view_filename") == "/tmp/target.bin"
     assert "selected_view_id" in out
+
+
+def test_strict_target_open_uses_response_state_without_precheck():
+    app = _new_app()
+    app.target_filename = "/tmp/target.bin"
+    app.strict_target = True
+
+    with patch.object(binja_cli.requests, "get") as get_mock:
+        with patch.object(
+            binja_cli.requests,
+            "post",
+            return_value=_FakeResponse(
+                {
+                    "ok": True,
+                    "state": {"loaded_filename": "/tmp/target.bin"},
+                    "_api_version": 2,
+                },
+                api_version=2,
+            ),
+        ):
+            out = app._request("POST", "ui/open", data={"filepath": "/tmp/target.bin"})
+
+    get_mock.assert_not_called()
+    assert out.get("selected_view_filename") == "/tmp/target.bin"
+
+
+def test_strict_target_open_falls_back_to_status_when_response_has_no_filename():
+    app = _new_app()
+    app.target_filename = "/tmp/target.bin"
+    app.strict_target = True
+
+    with patch.object(
+        binja_cli.requests,
+        "post",
+        return_value=_FakeResponse(
+            {
+                "ok": True,
+                "state": {"loaded_filename": None},
+                "_api_version": 2,
+            },
+            api_version=2,
+        ),
+    ):
+        with patch.object(
+            binja_cli.requests,
+            "get",
+            return_value=_FakeResponse(
+                {"loaded": True, "filename": "/tmp/target.bin", "_api_version": 1},
+                api_version=1,
+            ),
+        ) as get_mock:
+            out = app._request("POST", "ui/open", data={"filepath": "/tmp/target.bin"})
+
+    assert get_mock.call_count == 1
+    assert out.get("selected_view_filename") == "/tmp/target.bin"
