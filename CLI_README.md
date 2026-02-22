@@ -116,6 +116,9 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 # Target a specific already-open BinaryView when multiple binaries are open
 ./cli.py --filename /path/to/st2-maincpu.combined functions --limit 20
 ./cli.py --filename st1-slave.combined decompile slave_handle_shared_overlay_request
+
+# Fail fast if --filename does not resolve to the requested view
+./cli.py --filename /path/to/st2-maincpu.combined --strict-target decompile hw_write_1d0000
 ```
 
 ### Help

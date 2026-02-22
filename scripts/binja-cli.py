@@ -77,6 +77,14 @@ class BinaryNinjaCLI(cli.Application):
         ),
     )
 
+    strict_target = cli.Flag(
+        ["--strict-target"],
+        help=(
+            "Require --filename to resolve to the requested file before running each command. "
+            "If the selected BinaryView does not match, fail instead of falling back."
+        ),
+    )
+
     json_output = cli.Flag(["--json", "-j"], help="Output raw JSON response")
 
     verbose = cli.Flag(["--verbose", "-v"], help="Verbose output")
@@ -148,6 +156,7 @@ class BinaryNinjaCLI(cli.Application):
         url = f"{self.server_url}/{endpoint.lstrip('/')}"
         request_timeout = self.request_timeout if timeout is None else float(timeout)
         expected_api_version = self._expected_api_version(endpoint_path)
+        strict_selected_filename = None
 
         request_headers = {
             "X-Binja-MCP-Api-Version": str(expected_api_version),
@@ -168,6 +177,11 @@ class BinaryNinjaCLI(cli.Application):
                 print(f"Data: {request_data}", file=sys.stderr)
 
         try:
+            if self.strict_target and self.target_filename and endpoint_path != "/status":
+                strict_selected_filename = self._assert_strict_target_selected(
+                    timeout=request_timeout
+                )
+
             if method == "GET":
                 response = requests.get(
                     url,
@@ -219,6 +233,22 @@ class BinaryNinjaCLI(cli.Application):
                     f"endpoint API version mismatch for {endpoint_path}: "
                     f"client={expected_api_version}, server_body={body_version}"
                 )
+
+            if isinstance(response_data, dict):
+                observed_filename = (
+                    response_data.get("selected_view_filename")
+                    or response_data.get("filename")
+                    or strict_selected_filename
+                )
+                response_data.setdefault("selected_view_filename", observed_filename)
+                response_data.setdefault("selected_view_id", response_data.get("selected_view_id"))
+
+                if self.strict_target and self.target_filename:
+                    if not self._filename_matches_requested(observed_filename, self.target_filename):
+                        raise RuntimeError(
+                            "strict target mismatch: "
+                            f"requested '{self.target_filename}', observed '{observed_filename}'"
+                        )
 
             return response_data
 
@@ -274,6 +304,66 @@ class BinaryNinjaCLI(cli.Application):
         except Exception as e:
             print(colors.red | f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+
+    @staticmethod
+    def _filename_matches_requested(observed: str | None, requested: str | None) -> bool:
+        if not observed or not requested:
+            return False
+        observed_text = str(observed).strip()
+        requested_text = str(requested).strip()
+        if not observed_text or not requested_text:
+            return False
+
+        requested_path = Path(requested_text).expanduser()
+        observed_path = Path(observed_text).expanduser()
+
+        # If the request contains an explicit path, require full path match.
+        if any(sep in requested_text for sep in ("/", "\\")):
+            try:
+                observed_norm = str(observed_path.resolve(strict=False))
+            except Exception:
+                observed_norm = str(observed_path)
+            try:
+                requested_norm = str(requested_path.resolve(strict=False))
+            except Exception:
+                requested_norm = str(requested_path)
+            if os.name == "nt":
+                return observed_norm.lower() == requested_norm.lower()
+            return observed_norm == requested_norm
+
+        observed_base = observed_path.name
+        requested_base = requested_path.name
+        if os.name == "nt":
+            return observed_base.lower() == requested_base.lower()
+        return observed_base == requested_base
+
+    def _resolve_target_via_status(self, timeout: float) -> str | None:
+        endpoint_path = "/status"
+        expected_api_version = self._expected_api_version(endpoint_path)
+        url = f"{self.server_url}/status"
+        response = requests.get(
+            url,
+            params={
+                "_api_version": expected_api_version,
+                "filename": self.target_filename,
+            },
+            headers={"X-Binja-MCP-Api-Version": str(expected_api_version)},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("strict target check failed: unexpected /status payload")
+        return payload.get("selected_view_filename") or payload.get("filename")
+
+    def _assert_strict_target_selected(self, timeout: float) -> str:
+        observed_filename = self._resolve_target_via_status(timeout=timeout)
+        if not self._filename_matches_requested(observed_filename, self.target_filename):
+            raise RuntimeError(
+                "strict target mismatch: "
+                f"requested '{self.target_filename}', observed '{observed_filename}'"
+            )
+        return str(observed_filename)
 
     def _server_reachable(self, timeout: float = 2.0) -> bool:
         """Check whether MCP server is reachable without exiting."""
