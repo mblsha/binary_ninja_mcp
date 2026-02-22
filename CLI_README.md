@@ -150,19 +150,23 @@ current UI state and does the right thing:
   - optional `--view-type` and `--platform` are applied when matching controls are found;
   - `Open` is clicked automatically (unless `--no-click` or `--inspect-only` is set).
 - If no dialog is visible:
-  - falls back to `bn.load(filepath)` and updates MCP `current_view`.
+  - uses the UI context open flow and confirms the file appears in `views`.
+  - if the target is not confirmed, the command returns a structured error.
 - If MCP server is not reachable on Linux:
   - automatically launches Binary Ninja with Wayland defaults and retries;
   - prints a clear startup error (and launch log path) if startup fails.
+- `open` is UI-only by design:
+  - non-UI open modes are intentionally unsupported.
+  - use `--wait-open-target` and `--wait-analysis` for reliability.
 
 Examples:
 
 ```bash
-# Typical headless-safe open with explicit platform/view
+# Typical UI-driven open with explicit platform/view
 ./cli.py open /path/to/town_mcga.bin --view-type Mapped --platform x86_16
 
-# Prefer non-UI load path and confirm target registration in /views
-./cli.py open /path/to/town_mcga.bin --no-ui --wait-open-target 8
+# Confirm target registration in /views
+./cli.py open /path/to/town_mcga.bin --wait-open-target 8
 
 # Wait for analysis after target confirmation
 ./cli.py open /path/to/town_mcga.bin --wait-analysis --analysis-timeout 180

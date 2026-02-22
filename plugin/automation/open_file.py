@@ -478,10 +478,6 @@ def open_file_workflow(
     target_file = result["input"]["filepath"]
     target_platform = result["input"]["platform"]
     target_view_type = result["input"]["view_type"]
-    # Prefer UIContext-based opening by default so files are visible in the UI,
-    # not only loaded in backend state via bn.load fallback.
-    prefer_ui_open_raw = _unused.get("prefer_ui_open")
-    prefer_ui_open = True if prefer_ui_open_raw is None else bool(prefer_ui_open_raw)
 
     if bn is None:
         result["ok"] = False
@@ -821,7 +817,7 @@ def open_file_workflow(
                         result["warnings"].append(f"unable to activate existing tab: {exc}")
 
                 ui_open = {"ok": False, "reason": "skipped"}
-                if loaded_bv is None and app is not None and prefer_ui_open:
+                if loaded_bv is None and app is not None:
 
                     def _poll_existing_database_prompt() -> None:
                         existing_now = _find_existing_database_dialog(app)
@@ -862,19 +858,15 @@ def open_file_workflow(
                         result["warnings"].append(
                             f"ui_context_open_filename: {ui_open.get('reason')}"
                         )
-                elif loaded_bv is None and app is not None:
-                    result["actions"].append("skipped_ui_context_open_to_avoid_modal_block")
 
                 if loaded_bv is None and not ui_open.get("ok"):
                     if target_platform or target_view_type:
                         result["warnings"].append(
-                            "no open dialog visible; --platform/--view-type were not forced (bn.load defaults used)"
+                            "no open dialog visible; --platform/--view-type were not forced"
                         )
-                    try:
-                        loaded_bv = bn.load(target_file)
-                        result["actions"].append("bn.load")
-                    except Exception as exc:
-                        result["errors"].append(f"bn.load failed: {exc}")
+                    result["errors"].append(
+                        "ui-only open workflow failed; no BinaryView was opened via UI context"
+                    )
 
                 if app is not None:
                     deadline = _bounded_poll_deadline(6.0)
@@ -971,20 +963,6 @@ def open_file_workflow(
 
         return loaded_bv
 
-    def run_non_ui_fallback_load():
-        fallback_bv = None
-        if inspect_only:
-            result["actions"].append("inspect_only_skip_non_ui_fallback_load")
-            return fallback_bv
-        if not target_file:
-            return fallback_bv
-        try:
-            fallback_bv = bn.load(target_file)
-            result["actions"].append("bn.load_non_ui_fallback")
-        except Exception as exc:
-            result["errors"].append(f"non-ui fallback load failed: {exc}")
-        return fallback_bv
-
     loaded_bv = None
     if hasattr(bn, "execute_on_main_thread") or hasattr(bn, "execute_on_main_thread_and_wait"):
         state = {"loaded_bv": None, "exception": None}
@@ -1030,12 +1008,11 @@ def open_file_workflow(
         if state["exception"] is None:
             loaded_bv = state["loaded_bv"]
         else:
-            result["warnings"].append(
-                f"main-thread open workflow failed: {state['exception']}; running non-ui fallback"
-            )
-            loaded_bv = run_non_ui_fallback_load()
+            result["errors"].append(f"main-thread open workflow failed: {state['exception']}")
     else:
-        loaded_bv = run_non_ui_fallback_load()
+        result["errors"].append(
+            "UI-only open workflow requires Binary Ninja main-thread execution APIs"
+        )
 
     app = QApplication.instance()
     if app is not None:

@@ -78,29 +78,56 @@ def test_wait_for_open_target_in_views_matches_requested_file():
     assert out.get("matched_view", {}).get("view_id") == "22"
 
 
-def test_wait_for_analysis_on_target_uses_console_execute_with_target_fields():
+def test_wait_for_analysis_on_target_polls_views_until_idle():
     app = _new_app()
 
-    with patch.object(app, "_request", return_value={"success": True}) as req_mock:
+    with patch.object(
+        app,
+        "_request",
+        side_effect=[
+            {
+                "views": [
+                    {
+                        "filename": "/tmp/target.bin",
+                        "view_id": "22",
+                        "analysis_status": "5",
+                    }
+                ],
+                "_api_version": 1,
+            },
+            {
+                "views": [
+                    {
+                        "filename": "/tmp/target.bin",
+                        "view_id": "22",
+                        "analysis_status": "0",
+                    }
+                ],
+                "_api_version": 1,
+            },
+        ],
+    ) as req_mock:
         out = app._wait_for_analysis_on_target(
             filename="/tmp/target.bin",
             view_id="22",
-            timeout=33.0,
+            timeout=2.0,
         )
 
     assert out.get("success") is True
-    req_mock.assert_called_once()
-    args, kwargs = req_mock.call_args
-    assert args[0] == "POST"
-    assert args[1] == "console/execute"
-    payload = kwargs.get("data", {})
-    assert payload.get("filename") == "/tmp/target.bin"
-    assert payload.get("view_id") == "22"
-    assert payload.get("timeout") == 33.0
-    assert "update_analysis_and_wait" in payload.get("command", "")
+    assert out.get("analysis_status") == "0"
+    assert out.get("selected_view_filename") == "/tmp/target.bin"
+    assert out.get("selected_view_id") == "22"
+    assert req_mock.call_count == 2
+    for call in req_mock.call_args_list:
+        args, kwargs = call
+        assert args[0] == "GET"
+        assert args[1] == "views"
+        params = kwargs.get("params", {})
+        assert params.get("filename") == "/tmp/target.bin"
+        assert params.get("view_id") == "22"
 
 
-def test_open_main_no_ui_confirms_target_and_reports_view_context():
+def test_open_main_confirms_target_and_reports_view_context():
     app = _new_app()
     open_cmd = binja_cli.Open("open")
     open_cmd.parent = app
@@ -108,7 +135,6 @@ def test_open_main_no_ui_confirms_target_and_reports_view_context():
     open_cmd.view_type = None
     open_cmd.no_click = False
     open_cmd.inspect_only = False
-    open_cmd.no_ui = True
     open_cmd.wait_open_target = 0.5
     open_cmd.wait_analysis = False
     open_cmd.analysis_timeout = 120.0
@@ -142,8 +168,9 @@ def test_open_main_no_ui_confirms_target_and_reports_view_context():
         rc = open_cmd.main(target)
 
     assert rc is None
-    first_payload = req_mock.call_args_list[0].kwargs.get("data", {})
-    assert first_payload.get("prefer_ui_open") is False
+    args0, kwargs0 = req_mock.call_args_list[0]
+    assert args0[:2] == ("POST", "ui/open")
+    assert "prefer_ui_open" not in kwargs0.get("data", {})
 
     out = output_mock.call_args.args[0]
     open_result = out.get("open_result", {})
@@ -161,7 +188,6 @@ def test_open_main_returns_structured_error_when_target_not_confirmed():
     open_cmd.view_type = None
     open_cmd.no_click = False
     open_cmd.inspect_only = False
-    open_cmd.no_ui = False
     open_cmd.wait_open_target = 0.1
     open_cmd.wait_analysis = False
     open_cmd.analysis_timeout = 120.0
@@ -191,3 +217,33 @@ def test_open_main_returns_structured_error_when_target_not_confirmed():
     assert out.get("requested_filename") == target
     assert out.get("observed_current_filename") == "/tmp/other.bin"
     assert isinstance(out.get("views"), list)
+
+
+def test_wait_for_analysis_on_target_times_out_with_structured_error():
+    app = _new_app()
+
+    with patch.object(
+        app,
+        "_request",
+        return_value={
+            "views": [
+                {
+                    "filename": "/tmp/target.bin",
+                    "view_id": "22",
+                    "analysis_status": "5",
+                }
+            ],
+            "_api_version": 1,
+        },
+    ):
+        out = app._wait_for_analysis_on_target(
+            filename="/tmp/target.bin",
+            view_id="22",
+            timeout=1.0,
+        )
+
+    assert out.get("success") is False
+    assert out.get("analysis_status") == "5"
+    err = out.get("error", {})
+    assert err.get("type") == "TimeoutError"
+    assert "analysis wait timed out" in err.get("message", "")
