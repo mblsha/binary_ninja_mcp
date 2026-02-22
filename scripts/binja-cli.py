@@ -90,8 +90,16 @@ class BinaryNinjaCLI(cli.Application):
     strict_target = cli.Flag(
         ["--strict-target"],
         help=(
-            "Require --filename to resolve to the requested file before running each command. "
-            "If the selected BinaryView does not match, fail instead of falling back."
+            "Force strict target validation before each command. "
+            "By default, strict validation is already enabled when --filename or --view-id is provided."
+        ),
+    )
+
+    allow_target_fallback = cli.Flag(
+        ["--allow-target-fallback"],
+        help=(
+            "Disable strict target validation when using --filename/--view-id. "
+            "Use only when you intentionally want best-effort fallback behavior."
         ),
     )
 
@@ -167,6 +175,7 @@ class BinaryNinjaCLI(cli.Application):
         request_timeout = self.request_timeout if timeout is None else float(timeout)
         expected_api_version = self._expected_api_version(endpoint_path)
         strict_selected_filename = None
+        strict_selected_view_id = None
 
         request_headers = {
             "X-Binja-MCP-Api-Version": str(expected_api_version),
@@ -190,13 +199,17 @@ class BinaryNinjaCLI(cli.Application):
                 print(f"Data: {request_data}", file=sys.stderr)
 
         try:
+            targeting_requested = bool(self.target_filename or self.target_view_id)
+            enforce_strict_target = bool(
+                self.strict_target or (targeting_requested and not self.allow_target_fallback)
+            )
             strict_requires_precheck = (
-                self.strict_target
-                and self.target_filename
-                and endpoint_path not in {"/status", "/ui/open", "/load"}
+                enforce_strict_target
+                and targeting_requested
+                and endpoint_path not in {"/status", "/views", "/ui/open", "/load"}
             )
             if strict_requires_precheck:
-                strict_selected_filename = self._assert_strict_target_selected(
+                strict_selected_filename, strict_selected_view_id = self._assert_strict_target_selected(
                     timeout=request_timeout
                 )
 
@@ -256,16 +269,49 @@ class BinaryNinjaCLI(cli.Application):
                 observed_filename = (
                     self._extract_observed_filename(response_data) or strict_selected_filename
                 )
-                observed_view_id = self._extract_observed_view_id(response_data)
+                observed_view_id = self._extract_observed_view_id(response_data) or strict_selected_view_id
 
-                if self.strict_target and self.target_filename:
-                    if not self._filename_matches_requested(observed_filename, self.target_filename):
-                        # Some endpoints (e.g. /ui/open) may not return loaded filename immediately.
-                        observed_filename = self._resolve_target_via_status(timeout=request_timeout)
-                    if not self._filename_matches_requested(observed_filename, self.target_filename):
+                should_validate_target = (
+                    enforce_strict_target and targeting_requested and endpoint_path != "/views"
+                )
+                if should_validate_target:
+                    if self.target_view_id and not self._view_id_matches_requested(
+                        observed_view_id, self.target_view_id
+                    ):
+                        (
+                            resolved_filename,
+                            resolved_view_id,
+                        ) = self._resolve_target_via_views(timeout=request_timeout)
+                        observed_filename = observed_filename or resolved_filename
+                        observed_view_id = observed_view_id or resolved_view_id
+
+                    if self.target_filename and not self._filename_matches_requested(
+                        observed_filename, self.target_filename
+                    ):
+                        if self.target_view_id:
+                            (
+                                resolved_filename,
+                                resolved_view_id,
+                            ) = self._resolve_target_via_views(timeout=request_timeout)
+                            observed_filename = resolved_filename or observed_filename
+                            observed_view_id = observed_view_id or resolved_view_id
+                        else:
+                            # Some endpoints (e.g. /ui/open) may not return loaded filename immediately.
+                            observed_filename = self._resolve_target_via_status(timeout=request_timeout)
+
+                    if self.target_filename and not self._filename_matches_requested(
+                        observed_filename, self.target_filename
+                    ):
                         raise RuntimeError(
                             "strict target mismatch: "
                             f"requested '{self.target_filename}', observed '{observed_filename}'"
+                        )
+                    if self.target_view_id and not self._view_id_matches_requested(
+                        observed_view_id, self.target_view_id
+                    ):
+                        raise RuntimeError(
+                            "strict target mismatch: "
+                            f"requested view_id '{self.target_view_id}', observed '{observed_view_id}'"
                         )
 
                 response_data.setdefault("selected_view_filename", observed_filename)
@@ -377,14 +423,111 @@ class BinaryNinjaCLI(cli.Application):
             raise RuntimeError("strict target check failed: unexpected /status payload")
         return self._extract_observed_filename(payload)
 
-    def _assert_strict_target_selected(self, timeout: float) -> str:
-        observed_filename = self._resolve_target_via_status(timeout=timeout)
-        if not self._filename_matches_requested(observed_filename, self.target_filename):
+    @staticmethod
+    def _view_id_candidates(raw: object | None) -> set[str]:
+        if raw is None:
+            return set()
+        text = str(raw).strip()
+        if not text:
+            return set()
+
+        candidates = {text, text.lower()}
+        try:
+            value = int(text, 0)
+            candidates.add(str(value))
+            candidates.add(hex(value))
+        except Exception:
+            pass
+        return candidates
+
+    @classmethod
+    def _view_id_matches_requested(cls, observed: object | None, requested: object | None) -> bool:
+        return bool(cls._view_id_candidates(observed).intersection(cls._view_id_candidates(requested)))
+
+    def _resolve_target_via_views(self, timeout: float) -> tuple[str | None, object | None]:
+        endpoint_path = "/views"
+        expected_api_version = self._expected_api_version(endpoint_path)
+        url = f"{self.server_url}/views"
+        params = {
+            "_api_version": expected_api_version,
+        }
+        if self.target_filename:
+            params["filename"] = self.target_filename
+        if self.target_view_id:
+            params["view_id"] = self.target_view_id
+
+        response = requests.get(
+            url,
+            params=params,
+            headers={"X-Binja-MCP-Api-Version": str(expected_api_version)},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("strict target check failed: unexpected /views payload")
+
+        current_filename = self._extract_observed_filename(payload)
+        current_view_id = payload.get("current_view_id")
+
+        views = payload.get("views")
+        if isinstance(views, list):
+            target_entry = None
+            for entry in views:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("is_current"):
+                    target_entry = entry
+                    break
+            if target_entry is None and self.target_view_id:
+                for entry in views:
+                    if isinstance(entry, dict) and self._view_id_matches_requested(
+                        entry.get("view_id"), self.target_view_id
+                    ):
+                        target_entry = entry
+                        break
+            if target_entry is None and self.target_filename:
+                for entry in views:
+                    if isinstance(entry, dict) and self._filename_matches_requested(
+                        entry.get("filename"), self.target_filename
+                    ):
+                        target_entry = entry
+                        break
+
+            if isinstance(target_entry, dict):
+                if current_filename is None:
+                    current_filename = target_entry.get("filename")
+                if current_view_id is None:
+                    current_view_id = target_entry.get("view_id")
+
+        return current_filename, current_view_id
+
+    def _assert_strict_target_selected(self, timeout: float) -> tuple[str | None, object | None]:
+        observed_filename = None
+        observed_view_id = None
+
+        if self.target_view_id:
+            observed_filename, observed_view_id = self._resolve_target_via_views(timeout=timeout)
+        elif self.target_filename:
+            observed_filename = self._resolve_target_via_status(timeout=timeout)
+
+        if self.target_filename and not self._filename_matches_requested(
+            observed_filename, self.target_filename
+        ):
             raise RuntimeError(
                 "strict target mismatch: "
                 f"requested '{self.target_filename}', observed '{observed_filename}'"
             )
-        return str(observed_filename)
+
+        if self.target_view_id and not self._view_id_matches_requested(
+            observed_view_id, self.target_view_id
+        ):
+            raise RuntimeError(
+                "strict target mismatch: "
+                f"requested view_id '{self.target_view_id}', observed '{observed_view_id}'"
+            )
+
+        return observed_filename, observed_view_id
 
     @staticmethod
     def _extract_observed_filename(payload: dict | None) -> str | None:
@@ -673,6 +816,39 @@ class Status(cli.Application):
                 print(f"  File: {data.get('filename', 'Unknown')}")
             else:
                 print(colors.yellow | "⚠ No binary loaded")
+
+
+@BinaryNinjaCLI.subcommand("views")
+class Views(cli.Application):
+    """List loaded BinaryViews for explicit per-view targeting."""
+
+    def main(self):
+        data = self.parent._request("GET", "views")
+
+        if self.parent.json_output:
+            self.parent._output(data)
+            return
+
+        views = data.get("views", [])
+        if not views:
+            print("No BinaryViews loaded")
+            return
+
+        print(f"Loaded views ({len(views)}):")
+        for view in views:
+            marker = "*" if view.get("is_current") else " "
+            view_id = view.get("view_id") or "?"
+            basename = view.get("basename") or "<unknown>"
+            filename = view.get("filename") or "<unknown>"
+            view_type = view.get("view_type") or "unknown"
+            arch = view.get("architecture") or "unknown"
+            analysis = view.get("analysis_status") or "unknown"
+
+            print(f"[{marker}] {view_id}  {basename}")
+            print(f"    file: {filename}")
+            print(f"    type: {view_type}")
+            print(f"    arch: {arch}")
+            print(f"    analysis: {analysis}")
 
 
 @BinaryNinjaCLI.subcommand("statusbar")

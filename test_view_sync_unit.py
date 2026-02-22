@@ -101,6 +101,20 @@ class TestViewSync(unittest.TestCase):
         self.assertTrue(view_sync.matches_requested_view_id(view, "0x1234"))
         self.assertFalse(view_sync.matches_requested_view_id(view, "0x1235"))
 
+    def test_describe_view_extracts_metadata_from_mock_type(self):
+        view = _FakeView("/tmp/roms/primary.bin", view_id="202")
+        view.view_type = "Mapped"
+        view.arch = SimpleNamespace(name="m68000")
+        view.analysis_info = SimpleNamespace(state="Idle")
+
+        meta = view_sync.describe_view(view)
+        self.assertEqual(meta["view_id"], "202")
+        self.assertEqual(meta["filename"], "/tmp/roms/primary.bin")
+        self.assertEqual(meta["basename"], "primary.bin")
+        self.assertEqual(meta["view_type"], "Mapped")
+        self.assertEqual(meta["architecture"], "m68000")
+        self.assertEqual(meta["analysis_status"], "Idle")
+
     def test_resolve_target_view_prefers_explicit_view_id(self):
         v1 = _FakeView("/tmp/first.bin", view_id="101")
         v2 = _FakeView("/tmp/second.bin", view_id="202")
@@ -131,6 +145,17 @@ class TestViewSync(unittest.TestCase):
 
         self.assertIsNone(selected)
         self.assertEqual(error.get("error"), "Conflicting BinaryView targets")
+
+    def test_resolve_target_view_reports_missing_view_id(self):
+        selected, error = view_sync.resolve_target_view(
+            "404",
+            None,
+            get_view_by_id=lambda _: None,
+            get_view_by_filename=lambda _: None,
+            fallback_view=None,
+        )
+        self.assertIsNone(selected)
+        self.assertEqual(error.get("error"), "Requested BinaryView not found")
 
     def test_list_ui_views_active_context_first_and_deduped(self):
         v_active = _FakeView("/tmp/active.bin")

@@ -17,12 +17,12 @@ def test_cli_injects_filename_target_into_requests() -> None:
         "--server",
         "http://127.0.0.1:1",
         "--filename",
-        "st2-maincpu.combined",
+        "primary.bin",
         "--verbose",
         "status",
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
 
     assert proc.returncode != 0
-    assert "Params: {'filename': 'st2-maincpu.combined'" in proc.stderr
-    assert "Data: {'filename': 'st2-maincpu.combined'" in proc.stderr
+    assert "Params: {'filename': 'primary.bin'" in proc.stderr
+    assert "Data: {'filename': 'primary.bin'" in proc.stderr

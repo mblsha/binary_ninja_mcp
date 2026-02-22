@@ -72,6 +72,109 @@ def matches_requested_view_id(view: Any, requested_view_id: Optional[str]) -> bo
     )
 
 
+def _coerce_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    return text or None
+
+
+def _extract_view_type(view: Any) -> Optional[str]:
+    if view is None:
+        return None
+
+    for attr in ("view_type", "view_type_name"):
+        try:
+            raw = getattr(view, attr, None)
+        except Exception:
+            raw = None
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            text = _coerce_text(raw)
+            if text:
+                return text
+        name = _coerce_text(getattr(raw, "name", None))
+        if name:
+            return name
+        text = _coerce_text(raw)
+        if text:
+            return text
+    return None
+
+
+def _extract_architecture(view: Any) -> Optional[str]:
+    if view is None:
+        return None
+    try:
+        arch = getattr(view, "arch", None)
+    except Exception:
+        arch = None
+    if arch is None:
+        return None
+    name = _coerce_text(getattr(arch, "name", None))
+    if name:
+        return name
+    return _coerce_text(arch)
+
+
+def _extract_analysis_status(view: Any) -> str:
+    if view is None:
+        return "none"
+
+    for attr in ("analysis_state", "analysis_status"):
+        try:
+            raw = getattr(view, attr, None)
+        except Exception:
+            raw = None
+        text = _coerce_text(raw)
+        if text:
+            return text
+
+    info = None
+    try:
+        info = getattr(view, "analysis_info", None)
+        if callable(info):
+            info = info()
+    except Exception:
+        info = None
+    if info is not None:
+        state = _coerce_text(getattr(info, "state", None))
+        if state:
+            return state
+        info_text = _coerce_text(info)
+        if info_text:
+            return info_text
+
+    progress = None
+    try:
+        progress = getattr(view, "analysis_progress", None)
+    except Exception:
+        progress = None
+    progress_text = _coerce_text(progress)
+    if progress_text:
+        return progress_text
+
+    return "unknown"
+
+
+def describe_view(view: Any) -> dict[str, Any]:
+    """Return normalized metadata for a BinaryView-like object."""
+    filename = extract_view_filename(view)
+    basename = Path(filename).name if filename else None
+    return {
+        "view_id": extract_view_id(view),
+        "filename": filename,
+        "basename": basename,
+        "view_type": _extract_view_type(view),
+        "architecture": _extract_architecture(view),
+        "analysis_status": _extract_analysis_status(view),
+    }
+
+
 def resolve_target_view(
     requested_view_id: Optional[str],
     requested_filename: Optional[str],
