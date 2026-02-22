@@ -41,6 +41,7 @@ class EndpointSpec:
 ENDPOINT_SPECS: tuple[EndpointSpec, ...] = (
     EndpointSpec("GET", "/meta/endpoints", False),
     EndpointSpec("GET", "/status", False),
+    EndpointSpec("GET", "/views", False),
     EndpointSpec("GET", "/functions", True, minimal_params={"limit": 5}),
     EndpointSpec("GET", "/methods", True, minimal_params={"limit": 5}),
     EndpointSpec("GET", "/classes", True, minimal_params={"limit": 5}),

@@ -28,6 +28,7 @@ api_contracts = importlib.import_module("server.api_contracts")
 
 ENDPOINT_CASES = [
     {"name": "status", "method": "GET", "path": "/status", "payload": None},
+    {"name": "views", "method": "GET", "path": "/views", "payload": None},
     {"name": "logs_stats", "method": "GET", "path": "/logs/stats", "payload": None},
     {"name": "console_stats", "method": "GET", "path": "/console/stats", "payload": None},
     {

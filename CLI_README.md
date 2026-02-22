@@ -114,11 +114,19 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 ./cli.py --request-timeout 60 decompile main
 
 # Target a specific already-open BinaryView when multiple binaries are open
-./cli.py --filename /path/to/st2-maincpu.combined functions --limit 20
-./cli.py --filename st1-slave.combined decompile slave_handle_shared_overlay_request
+./cli.py --filename /path/to/primary.bin functions --limit 20
+./cli.py --filename secondary.bin decompile process_shared_request
 
-# Fail fast if --filename does not resolve to the requested view
-./cli.py --filename /path/to/st2-maincpu.combined --strict-target decompile hw_write_1d0000
+# Discover loaded views and pick an explicit view id
+./cli.py views
+./cli.py --json views | jq '.views[] | {view_id, basename, architecture, analysis_status}'
+./cli.py --view-id 202 --filename secondary.bin python "print(hex(here))"
+
+# Targeting is strict by default when --filename/--view-id is used
+./cli.py --filename /path/to/primary.bin --strict-target decompile init_hardware
+
+# Opt into legacy best-effort fallback behavior
+./cli.py --filename /path/to/primary.bin --allow-target-fallback decompile init_hardware
 ```
 
 ### Help

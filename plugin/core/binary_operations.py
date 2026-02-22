@@ -131,6 +131,31 @@ class BinaryOperations:
             self.current_view = view
         return view
 
+    def list_registered_views(self) -> List[bn.BinaryView]:
+        views: List[bn.BinaryView] = []
+        seen_ids: set[int] = set()
+
+        def add_view(candidate: Optional[bn.BinaryView]) -> None:
+            if candidate is None:
+                return
+            ident = id(candidate)
+            if ident in seen_ids:
+                return
+            seen_ids.add(ident)
+            views.append(candidate)
+
+        add_view(self._current_view)
+
+        for mapping in (self._views_by_id, self._views_by_path, self._views_by_basename):
+            for key, ref in list(mapping.items()):
+                view = self._deref_view(ref)
+                if view is None:
+                    mapping.pop(key, None)
+                    continue
+                add_view(view)
+
+        return views
+
     @property
     def current_view(self) -> Optional[bn.BinaryView]:
         return self._current_view

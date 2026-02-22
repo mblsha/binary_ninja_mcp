@@ -19,6 +19,7 @@ from .api_contracts import (
     normalize_ui_contract,
 )
 from .view_sync import (
+    describe_view,
     extract_view_filename,
     extract_view_id,
     list_ui_views,
@@ -370,7 +371,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             # Endpoints that don't require a binary to be loaded
-            no_binary_required = ["/status", "/logs", "/console", "/meta"]
+            no_binary_required = ["/status", "/views", "/logs", "/console", "/meta"]
             params = self._parse_query_params()
             path = urllib.parse.urlparse(self.path).path
             if not self._validate_endpoint_version(path, params):
@@ -393,6 +394,36 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     else None,
                 }
                 self._send_json_response(status)
+
+            elif path == "/views":
+                view_payload: list[dict[str, Any]] = []
+                current_view = self.binary_ops.current_view if self.binary_ops else None
+                current_view_id = extract_view_id(current_view)
+
+                if self.binary_ops:
+                    try:
+                        import binaryninjaui  # type: ignore
+
+                        for ui_view in list_ui_views(binaryninjaui):
+                            self.binary_ops.register_view(ui_view)
+                    except Exception:
+                        pass
+
+                    for view in self.binary_ops.list_registered_views():
+                        details = describe_view(view)
+                        details["is_current"] = bool(
+                            current_view_id and details.get("view_id") == current_view_id
+                        )
+                        view_payload.append(details)
+
+                self._send_json_response(
+                    {
+                        "views": view_payload,
+                        "count": len(view_payload),
+                        "current_view_id": current_view_id,
+                        "current_filename": extract_view_filename(current_view),
+                    }
+                )
 
             elif path == "/meta/endpoints":
                 self._send_json_response({"endpoints": get_endpoint_registry_json()})
