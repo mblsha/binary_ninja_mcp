@@ -38,6 +38,49 @@ STARTUP_FATAL_PATTERNS = (
     "fatal error",
 )
 
+ANALYSIS_IDLE_STATE_VALUE = None
+ANALYSIS_IDLE_STATE_TEXTS = {
+    "idle",
+    "analysisstate.idle",
+    "idlestate",
+    "analysisstate.idlestate",
+}
+
+
+def _init_analysis_idle_state_metadata() -> None:
+    global ANALYSIS_IDLE_STATE_VALUE
+    try:
+        from binaryninja.enums import AnalysisState as _BNAnalysisState
+    except Exception:
+        return
+
+    try:
+        idle_state = _BNAnalysisState.IdleState
+    except Exception:
+        return
+
+    try:
+        ANALYSIS_IDLE_STATE_VALUE = int(idle_state)
+    except Exception:
+        ANALYSIS_IDLE_STATE_VALUE = None
+
+    for candidate in (
+        idle_state,
+        getattr(idle_state, "name", None),
+        f"AnalysisState.{getattr(idle_state, 'name', '')}",
+    ):
+        if candidate is None:
+            continue
+        try:
+            text = str(candidate).strip().lower()
+        except Exception:
+            continue
+        if text:
+            ANALYSIS_IDLE_STATE_TEXTS.add(text)
+
+
+_init_analysis_idle_state_metadata()
+
 
 def _float_env(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -628,6 +671,8 @@ class BinaryNinjaCLI(cli.Application):
         view_id: object | None = None,
         timeout: float = 120.0,
     ) -> dict:
+        idle_state_value = ANALYSIS_IDLE_STATE_VALUE
+
         def _status_done(raw: object) -> bool:
             if raw is None:
                 return False
@@ -635,19 +680,15 @@ class BinaryNinjaCLI(cli.Application):
             if not text:
                 return False
             lowered = text.lower()
-            if lowered in {
-                "0",
-                "idle",
-                "analysisstate.idle",
-                "complete",
-                "completed",
-                "done",
-            }:
+            if lowered in ANALYSIS_IDLE_STATE_TEXTS:
                 return True
             try:
-                return int(text, 0) == 0
+                value = int(text, 0)
             except Exception:
                 return False
+            if idle_state_value is None:
+                return False
+            return value == idle_state_value
 
         try:
             timeout_s = float(timeout)
@@ -658,6 +699,15 @@ class BinaryNinjaCLI(cli.Application):
 
         requested_filename = str(filename or "").strip()
         requested_view_id = view_id
+
+        resolved_idle = self._resolve_idle_analysis_state_value(
+            filename=requested_filename,
+            view_id=requested_view_id,
+            timeout=min(timeout_s, 10.0),
+        )
+        if resolved_idle is not None:
+            idle_state_value = resolved_idle
+
         poll_interval = 0.1
         deadline = time.monotonic() + timeout_s
         start = time.monotonic()
@@ -744,6 +794,66 @@ class BinaryNinjaCLI(cli.Application):
                 ),
             },
         }
+
+    def _resolve_idle_analysis_state_value(
+        self,
+        *,
+        filename: str = "",
+        view_id: object | None = None,
+        timeout: float = 5.0,
+    ) -> int | None:
+        cached = getattr(self, "_cached_idle_analysis_state_value", None)
+        if isinstance(cached, int):
+            return cached
+
+        if ANALYSIS_IDLE_STATE_VALUE is not None:
+            value = int(ANALYSIS_IDLE_STATE_VALUE)
+            self._cached_idle_analysis_state_value = value
+            return value
+
+        try:
+            timeout_s = float(timeout)
+        except (TypeError, ValueError):
+            timeout_s = 5.0
+        if timeout_s < 1.0:
+            timeout_s = 1.0
+
+        request_data = {
+            "command": (
+                "from binaryninja.enums import AnalysisState\n"
+                "print(int(AnalysisState.IdleState))\n"
+            ),
+            "timeout": timeout_s,
+        }
+        if filename:
+            request_data["filename"] = filename
+        if view_id is not None:
+            request_data["view_id"] = view_id
+
+        result = self._request(
+            "POST",
+            "console/execute",
+            data=request_data,
+            timeout=max(self.request_timeout, timeout_s + 2.0),
+        )
+        if not isinstance(result, dict):
+            return None
+
+        stdout_text = str(result.get("stdout") or "").strip()
+        if not stdout_text:
+            return None
+
+        for line in reversed(stdout_text.splitlines()):
+            candidate = line.strip()
+            if not candidate:
+                continue
+            try:
+                value = int(candidate, 0)
+            except Exception:
+                continue
+            self._cached_idle_analysis_state_value = value
+            return value
+        return None
 
     @staticmethod
     def _extract_observed_filename(payload: dict | None) -> str | None:

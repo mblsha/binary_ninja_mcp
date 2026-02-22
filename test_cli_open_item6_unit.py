@@ -80,33 +80,38 @@ def test_wait_for_open_target_in_views_matches_requested_file():
 
 def test_wait_for_analysis_on_target_polls_views_until_idle():
     app = _new_app()
+    resolved_idle = 2
+    idle_token = str(resolved_idle)
 
-    with patch.object(
-        app,
-        "_request",
-        side_effect=[
-            {
-                "views": [
-                    {
-                        "filename": "/tmp/target.bin",
-                        "view_id": "22",
-                        "analysis_status": "5",
-                    }
-                ],
-                "_api_version": 1,
-            },
-            {
-                "views": [
-                    {
-                        "filename": "/tmp/target.bin",
-                        "view_id": "22",
-                        "analysis_status": "0",
-                    }
-                ],
-                "_api_version": 1,
-            },
-        ],
-    ) as req_mock:
+    with (
+        patch.object(app, "_resolve_idle_analysis_state_value", return_value=resolved_idle),
+        patch.object(
+            app,
+            "_request",
+            side_effect=[
+                {
+                    "views": [
+                        {
+                            "filename": "/tmp/target.bin",
+                            "view_id": "22",
+                            "analysis_status": "5",
+                        }
+                    ],
+                    "_api_version": 1,
+                },
+                {
+                    "views": [
+                        {
+                            "filename": "/tmp/target.bin",
+                            "view_id": "22",
+                            "analysis_status": idle_token,
+                        }
+                    ],
+                    "_api_version": 1,
+                },
+            ],
+        ) as req_mock,
+    ):
         out = app._wait_for_analysis_on_target(
             filename="/tmp/target.bin",
             view_id="22",
@@ -114,7 +119,7 @@ def test_wait_for_analysis_on_target_polls_views_until_idle():
         )
 
     assert out.get("success") is True
-    assert out.get("analysis_status") == "0"
+    assert out.get("analysis_status") == idle_token
     assert out.get("selected_view_filename") == "/tmp/target.bin"
     assert out.get("selected_view_id") == "22"
     assert req_mock.call_count == 2
@@ -125,6 +130,78 @@ def test_wait_for_analysis_on_target_polls_views_until_idle():
         params = kwargs.get("params", {})
         assert params.get("filename") == "/tmp/target.bin"
         assert params.get("view_id") == "22"
+
+
+def test_wait_for_analysis_uses_runtime_idle_enum_value_not_literal_zero():
+    app = _new_app()
+
+    with (
+        patch.object(binja_cli, "ANALYSIS_IDLE_STATE_VALUE", 7),
+        patch.object(
+            app,
+            "_request",
+            side_effect=[
+                {
+                    "views": [
+                        {
+                            "filename": "/tmp/target.bin",
+                            "view_id": "22",
+                            "analysis_status": "6",
+                        }
+                    ],
+                    "_api_version": 1,
+                },
+                {
+                    "views": [
+                        {
+                            "filename": "/tmp/target.bin",
+                            "view_id": "22",
+                            "analysis_status": "7",
+                        }
+                    ],
+                    "_api_version": 1,
+                },
+            ],
+        ),
+    ):
+        out = app._wait_for_analysis_on_target(
+            filename="/tmp/target.bin",
+            view_id="22",
+            timeout=2.0,
+        )
+
+    assert out.get("success") is True
+    assert out.get("analysis_status") == "7"
+
+
+def test_resolve_idle_analysis_state_value_queries_console_execute():
+    app = _new_app()
+
+    with (
+        patch.object(binja_cli, "ANALYSIS_IDLE_STATE_VALUE", None),
+        patch.object(
+            app,
+            "_request",
+            return_value={
+                "success": True,
+                "stdout": "2\n",
+                "_api_version": 1,
+            },
+        ) as req_mock,
+    ):
+        resolved = app._resolve_idle_analysis_state_value(
+            filename="/tmp/target.bin",
+            view_id="22",
+            timeout=4.0,
+        )
+
+    assert resolved == 2
+    args, kwargs = req_mock.call_args
+    assert args[:2] == ("POST", "console/execute")
+    payload = kwargs.get("data", {})
+    assert "AnalysisState.IdleState" in payload.get("command", "")
+    assert payload.get("filename") == "/tmp/target.bin"
+    assert payload.get("view_id") == "22"
 
 
 def test_open_main_confirms_target_and_reports_view_context():
