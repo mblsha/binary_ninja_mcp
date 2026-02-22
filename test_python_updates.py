@@ -7,6 +7,7 @@ import subprocess
 import json
 import sys
 import requests
+import pytest
 
 DEFAULT_ENDPOINT_API_VERSION = 1
 
@@ -205,9 +206,15 @@ def test_cli_python_command():
     assert _run_cli_python_command()
 
 
+test_cli_python_command = pytest.mark.binja(test_cli_python_command)
+
+
 def test_mcp_bridge():
     """Test the MCP bridge execute_python_command."""
     assert _run_mcp_bridge()
+
+
+test_mcp_bridge = pytest.mark.binja(test_mcp_bridge)
 
 
 def test_interactive_mode():
