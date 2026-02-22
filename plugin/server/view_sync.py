@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 def extract_view_filename(view: Any) -> Optional[str]:
@@ -16,6 +16,110 @@ def extract_view_filename(view: Any) -> Optional[str]:
     except Exception:
         return None
     return None
+
+
+def extract_view_id(view: Any) -> Optional[str]:
+    """Best-effort BinaryView id extraction.
+
+    Uses explicit attributes when available and falls back to Python object identity.
+    """
+    if view is None:
+        return None
+
+    for attr in ("view_id", "session_id", "identifier"):
+        try:
+            raw = getattr(view, attr, None)
+            if raw is not None:
+                text = str(raw).strip()
+                if text:
+                    return text
+        except Exception:
+            continue
+
+    try:
+        return str(id(view))
+    except Exception:
+        return None
+
+
+def make_view_id_candidates(raw: Optional[str]) -> set[str]:
+    """Build normalized candidate strings for robust view-id matching."""
+    if raw is None:
+        return set()
+    text = str(raw).strip()
+    if not text:
+        return set()
+
+    candidates = {text, text.lower()}
+
+    try:
+        value = int(text, 0)
+        candidates.add(str(value))
+        candidates.add(hex(value))
+    except Exception:
+        pass
+
+    return candidates
+
+
+def matches_requested_view_id(view: Any, requested_view_id: Optional[str]) -> bool:
+    """Return True if a UI view appears to correspond to requested view id."""
+    observed = extract_view_id(view)
+    if not observed or requested_view_id is None:
+        return False
+    return bool(
+        make_view_id_candidates(observed).intersection(make_view_id_candidates(requested_view_id))
+    )
+
+
+def resolve_target_view(
+    requested_view_id: Optional[str],
+    requested_filename: Optional[str],
+    *,
+    get_view_by_id: Callable[[str], Any],
+    get_view_by_filename: Callable[[str], Any],
+    fallback_view: Any = None,
+) -> tuple[Any, Optional[dict]]:
+    """Resolve requested target view using optional view-id/filename selectors."""
+    selected_by_id = None
+    if requested_view_id:
+        selected_by_id = get_view_by_id(str(requested_view_id))
+        if selected_by_id is None:
+            return None, {
+                "error": "Requested BinaryView not found",
+                "view_id": requested_view_id,
+                "help": "Open the target file first or use `--filename` to select by path.",
+            }
+
+    selected_by_filename = None
+    if requested_filename:
+        selected_by_filename = get_view_by_filename(str(requested_filename))
+        if selected_by_filename is None:
+            return None, {
+                "error": "Requested filename is not loaded",
+                "filename": requested_filename,
+                "help": "Open the target file first or provide a matching --view-id.",
+            }
+
+    if selected_by_id is not None and selected_by_filename is not None:
+        if selected_by_id is not selected_by_filename:
+            if not (
+                matches_requested_view_id(selected_by_filename, str(requested_view_id))
+                and matches_requested_filename(selected_by_id, str(requested_filename))
+            ):
+                return None, {
+                    "error": "Conflicting BinaryView targets",
+                    "view_id": requested_view_id,
+                    "filename": requested_filename,
+                    "help": "Use either --view-id or --filename, or ensure they point to the same view.",
+                }
+        return selected_by_id, None
+
+    if selected_by_id is not None:
+        return selected_by_id, None
+    if selected_by_filename is not None:
+        return selected_by_filename, None
+    return fallback_view, None
 
 
 def make_filename_candidates(raw: Optional[str]) -> set[str]:
@@ -174,8 +278,17 @@ def list_ui_views(binaryninjaui_module: Any) -> list[Any]:
     return views
 
 
-def select_preferred_view(ui_views: list[Any], requested_filename: Optional[str] = None) -> Any:
-    """Select best candidate: filename match first, otherwise first available view."""
+def select_preferred_view(
+    ui_views: list[Any],
+    requested_filename: Optional[str] = None,
+    requested_view_id: Optional[str] = None,
+) -> Any:
+    """Select best candidate: view-id match, then filename match, otherwise first available view."""
+    if requested_view_id:
+        for view in ui_views:
+            if matches_requested_view_id(view, requested_view_id):
+                return view
+
     if requested_filename:
         for view in ui_views:
             if filename_match_tier(view, requested_filename) >= 2:

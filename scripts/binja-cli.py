@@ -77,6 +77,16 @@ class BinaryNinjaCLI(cli.Application):
         ),
     )
 
+    target_view_id = cli.SwitchAttr(
+        ["--view-id"],
+        str,
+        default="",
+        help=(
+            "Prefer a loaded BinaryView matching this view id for this command. "
+            "Use with --filename for deterministic per-view scripting."
+        ),
+    )
+
     strict_target = cli.Flag(
         ["--strict-target"],
         help=(
@@ -166,6 +176,9 @@ class BinaryNinjaCLI(cli.Application):
         if self.target_filename:
             request_params.setdefault("filename", self.target_filename)
             request_data.setdefault("filename", self.target_filename)
+        if self.target_view_id:
+            request_params.setdefault("view_id", self.target_view_id)
+            request_data.setdefault("view_id", self.target_view_id)
         request_params["_api_version"] = expected_api_version
         request_data["_api_version"] = expected_api_version
 
