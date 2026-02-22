@@ -112,6 +112,10 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 
 # Increase HTTP timeout for expensive operations (or set BINJA_CLI_TIMEOUT)
 ./cli.py --request-timeout 60 decompile main
+
+# Target a specific already-open BinaryView when multiple binaries are open
+./cli.py --filename /path/to/st2-maincpu.combined functions --limit 20
+./cli.py --filename st1-slave.combined decompile slave_handle_shared_overlay_request
 ```
 
 ### Help

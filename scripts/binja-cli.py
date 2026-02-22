@@ -67,6 +67,16 @@ class BinaryNinjaCLI(cli.Application):
         ["--server", "-s"], str, default="http://localhost:9009", help="MCP server URL"
     )
 
+    target_filename = cli.SwitchAttr(
+        ["--filename", "--target-file"],
+        str,
+        default="",
+        help=(
+            "Prefer a loaded BinaryView matching this file path/name for this command. "
+            "Useful when multiple binaries are open."
+        ),
+    )
+
     json_output = cli.Flag(["--json", "-j"], help="Output raw JSON response")
 
     verbose = cli.Flag(["--verbose", "-v"], help="Verbose output")
@@ -144,6 +154,9 @@ class BinaryNinjaCLI(cli.Application):
         }
         request_params = dict(params or {})
         request_data = dict(data or {})
+        if self.target_filename:
+            request_params.setdefault("filename", self.target_filename)
+            request_data.setdefault("filename", self.target_filename)
         request_params["_api_version"] = expected_api_version
         request_data["_api_version"] = expected_api_version
 
