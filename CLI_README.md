@@ -161,6 +161,12 @@ Examples:
 # Typical headless-safe open with explicit platform/view
 ./cli.py open /path/to/town_mcga.bin --view-type Mapped --platform x86_16
 
+# Prefer non-UI load path and confirm target registration in /views
+./cli.py open /path/to/town_mcga.bin --no-ui --wait-open-target 8
+
+# Wait for analysis after target confirmation
+./cli.py open /path/to/town_mcga.bin --wait-analysis --analysis-timeout 180
+
 # Inspect state only (no click/load side effects)
 ./cli.py open /path/to/town_mcga.bin --inspect-only
 
