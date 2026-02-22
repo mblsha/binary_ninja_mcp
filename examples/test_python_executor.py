@@ -7,6 +7,7 @@ Demonstrates various execution scenarios and result capture
 import json
 import requests
 import sys
+import pytest
 
 DEFAULT_ENDPOINT_API_VERSION = 1
 
@@ -215,6 +216,9 @@ bn.log_debug("Debug information")
 def test_executor():
     """Pytest entrypoint for executor checks."""
     assert isinstance(_run_executor(), bool)
+
+
+test_executor = pytest.mark.binja(test_executor)
 
 
 if __name__ == "__main__":

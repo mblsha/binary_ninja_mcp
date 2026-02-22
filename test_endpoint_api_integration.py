@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import pytest
 
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -25,6 +26,7 @@ if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
 api_contracts = importlib.import_module("server.api_contracts")
+pytestmark = pytest.mark.binja
 
 ENDPOINT_CASES = [
     {"name": "status", "method": "GET", "path": "/status", "payload": None},
