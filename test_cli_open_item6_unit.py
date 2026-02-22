@@ -39,6 +39,20 @@ def _ui_open_contract(filepath: str) -> dict:
     }
 
 
+def _ui_open_contract_with_state(
+    filepath: str,
+    *,
+    loaded_filename: str | None = None,
+    warnings: list[str] | None = None,
+) -> dict:
+    payload = _ui_open_contract(filepath)
+    payload["state"]["loaded_filename"] = loaded_filename if loaded_filename is not None else filepath
+    payload["warnings"] = list(warnings or [])
+    payload["result"]["warnings"] = list(warnings or [])
+    payload["result"]["state"] = dict(payload["state"])
+    return payload
+
+
 class _MockStateCode:
     def __init__(self, value: int):
         self.value = int(value)
@@ -480,7 +494,74 @@ def test_open_main_confirms_target_and_reports_view_context():
     state = open_result.get("state", {})
     assert state.get("confirmed_target_filename") == target
     assert state.get("confirmed_target_view_id") == "44"
+    assert state.get("effective_target_filename") == target
+    assert state.get("effective_target_view_id") == "44"
+    assert out.get("effective_target_filename") == target
+    assert out.get("effective_target_view_id") == "44"
     assert "confirmed_target_via_views" in open_result.get("actions", [])
+
+
+def test_open_main_uses_confirmed_target_as_effective_when_loaded_filename_is_stale():
+    app = _new_app()
+    open_cmd = binja_cli.Open("open")
+    open_cmd.parent = app
+    open_cmd.platform = None
+    open_cmd.view_type = None
+    open_cmd.no_click = False
+    open_cmd.inspect_only = False
+    open_cmd.wait_open_target = 0.5
+    open_cmd.wait_analysis = False
+    open_cmd.analysis_timeout = 120.0
+
+    target = "/tmp/target.bin"
+    stale_loaded = "/tmp/other.bin"
+
+    with (
+        patch.object(app, "_ensure_server_for_open", return_value={"ok": True}),
+        patch.object(
+            app,
+            "_request",
+            side_effect=[
+                _ui_open_contract_with_state(
+                    target,
+                    loaded_filename=stale_loaded,
+                    warnings=[
+                        f"loaded filename differs (expected {target}, got {stale_loaded})",
+                    ],
+                ),
+                {
+                    "views": [
+                        {
+                            "filename": target,
+                            "view_id": "77",
+                            "basename": "target.bin",
+                            "is_current": True,
+                        }
+                    ],
+                    "current_filename": target,
+                    "current_view_id": "77",
+                    "_api_version": 1,
+                },
+            ],
+        ),
+        patch.object(app, "_output") as output_mock,
+    ):
+        rc = open_cmd.main(target)
+
+    assert rc is None
+    out = output_mock.call_args.args[0]
+    open_result = out.get("open_result", {})
+    state = open_result.get("state", {})
+    assert state.get("confirmed_target_filename") == target
+    assert state.get("effective_target_filename") == target
+    assert state.get("effective_target_view_id") == "77"
+    assert state.get("observed_loaded_filename") == stale_loaded
+    assert state.get("loaded_filename") == target
+    warnings = open_result.get("warnings", [])
+    assert not any("loaded filename differs" in str(item) for item in warnings)
+    assert "effective_target_from_confirmed_view" in open_result.get("actions", [])
+    assert out.get("effective_target_filename") == target
+    assert out.get("effective_target_view_id") == "77"
 
 
 def test_open_main_returns_structured_error_when_target_not_confirmed():
