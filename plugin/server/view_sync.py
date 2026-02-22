@@ -82,6 +82,48 @@ def _coerce_text(value: Any) -> Optional[str]:
     return text or None
 
 
+def _coerce_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except Exception:
+        pass
+
+    text = _coerce_text(value)
+    if not text:
+        return None
+    try:
+        return int(text, 0)
+    except Exception:
+        return None
+
+
+def _coerce_analysis_state_name(value: Any, fallback_text: Optional[str]) -> Optional[str]:
+    direct_name = _coerce_text(getattr(value, "name", None))
+    if direct_name:
+        return direct_name
+
+    text = _coerce_text(fallback_text)
+    if not text:
+        return None
+
+    if "." in text:
+        suffix = text.rsplit(".", 1)[-1].strip()
+        if suffix:
+            return suffix
+
+    # Avoid reporting raw numeric strings as state names.
+    if _coerce_int(text) is not None:
+        return None
+
+    return text
+
+
 def _extract_view_type(view: Any) -> Optional[str]:
     if view is None:
         return None
@@ -161,17 +203,77 @@ def _extract_analysis_status(view: Any) -> str:
     return "unknown"
 
 
+def _extract_analysis_state_fields(view: Any) -> tuple[Optional[int], Optional[str], str]:
+    if view is None:
+        return None, None, "none"
+
+    raw_values: list[Any] = []
+
+    for attr in ("analysis_state", "analysis_status"):
+        try:
+            raw = getattr(view, attr, None)
+        except Exception:
+            raw = None
+        if raw is not None:
+            raw_values.append(raw)
+
+    info = None
+    try:
+        info = getattr(view, "analysis_info", None)
+        if callable(info):
+            info = info()
+    except Exception:
+        info = None
+    if info is not None:
+        try:
+            state = getattr(info, "state", None)
+        except Exception:
+            state = None
+        if state is not None:
+            raw_values.append(state)
+        raw_values.append(info)
+
+    try:
+        progress = getattr(view, "analysis_progress", None)
+    except Exception:
+        progress = None
+    if progress is not None:
+        raw_values.append(progress)
+
+    state_code: Optional[int] = None
+    state_name: Optional[str] = None
+    state_status: Optional[str] = None
+
+    for raw in raw_values:
+        text = _coerce_text(raw)
+        if state_code is None:
+            state_code = _coerce_int(raw)
+        if state_name is None:
+            state_name = _coerce_analysis_state_name(raw, text)
+        if state_status is None and text:
+            state_status = text
+
+    if state_status is None:
+        state_status = "unknown"
+
+    return state_code, state_name, state_status
+
+
 def describe_view(view: Any) -> dict[str, Any]:
     """Return normalized metadata for a BinaryView-like object."""
     filename = extract_view_filename(view)
     basename = Path(filename).name if filename else None
+    analysis_state_code, analysis_state_name, analysis_status = _extract_analysis_state_fields(view)
     return {
         "view_id": extract_view_id(view),
         "filename": filename,
         "basename": basename,
         "view_type": _extract_view_type(view),
         "architecture": _extract_architecture(view),
-        "analysis_status": _extract_analysis_status(view),
+        # Keep analysis_status for backward compatibility; add structured fields for robust parsing.
+        "analysis_status": analysis_status,
+        "analysis_state_code": analysis_state_code,
+        "analysis_state_name": analysis_state_name,
     }
 
 

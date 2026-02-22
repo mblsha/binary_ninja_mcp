@@ -673,7 +673,19 @@ class BinaryNinjaCLI(cli.Application):
     ) -> dict:
         idle_state_value = ANALYSIS_IDLE_STATE_VALUE
 
-        def _status_done(raw: object) -> bool:
+        def _status_done(raw_status: object, raw_state_code: object = None) -> bool:
+            if raw_state_code is not None:
+                if idle_state_value is None:
+                    return False
+                try:
+                    return int(raw_state_code) == idle_state_value
+                except Exception:
+                    try:
+                        return int(str(raw_state_code).strip(), 0) == idle_state_value
+                    except Exception:
+                        pass
+
+            raw = raw_status
             if raw is None:
                 return False
             text = str(raw).strip()
@@ -759,16 +771,22 @@ class BinaryNinjaCLI(cli.Application):
                     target = {
                         "filename": current_name,
                         "view_id": current_id,
+                        "analysis_state_code": None,
+                        "analysis_state_name": None,
                         "analysis_status": None,
                     }
 
             if isinstance(target, dict):
                 last_target = target
+                state_code = target.get("analysis_state_code")
+                state_name = target.get("analysis_state_name")
                 last_status = target.get("analysis_status")
-                if _status_done(last_status):
+                if _status_done(last_status, state_code) or _status_done(state_name):
                     elapsed = time.monotonic() - start
                     return {
                         "success": True,
+                        "analysis_state_code": state_code,
+                        "analysis_state_name": state_name,
                         "analysis_status": last_status,
                         "selected_view_filename": target.get("filename"),
                         "selected_view_id": target.get("view_id"),
@@ -782,6 +800,8 @@ class BinaryNinjaCLI(cli.Application):
         elapsed = time.monotonic() - start
         return {
             "success": False,
+            "analysis_state_code": (last_target or {}).get("analysis_state_code"),
+            "analysis_state_name": (last_target or {}).get("analysis_state_name"),
             "analysis_status": last_status,
             "selected_view_filename": (last_target or {}).get("filename"),
             "selected_view_id": (last_target or {}).get("view_id"),

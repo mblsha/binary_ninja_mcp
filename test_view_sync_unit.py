@@ -28,6 +28,18 @@ class _FakeView:
             self.view_id = view_id
 
 
+class _MockAnalysisState:
+    def __init__(self, code: int, name: str):
+        self._code = int(code)
+        self.name = name
+
+    def __int__(self):
+        return self._code
+
+    def __str__(self):
+        return f"AnalysisState.{self.name}"
+
+
 class _FakeViewInterface:
     def __init__(self, view):
         self._view = view
@@ -114,6 +126,18 @@ class TestViewSync(unittest.TestCase):
         self.assertEqual(meta["view_type"], "Mapped")
         self.assertEqual(meta["architecture"], "m68000")
         self.assertEqual(meta["analysis_status"], "Idle")
+        self.assertIsNone(meta["analysis_state_code"])
+        self.assertEqual(meta["analysis_state_name"], "Idle")
+
+    def test_describe_view_exposes_structured_analysis_state_fields_from_mock_enum(self):
+        view = _FakeView("/tmp/roms/primary.bin", view_id="303")
+        view.analysis_state = _MockAnalysisState(2, "IdleState")
+
+        meta = view_sync.describe_view(view)
+
+        self.assertEqual(meta["analysis_state_code"], 2)
+        self.assertEqual(meta["analysis_state_name"], "IdleState")
+        self.assertEqual(meta["analysis_status"], "AnalysisState.IdleState")
 
     def test_resolve_target_view_prefers_explicit_view_id(self):
         v1 = _FakeView("/tmp/first.bin", view_id="101")
