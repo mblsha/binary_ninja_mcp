@@ -1294,6 +1294,73 @@ class Open(cli.Application):
         help="Timeout in seconds for --wait-analysis (default: 120).",
     )
 
+    def _set_effective_open_target(
+        self,
+        parsed: dict,
+        *,
+        requested_filepath: str = "",
+        matched_view: dict | None = None,
+    ) -> None:
+        if not isinstance(parsed, dict):
+            return
+        state = parsed.get("state")
+        if not isinstance(state, dict):
+            return
+
+        loaded_filename_raw = state.get("loaded_filename")
+        loaded_view_id_raw = parsed.get("selected_view_id")
+
+        confirmed_filename = None
+        confirmed_view_id = None
+        if isinstance(matched_view, dict):
+            confirmed_filename = matched_view.get("filename")
+            confirmed_view_id = matched_view.get("view_id")
+
+        if confirmed_filename:
+            state["confirmed_target_filename"] = confirmed_filename
+        if confirmed_view_id is not None:
+            state["confirmed_target_view_id"] = confirmed_view_id
+
+        effective_filename = (
+            confirmed_filename
+            or state.get("confirmed_target_filename")
+            or loaded_filename_raw
+            or (str(requested_filepath).strip() if requested_filepath else None)
+        )
+        effective_view_id = (
+            confirmed_view_id
+            if confirmed_view_id is not None
+            else state.get("confirmed_target_view_id")
+            or loaded_view_id_raw
+        )
+
+        if effective_filename:
+            state["effective_target_filename"] = effective_filename
+        if effective_view_id is not None:
+            state["effective_target_view_id"] = effective_view_id
+
+        if (
+            confirmed_filename
+            and loaded_filename_raw
+            and not self.parent._filename_matches_requested(loaded_filename_raw, confirmed_filename)
+        ):
+            state["observed_loaded_filename"] = loaded_filename_raw
+            # Prioritize confirmed view target for command output/state consumers.
+            state["loaded_filename"] = confirmed_filename
+            actions = parsed.get("actions")
+            if isinstance(actions, list):
+                if "effective_target_from_confirmed_view" not in actions:
+                    actions.append("effective_target_from_confirmed_view")
+            warnings = parsed.get("warnings")
+            if isinstance(warnings, list):
+                filtered = []
+                for warning in warnings:
+                    text = str(warning)
+                    if "loaded filename differs" in text:
+                        continue
+                    filtered.append(warning)
+                parsed["warnings"] = filtered
+
     def main(self, filepath: str = ""):
         ensure = self.parent._ensure_server_for_open(filepath=filepath)
         if not ensure.get("ok"):
@@ -1341,6 +1408,7 @@ class Open(cli.Application):
 
         wait_open_target_s = float(self.wait_open_target or 0.0)
         target_confirm = None
+        matched_view = None
         if filepath and (not self.inspect_only) and wait_open_target_s > 0.0:
             target_confirm = self.parent._wait_for_open_target_in_views(
                 filepath,
@@ -1367,22 +1435,21 @@ class Open(cli.Application):
                     print("  Use `views` to inspect currently loaded tabs.")
                 return 1
 
-            if isinstance(parsed.get("state"), dict):
-                matched_view = target_confirm.get("matched_view", {})
-                if isinstance(matched_view, dict):
-                    parsed["state"]["confirmed_target_filename"] = matched_view.get("filename")
-                    parsed["state"]["confirmed_target_view_id"] = matched_view.get("view_id")
+            matched_view_obj = target_confirm.get("matched_view", {})
+            if isinstance(matched_view_obj, dict):
+                matched_view = matched_view_obj
             if isinstance(parsed.get("actions"), list):
                 if "confirmed_target_via_views" not in parsed["actions"]:
                     parsed["actions"].append("confirmed_target_via_views")
 
+        self._set_effective_open_target(
+            parsed,
+            requested_filepath=filepath,
+            matched_view=matched_view,
+        )
+
         analysis_wait_result = None
         if self.wait_analysis and filepath and (not self.inspect_only):
-            matched_view = (
-                target_confirm.get("matched_view")
-                if isinstance(target_confirm, dict)
-                else None
-            )
             matched_filename = ""
             matched_view_id = None
             if isinstance(matched_view, dict):
@@ -1413,6 +1480,9 @@ class Open(cli.Application):
 
         if self.parent.json_output:
             out = {"open_result": parsed}
+            if isinstance(parsed.get("state"), dict):
+                out["effective_target_filename"] = parsed["state"].get("effective_target_filename")
+                out["effective_target_view_id"] = parsed["state"].get("effective_target_view_id")
             if analysis_wait_result is not None:
                 out["analysis_wait_result"] = analysis_wait_result
             self.parent._output(out)
@@ -1423,13 +1493,22 @@ class Open(cli.Application):
         color = colors.green if ok else colors.yellow
         print(color | status_line)
 
-        loaded = parsed.get("state", {}).get("loaded_filename")
-        if loaded:
-            print(f"  Loaded: {loaded}")
+        state = parsed.get("state", {}) if isinstance(parsed.get("state"), dict) else {}
+        effective_target = state.get("effective_target_filename")
+        if effective_target:
+            print(f"  Target: {effective_target}")
         else:
-            print("  Loaded: <unknown>")
+            print("  Target: <unknown>")
 
-        active_window = parsed.get("state", {}).get("active_window")
+        effective_target_view_id = state.get("effective_target_view_id")
+        if effective_target_view_id is not None:
+            print(f"  Target View ID: {effective_target_view_id}")
+
+        observed_loaded = state.get("observed_loaded_filename")
+        if observed_loaded:
+            print(f"  Observed Loaded (raw): {observed_loaded}")
+
+        active_window = state.get("active_window")
         if active_window:
             print(f"  Active Window: {active_window}")
 
