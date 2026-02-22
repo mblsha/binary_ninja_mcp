@@ -628,31 +628,122 @@ class BinaryNinjaCLI(cli.Application):
         view_id: object | None = None,
         timeout: float = 120.0,
     ) -> dict:
-        command = (
-            "if bv is None:\n"
-            "    raise RuntimeError('No BinaryView selected for --wait-analysis')\n"
-            "if hasattr(bv, 'update_analysis_and_wait'):\n"
-            "    bv.update_analysis_and_wait()\n"
-            "    print('analysis_wait_complete')\n"
-            "else:\n"
-            "    print('analysis_wait_not_supported')\n"
-        )
+        def _status_done(raw: object) -> bool:
+            if raw is None:
+                return False
+            text = str(raw).strip()
+            if not text:
+                return False
+            lowered = text.lower()
+            if lowered in {
+                "0",
+                "idle",
+                "analysisstate.idle",
+                "complete",
+                "completed",
+                "done",
+            }:
+                return True
+            try:
+                return int(text, 0) == 0
+            except Exception:
+                return False
 
-        request_data = {
-            "command": command,
-            "timeout": float(timeout),
+        try:
+            timeout_s = float(timeout)
+        except (TypeError, ValueError):
+            timeout_s = 120.0
+        if timeout_s < 1.0:
+            timeout_s = 1.0
+
+        requested_filename = str(filename or "").strip()
+        requested_view_id = view_id
+        poll_interval = 0.1
+        deadline = time.monotonic() + timeout_s
+        start = time.monotonic()
+        last_status = None
+        last_target: dict | None = None
+
+        while True:
+            remaining = max(0.0, deadline - time.monotonic())
+            req_timeout = max(1.0, min(max(self.request_timeout, 1.0), remaining + 1.0))
+            params = {}
+            if requested_filename:
+                params["filename"] = requested_filename
+            if requested_view_id is not None:
+                params["view_id"] = requested_view_id
+
+            views_payload = self._request("GET", "views", params=params, timeout=req_timeout)
+            views = []
+            if isinstance(views_payload, dict):
+                raw_views = views_payload.get("views")
+                if isinstance(raw_views, list):
+                    views = raw_views
+
+            target = None
+            for entry in views:
+                if not isinstance(entry, dict):
+                    continue
+                entry_view_id = entry.get("view_id")
+                entry_filename = entry.get("filename")
+                if requested_view_id is not None and self._view_id_matches_requested(
+                    entry_view_id, requested_view_id
+                ):
+                    target = entry
+                    break
+                if requested_filename and self._filename_matches_requested(
+                    entry_filename, requested_filename
+                ):
+                    target = entry
+                    break
+
+            if target is None and isinstance(views_payload, dict):
+                current_name = views_payload.get("current_filename")
+                current_id = views_payload.get("current_view_id")
+                if (
+                    requested_view_id is not None
+                    and self._view_id_matches_requested(current_id, requested_view_id)
+                ) or (
+                    requested_filename and self._filename_matches_requested(current_name, requested_filename)
+                ):
+                    target = {
+                        "filename": current_name,
+                        "view_id": current_id,
+                        "analysis_status": None,
+                    }
+
+            if isinstance(target, dict):
+                last_target = target
+                last_status = target.get("analysis_status")
+                if _status_done(last_status):
+                    elapsed = time.monotonic() - start
+                    return {
+                        "success": True,
+                        "analysis_status": last_status,
+                        "selected_view_filename": target.get("filename"),
+                        "selected_view_id": target.get("view_id"),
+                        "wait_seconds": elapsed,
+                    }
+
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+
+        elapsed = time.monotonic() - start
+        return {
+            "success": False,
+            "analysis_status": last_status,
+            "selected_view_filename": (last_target or {}).get("filename"),
+            "selected_view_id": (last_target or {}).get("view_id"),
+            "wait_seconds": elapsed,
+            "error": {
+                "type": "TimeoutError",
+                "message": (
+                    f"analysis wait timed out after {timeout_s:.1f}s "
+                    f"(last_status={last_status!r})"
+                ),
+            },
         }
-        if filename:
-            request_data["filename"] = str(filename)
-        if view_id is not None:
-            request_data["view_id"] = view_id
-
-        return self._request(
-            "POST",
-            "console/execute",
-            data=request_data,
-            timeout=max(float(timeout) + 5.0, self.request_timeout),
-        )
 
     @staticmethod
     def _extract_observed_filename(payload: dict | None) -> str | None:
@@ -1049,7 +1140,7 @@ class Open(cli.Application):
     Behavior:
     - If MCP is not reachable, auto-launches Binary Ninja on supported platforms.
     - If an "Open with Options" dialog is visible, optionally sets view type/platform and clicks "Open".
-    - If no dialog is visible, falls back to `bn.load(filepath)` and updates MCP current_view.
+    - Uses UI-only open workflow for deterministic tab creation in Binary Ninja.
     - Always reports inspected state/actions in JSON-like output.
     """
 
@@ -1075,11 +1166,6 @@ class Open(cli.Application):
         help="Inspect UI state only (do not load or click open).",
     )
 
-    no_ui = cli.Flag(
-        ["--no-ui"],
-        help="Prefer the non-UI load path (bn.load fallback) instead of UIContext open automation.",
-    )
-
     wait_open_target = cli.SwitchAttr(
         ["--wait-open-target"],
         float,
@@ -1092,7 +1178,7 @@ class Open(cli.Application):
 
     wait_analysis = cli.Flag(
         ["--wait-analysis"],
-        help="After target confirmation, run update_analysis_and_wait() on the opened BinaryView.",
+        help="After target confirmation, wait until target analysis_status becomes idle.",
     )
 
     analysis_timeout = cli.SwitchAttr(
@@ -1132,7 +1218,6 @@ class Open(cli.Application):
             "view_type": self.view_type or "",
             "click_open": not self.no_click,
             "inspect_only": self.inspect_only,
-            "prefer_ui_open": not self.no_ui,
             "timeout_s": open_timeout_s,
         }
 
@@ -1155,6 +1240,7 @@ class Open(cli.Application):
                 filepath,
                 timeout=wait_open_target_s,
             )
+
             if not target_confirm.get("ok"):
                 failure_payload = {
                     "error": "open target confirmation failed",
