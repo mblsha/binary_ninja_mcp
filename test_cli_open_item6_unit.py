@@ -174,6 +174,56 @@ def test_wait_for_analysis_uses_runtime_idle_enum_value_not_literal_zero():
     assert out.get("analysis_status") == "7"
 
 
+def test_wait_for_analysis_prefers_analysis_state_code_over_status_text():
+    app = _new_app()
+    resolved_idle = 2
+
+    with (
+        patch.object(app, "_resolve_idle_analysis_state_value", return_value=resolved_idle),
+        patch.object(
+            app,
+            "_request",
+            side_effect=[
+                {
+                    "views": [
+                        {
+                            "filename": "/tmp/target.bin",
+                            "view_id": "22",
+                            "analysis_state_code": 5,
+                            "analysis_state_name": "AnalyzeState",
+                            "analysis_status": "still-running",
+                        }
+                    ],
+                    "_api_version": 1,
+                },
+                {
+                    "views": [
+                        {
+                            "filename": "/tmp/target.bin",
+                            "view_id": "22",
+                            "analysis_state_code": 2,
+                            "analysis_state_name": "IdleState",
+                            "analysis_status": "still-running",
+                        }
+                    ],
+                    "_api_version": 1,
+                },
+            ],
+        ),
+    ):
+        out = app._wait_for_analysis_on_target(
+            filename="/tmp/target.bin",
+            view_id="22",
+            timeout=2.0,
+        )
+
+    assert out.get("success") is True
+    assert out.get("analysis_state_code") == 2
+    assert out.get("analysis_state_name") == "IdleState"
+    # Kept for compatibility; completion is driven by analysis_state_code.
+    assert out.get("analysis_status") == "still-running"
+
+
 def test_resolve_idle_analysis_state_value_queries_console_execute():
     app = _new_app()
 
