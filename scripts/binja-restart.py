@@ -3,10 +3,10 @@
 Advanced Binary Ninja control script with enhanced monitoring and API integration capabilities.
 """
 
-import subprocess
-import time
 import os
+import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 from plumbum import cli
@@ -192,71 +192,29 @@ class BinaryNinjaAdvancedController(cli.Application):
 
         return None
 
-    def _handle_open_existing_database_prompt(self) -> bool:
-        """Resolve Binary Ninja's 'Open existing database?' prompt when it appears."""
-        target_button = "No" if self.prefer_raw else "Yes"
+    def _resolve_launch_target(self, file_path: Optional[str]) -> Optional[str]:
+        """Choose the file to launch in a cross-platform way.
 
-        script = f'''
-tell application "System Events"
-    if not (exists process "Binary Ninja") then
-        return "not-running"
-    end if
+        If a Binary Ninja database already exists for the requested file, prefer
+        launching that database directly so the app never needs to show the
+        platform-specific "Open existing database?" modal.
+        """
+        if not file_path:
+            return None
 
-    tell process "Binary Ninja"
-        if not (exists window 1) then
-            return "no-window"
-        end if
+        target = Path(file_path)
+        if self.prefer_raw:
+            return str(target)
 
-        if not (exists sheet 1 of window 1) then
-            return "no-sheet"
-        end if
-
-        set promptSheet to sheet 1 of window 1
-        set promptText to ""
-        try
-            set promptText to value of static text 1 of promptSheet
-        end try
-
-        if promptText does not contain "Open existing database" then
-            return "different-sheet:" & promptText
-        end if
-
-        if exists checkbox "Remember for next time" of promptSheet then
-            try
-                set value of checkbox "Remember for next time" of promptSheet to 1
-            end try
-        end if
-
-        if (exists group 1 of promptSheet) and (exists button "{target_button}" of group 1 of promptSheet) then
-            click button "{target_button}" of group 1 of promptSheet
-            return "clicked:{target_button}"
-        end if
-
-        return "missing-button:{target_button}"
-    end tell
-end tell
-'''
-
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-        except subprocess.TimeoutExpired:
-            self.log("Timed out while checking for 'Open existing database?' prompt", "WARNING")
-            return False
-
-        outcome = (result.stdout or result.stderr or "").strip()
-        if outcome.startswith("clicked:"):
-            chosen = outcome.split(":", 1)[1]
-            self.log(f"Resolved 'Open existing database?' prompt via '{chosen}'")
-            return True
-
-        if outcome and outcome not in {"no-sheet", "no-window", "not-running"}:
-            self.log(f"Database prompt check result: {outcome}")
-        return False
+        candidates = [
+            Path(f"{target}.bndb"),
+            target.with_suffix(".bndb"),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                self.log(f"Using existing database: {candidate}")
+                return str(candidate)
+        return str(target)
 
     def create_binja_startup_script(self, file_path: str) -> str:
         """Create a temporary Python script for Binary Ninja startup."""
@@ -318,7 +276,6 @@ else:
         window_start = time.time()
 
         while time.time() - window_start < self.window_wait:
-            self._handle_open_existing_database_prompt()
             window_name = self._get_window_name()
 
             if window_name:
@@ -350,7 +307,6 @@ else:
             self.log(f"Waiting {self.stabilization_time}s for stabilization...")
             stabilization_deadline = time.time() + self.stabilization_time
             while time.time() < stabilization_deadline:
-                self._handle_open_existing_database_prompt()
                 time.sleep(min(self.monitor_interval, 0.5))
             print("✓ Stabilization wait complete")
 
@@ -376,12 +332,15 @@ else:
             print(f"Error: Binary Ninja not found at: {self.binja_path}")
             return 1
 
-        file_name = Path(file_path).name if file_path else None
+        launch_target = self._resolve_launch_target(file_path)
+        file_name = Path(launch_target).name if launch_target else None
 
         print("=" * 50)
         print("Binary Ninja Advanced Controller")
         if file_path:
             print(f"File: {file_path}")
+            if launch_target and launch_target != file_path:
+                print(f"Launch Target: {launch_target}")
         else:
             print("No file specified - opening Binary Ninja only")
         print(f"Binary Ninja: {self.binja_path}")
@@ -393,7 +352,7 @@ else:
                 return 1
 
             # Launch Binary Ninja
-            if not self.launch_binja(file_path):
+            if not self.launch_binja(launch_target):
                 return 1
 
             # Monitor startup

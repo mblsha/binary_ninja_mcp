@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 
 SCRIPT_PATH = Path(__file__).resolve().parent / "scripts" / "binja-restart.py"
@@ -23,74 +22,60 @@ def _new_app(*, prefer_raw: bool = False):
     return app
 
 
-def test_handle_open_existing_database_prompt_clicks_yes_by_default():
+def test_resolve_launch_target_prefers_existing_database(tmp_path: Path):
     app = _new_app()
-    completed = subprocess.CompletedProcess(
-        args=["osascript"],
-        returncode=0,
-        stdout="clicked:Yes\n",
-        stderr="",
-    )
+    target = tmp_path / "RFIRE.EXE"
+    target.write_bytes(b"MZ")
+    database = tmp_path / "RFIRE.EXE.bndb"
+    database.write_bytes(b"BNDB")
 
-    with patch.object(binja_restart.subprocess, "run", return_value=completed) as run_mock:
-        result = app._handle_open_existing_database_prompt()
+    resolved = app._resolve_launch_target(str(target))
 
-    assert result is True
-    command = run_mock.call_args.args[0]
-    assert command[:2] == ["osascript", "-e"]
-    script = command[2]
-    assert 'promptText does not contain "Open existing database"' in script
-    assert 'checkbox "Remember for next time"' in script
-    assert 'button "Yes" of group 1 of promptSheet' in script
-    app.log.assert_called_once_with("Resolved 'Open existing database?' prompt via 'Yes'")
+    assert resolved == str(database)
+    app.log.assert_called_once_with(f"Using existing database: {database}")
 
 
-def test_handle_open_existing_database_prompt_clicks_no_when_prefer_raw():
+def test_resolve_launch_target_supports_suffix_replaced_database(tmp_path: Path):
+    app = _new_app()
+    target = tmp_path / "RFIRE.EXE"
+    target.write_bytes(b"MZ")
+    database = tmp_path / "RFIRE.bndb"
+    database.write_bytes(b"BNDB")
+
+    resolved = app._resolve_launch_target(str(target))
+
+    assert resolved == str(database)
+    app.log.assert_called_once_with(f"Using existing database: {database}")
+
+
+def test_resolve_launch_target_prefers_raw_when_requested(tmp_path: Path):
     app = _new_app(prefer_raw=True)
-    completed = subprocess.CompletedProcess(
-        args=["osascript"],
-        returncode=0,
-        stdout="clicked:No\n",
-        stderr="",
-    )
+    target = tmp_path / "RFIRE.EXE"
+    target.write_bytes(b"MZ")
+    database = tmp_path / "RFIRE.EXE.bndb"
+    database.write_bytes(b"BNDB")
 
-    with patch.object(binja_restart.subprocess, "run", return_value=completed) as run_mock:
-        result = app._handle_open_existing_database_prompt()
+    resolved = app._resolve_launch_target(str(target))
 
-    assert result is True
-    script = run_mock.call_args.args[0][2]
-    assert 'button "No" of group 1 of promptSheet' in script
-    app.log.assert_called_once_with("Resolved 'Open existing database?' prompt via 'No'")
+    assert resolved == str(target)
+    app.log.assert_not_called()
 
 
-def test_handle_open_existing_database_prompt_logs_unexpected_outcome():
+def test_resolve_launch_target_returns_original_when_no_database_exists(tmp_path: Path):
     app = _new_app()
-    completed = subprocess.CompletedProcess(
-        args=["osascript"],
-        returncode=0,
-        stdout="missing-button:Yes\n",
-        stderr="",
-    )
+    target = tmp_path / "RFIRE.EXE"
+    target.write_bytes(b"MZ")
 
-    with patch.object(binja_restart.subprocess, "run", return_value=completed):
-        result = app._handle_open_existing_database_prompt()
+    resolved = app._resolve_launch_target(str(target))
 
-    assert result is False
-    app.log.assert_called_once_with("Database prompt check result: missing-button:Yes")
+    assert resolved == str(target)
+    app.log.assert_not_called()
 
 
-def test_handle_open_existing_database_prompt_handles_timeout():
+def test_resolve_launch_target_handles_missing_input():
     app = _new_app()
 
-    with patch.object(
-        binja_restart.subprocess,
-        "run",
-        side_effect=subprocess.TimeoutExpired(cmd=["osascript"], timeout=2),
-    ):
-        result = app._handle_open_existing_database_prompt()
+    resolved = app._resolve_launch_target(None)
 
-    assert result is False
-    app.log.assert_called_once_with(
-        "Timed out while checking for 'Open existing database?' prompt",
-        "WARNING",
-    )
+    assert resolved is None
+    app.log.assert_not_called()
