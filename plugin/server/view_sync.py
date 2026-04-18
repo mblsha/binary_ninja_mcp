@@ -7,12 +7,14 @@ from typing import Any, Callable, Optional
 
 try:
     from ..core.view_identity import (
+        make_logical_view_id,
         make_public_view_id,
         make_target_hint,
         normalize_view_filename_identity,
     )
 except ImportError:
     from core.view_identity import (  # type: ignore
+        make_logical_view_id,
         make_public_view_id,
         make_target_hint,
         normalize_view_filename_identity,
@@ -53,7 +55,7 @@ def extract_view_id(view: Any) -> Optional[str]:
             continue
 
     filename = extract_view_filename(view)
-    public_view_id = make_public_view_id(filename)
+    public_view_id = make_public_view_id(view, filename)
     if public_view_id:
         return public_view_id
 
@@ -71,6 +73,25 @@ def extract_view_id(view: Any) -> Optional[str]:
         return str(id(view))
     except Exception:
         return None
+
+
+def extract_logical_view_id(view: Any) -> Optional[str]:
+    """Best-effort logical file-level id extraction for grouping related BinaryViews."""
+    if view is None:
+        return None
+
+    for attr in ("_binja_mcp_logical_view_id", "mcp_logical_view_id"):
+        try:
+            raw = getattr(view, attr, None)
+        except Exception:
+            raw = None
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text
+
+    return make_logical_view_id(extract_view_filename(view))
 
 
 def make_view_id_candidates(raw: Optional[str]) -> set[str]:
@@ -333,18 +354,16 @@ def resolve_target_view(
             }
 
     if selected_by_id is not None and selected_by_filename is not None:
-        if selected_by_id is not selected_by_filename:
-            if not (
-                matches_requested_view_id(selected_by_filename, str(requested_view_id))
-                and matches_requested_filename(selected_by_id, str(requested_filename))
-            ):
-                return None, {
-                    "error_code": TARGET_ERROR_TARGET_CONFLICT,
-                    "error": "Conflicting BinaryView targets",
-                    "view_id": requested_view_id,
-                    "filename": requested_filename,
-                    "help": "Use either --view-id or --filename, or ensure they point to the same view.",
-                }
+        if selected_by_id is not selected_by_filename and not matches_requested_filename(
+            selected_by_id, str(requested_filename)
+        ):
+            return None, {
+                "error_code": TARGET_ERROR_TARGET_CONFLICT,
+                "error": "Conflicting BinaryView targets",
+                "view_id": requested_view_id,
+                "filename": requested_filename,
+                "help": "Use either --view-id or --filename, or ensure they point to the same view.",
+            }
         return selected_by_id, None
 
     if selected_by_id is not None:
@@ -398,11 +417,12 @@ def build_logical_view_summaries(
             continue
         if identity not in groups:
             groups[identity] = {
-                "logical_view_id": details.get("view_id"),
+                "logical_view_id": extract_logical_view_id(view),
                 "filename": details.get("filename"),
                 "basename": details.get("basename"),
                 "filename_identity": identity,
                 "target_hint": details.get("target_hint"),
+                "preferred_view_id": details.get("view_id"),
                 "view_type": details.get("view_type"),
                 "architecture": details.get("architecture"),
                 "analysis_status": details.get("analysis_status"),
@@ -420,6 +440,8 @@ def build_logical_view_summaries(
         group["same_file_view_count"] += 1
         if current_view is not None and view is current_view:
             group["is_current"] = True
+            group["preferred_view_id"] = details.get("view_id")
+            group["target_hint"] = details.get("target_hint")
 
         source = details.get("source")
         if source and source not in group["sources"]:
@@ -595,15 +617,14 @@ def resolve_target_view_from_candidates(
 
     if by_id and filename_matches:
         selected_by_id = by_id[0]
-        selected_by_filename = filename_matches[0]
-        if selected_by_id is not selected_by_filename:
+        if not any(view is selected_by_id for view in filename_matches):
             return None, _build_target_error(
                 TARGET_ERROR_TARGET_CONFLICT,
                 "Conflicting BinaryView targets",
                 requested_view_id=requested_view_id,
                 requested_filename=requested_filename,
                 open_views=candidates,
-                matched_views=[selected_by_id, selected_by_filename],
+                matched_views=[selected_by_id, *filename_matches],
                 current_view=fallback_view,
                 metadata_by_view=metadata_by_view,
                 help_text="Use either --view-id or --filename, or ensure both selectors identify the same view.",

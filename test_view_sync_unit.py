@@ -174,8 +174,8 @@ class TestViewSync(unittest.TestCase):
         self.assertEqual(meta["window_title"], "Primary.bin - Binary Ninja")
 
     def test_build_logical_view_summaries_groups_duplicate_file_views(self):
-        v1 = _FakeView("/tmp/a/shared.bin", view_id="view-shared")
-        v2 = _FakeView("/tmp/a/shared.bin", view_id="view-shared")
+        v1 = _FakeView("/tmp/a/shared.bin", view_id="view-shared-1")
+        v2 = _FakeView("/tmp/a/shared.bin", view_id="view-shared-2")
         v3 = _FakeView("/tmp/b/other.bin", view_id="view-other")
 
         logical = view_sync.build_logical_view_summaries(
@@ -190,7 +190,10 @@ class TestViewSync(unittest.TestCase):
 
         self.assertEqual(len(logical), 2)
         shared = logical[0]
-        self.assertEqual(shared["logical_view_id"], "view-shared")
+        self.assertEqual(
+            shared["logical_view_id"], view_sync.make_logical_view_id("/tmp/a/shared.bin")
+        )
+        self.assertEqual(shared["preferred_view_id"], "view-shared-2")
         self.assertEqual(shared["same_file_view_count"], 2)
         self.assertTrue(shared["has_same_file_duplicates"])
         self.assertEqual(shared["duplicate_object_count"], 1)
@@ -203,13 +206,13 @@ class TestViewSync(unittest.TestCase):
     def test_annotate_view_details_marks_duplicate_relationships(self):
         details = [
             {
-                "view_id": "view-shared",
+                "view_id": "view-shared-1",
                 "filename": "/tmp/a/shared.bin",
                 "filename_identity": "/tmp/a/shared.bin",
                 "is_current": False,
             },
             {
-                "view_id": "view-shared",
+                "view_id": "view-shared-2",
                 "filename": "/tmp/a/shared.bin",
                 "filename_identity": "/tmp/a/shared.bin",
                 "is_current": True,
@@ -223,8 +226,9 @@ class TestViewSync(unittest.TestCase):
         ]
         logical_views = [
             {
-                "logical_view_id": "view-shared",
+                "logical_view_id": view_sync.make_logical_view_id("/tmp/a/shared.bin"),
                 "filename_identity": "/tmp/a/shared.bin",
+                "preferred_view_id": "view-shared-2",
                 "same_file_view_count": 2,
                 "has_same_file_duplicates": True,
                 "duplicate_object_count": 1,
@@ -242,7 +246,9 @@ class TestViewSync(unittest.TestCase):
 
         annotated = view_sync.annotate_view_details(details, logical_views=logical_views)
 
-        self.assertEqual(annotated[0]["logical_view_id"], "view-shared")
+        self.assertEqual(
+            annotated[0]["logical_view_id"], view_sync.make_logical_view_id("/tmp/a/shared.bin")
+        )
         self.assertEqual(annotated[0]["same_file_view_count"], 2)
         self.assertTrue(annotated[0]["has_same_file_duplicates"])
         self.assertEqual(annotated[0]["duplicate_object_count"], 1)
@@ -396,8 +402,8 @@ class TestViewSync(unittest.TestCase):
         self.assertIs(selected, v1)
 
     def test_resolve_target_view_from_candidates_error_exposes_logical_duplicate_metadata(self):
-        v1 = _FakeView("/tmp/a/shared.bin", view_id="view-shared")
-        v2 = _FakeView("/tmp/a/shared.bin", view_id="view-shared")
+        v1 = _FakeView("/tmp/a/shared.bin", view_id="view-shared-1")
+        v2 = _FakeView("/tmp/a/shared.bin", view_id="view-shared-2")
         v3 = _FakeView("/tmp/b/other.bin", view_id="view-other")
 
         selected, error = view_sync.resolve_target_view_from_candidates(
@@ -415,15 +421,54 @@ class TestViewSync(unittest.TestCase):
         self.assertEqual(error.get("error_code"), "TARGET_REQUIRED")
         logical = error.get("logical_open_views", [])
         self.assertEqual(len(logical), 2)
-        shared = next(item for item in logical if item.get("logical_view_id") == "view-shared")
+        shared = next(
+            item
+            for item in logical
+            if item.get("logical_view_id") == view_sync.make_logical_view_id("/tmp/a/shared.bin")
+        )
         self.assertEqual(shared["same_file_view_count"], 2)
         self.assertTrue(shared["has_same_file_duplicates"])
         open_views = error.get("open_views", [])
         shared_entries = [
-            item for item in open_views if item.get("logical_view_id") == "view-shared"
+            item
+            for item in open_views
+            if item.get("logical_view_id") == view_sync.make_logical_view_id("/tmp/a/shared.bin")
         ]
         self.assertEqual(len(shared_entries), 2)
         self.assertTrue(all(item.get("has_same_file_duplicates") for item in shared_entries))
+
+    def test_duplicate_same_file_views_get_distinct_public_view_ids(self):
+        v1 = _FakeView("/tmp/a/shared.bin")
+        v2 = _FakeView("/tmp/a/shared.bin")
+
+        first = view_sync.describe_view(v1)
+        second = view_sync.describe_view(v2)
+
+        self.assertNotEqual(first["view_id"], second["view_id"])
+        self.assertEqual(
+            view_sync.extract_logical_view_id(v1),
+            view_sync.make_logical_view_id("/tmp/a/shared.bin"),
+        )
+        self.assertEqual(
+            view_sync.extract_logical_view_id(v2),
+            view_sync.make_logical_view_id("/tmp/a/shared.bin"),
+        )
+
+    def test_resolve_target_view_allows_view_id_and_filename_for_duplicate_same_file_views(self):
+        v1 = _FakeView("/tmp/a/shared.bin")
+        v2 = _FakeView("/tmp/a/shared.bin")
+        requested_view_id = view_sync.extract_view_id(v2)
+
+        selected, error = view_sync.resolve_target_view(
+            requested_view_id,
+            "/tmp/a/shared.bin",
+            get_view_by_id=lambda raw: v2 if raw == requested_view_id else None,
+            get_view_by_filename=lambda raw: v1 if raw == "/tmp/a/shared.bin" else None,
+            fallback_view=v1,
+        )
+
+        self.assertIsNone(error)
+        self.assertIs(selected, v2)
 
     def test_resolve_target_view_from_candidates_allows_unique_filename_with_multiple_open_files(self):
         v1 = _FakeView("/tmp/a/first.bin", view_id="101")
