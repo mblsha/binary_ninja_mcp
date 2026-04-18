@@ -36,4 +36,6 @@
 
 ## Agent-Specific Notes
 - The MCP server must be started from Binary Ninja (`Plugins > MCP Server > Start MCP Server`) before running the bridge.
+- Treat macOS and Linux as required target platforms for fixes and new features; do not ship a solution that only works on one of them unless explicitly scoped that way.
+- This project runs against the GUI build of Binary Ninja, not just headless APIs. If automation or startup appears stalled, inspect the live Binary Ninja UI state first and unblock the app before adding workarounds.
 - Keep compatibility with macOS, Linux, and Windows; avoid platform-specific paths in core code.
