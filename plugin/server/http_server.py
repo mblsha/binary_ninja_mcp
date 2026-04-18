@@ -19,6 +19,8 @@ from .api_contracts import (
     normalize_ui_contract,
 )
 from .view_sync import (
+    annotate_view_details,
+    build_logical_view_summaries,
     describe_view,
     extract_view_filename,
     extract_view_id,
@@ -463,11 +465,18 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
     ) -> dict[str, Any]:
         current_view = self.binary_ops.current_view if self.binary_ops else None
         current_view_id = extract_view_id(current_view)
-        open_views: list[dict[str, Any]] = []
+        open_views_raw: list[dict[str, Any]] = []
         for view in candidates:
             details = describe_view(view, metadata=metadata_by_view.get(id(view)))
             details["is_current"] = bool(current_view is not None and view is current_view)
-            open_views.append(details)
+            open_views_raw.append(details)
+
+        logical_open_views = build_logical_view_summaries(
+            candidates,
+            metadata_by_view=metadata_by_view,
+            current_view=current_view,
+        )
+        open_views = annotate_view_details(open_views_raw, logical_views=logical_open_views)
 
         selected_details = (
             describe_view(selected_view, metadata=metadata_by_view.get(id(selected_view)))
@@ -478,12 +487,18 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             selected_details["is_current"] = bool(
                 current_view is not None and selected_view is current_view
             )
+            selected_details = annotate_view_details(
+                [selected_details],
+                logical_views=logical_open_views,
+            )[0]
 
         return {
             "resolved": selected_view is not None,
             "target": selected_details,
             "open_views": open_views,
             "open_view_count": len(open_views),
+            "logical_open_views": logical_open_views,
+            "logical_view_count": len(logical_open_views),
             "current_view_id": current_view_id,
             "current_filename": extract_view_filename(current_view),
             "requested_view_id": requested_view_id,
@@ -538,19 +553,28 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response(status)
 
             elif path == "/views":
-                view_payload: list[dict[str, Any]] = []
+                view_payload_raw: list[dict[str, Any]] = []
                 current_view = self.binary_ops.current_view if self.binary_ops else None
                 current_view_id = extract_view_id(current_view)
                 candidate_views, metadata_by_view = self._collect_candidate_views()
                 for view in candidate_views:
                     details = describe_view(view, metadata=metadata_by_view.get(id(view)))
                     details["is_current"] = bool(current_view is not None and view is current_view)
-                    view_payload.append(details)
+                    view_payload_raw.append(details)
+
+                logical_views = build_logical_view_summaries(
+                    candidate_views,
+                    metadata_by_view=metadata_by_view,
+                    current_view=current_view,
+                )
+                view_payload = annotate_view_details(view_payload_raw, logical_views=logical_views)
 
                 self._send_json_response(
                     {
                         "views": view_payload,
                         "count": len(view_payload),
+                        "logical_views": logical_views,
+                        "logical_view_count": len(logical_views),
                         "current_view_id": current_view_id,
                         "current_filename": extract_view_filename(current_view),
                     }

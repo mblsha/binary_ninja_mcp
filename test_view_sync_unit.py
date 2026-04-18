@@ -173,6 +173,83 @@ class TestViewSync(unittest.TestCase):
         self.assertEqual(meta["source"], "ui")
         self.assertEqual(meta["window_title"], "Primary.bin - Binary Ninja")
 
+    def test_build_logical_view_summaries_groups_duplicate_file_views(self):
+        v1 = _FakeView("/tmp/a/shared.bin", view_id="view-shared")
+        v2 = _FakeView("/tmp/a/shared.bin", view_id="view-shared")
+        v3 = _FakeView("/tmp/b/other.bin", view_id="view-other")
+
+        logical = view_sync.build_logical_view_summaries(
+            [v1, v2, v3],
+            metadata_by_view={
+                id(v1): {"source": "ui", "window_title": "Shared 1"},
+                id(v2): {"source": "registry", "window_title": "Shared 2"},
+                id(v3): {"source": "ui", "window_title": "Other"},
+            },
+            current_view=v2,
+        )
+
+        self.assertEqual(len(logical), 2)
+        shared = logical[0]
+        self.assertEqual(shared["logical_view_id"], "view-shared")
+        self.assertEqual(shared["same_file_view_count"], 2)
+        self.assertTrue(shared["has_same_file_duplicates"])
+        self.assertEqual(shared["duplicate_object_count"], 1)
+        self.assertTrue(shared["is_current"])
+        self.assertIn("ui", shared["sources"])
+        self.assertIn("registry", shared["sources"])
+        self.assertIn("Shared 1", shared["window_titles"])
+        self.assertIn("Shared 2", shared["window_titles"])
+
+    def test_annotate_view_details_marks_duplicate_relationships(self):
+        details = [
+            {
+                "view_id": "view-shared",
+                "filename": "/tmp/a/shared.bin",
+                "filename_identity": "/tmp/a/shared.bin",
+                "is_current": False,
+            },
+            {
+                "view_id": "view-shared",
+                "filename": "/tmp/a/shared.bin",
+                "filename_identity": "/tmp/a/shared.bin",
+                "is_current": True,
+            },
+            {
+                "view_id": "view-other",
+                "filename": "/tmp/b/other.bin",
+                "filename_identity": "/tmp/b/other.bin",
+                "is_current": False,
+            },
+        ]
+        logical_views = [
+            {
+                "logical_view_id": "view-shared",
+                "filename_identity": "/tmp/a/shared.bin",
+                "same_file_view_count": 2,
+                "has_same_file_duplicates": True,
+                "duplicate_object_count": 1,
+                "is_current": True,
+            },
+            {
+                "logical_view_id": "view-other",
+                "filename_identity": "/tmp/b/other.bin",
+                "same_file_view_count": 1,
+                "has_same_file_duplicates": False,
+                "duplicate_object_count": 0,
+                "is_current": False,
+            },
+        ]
+
+        annotated = view_sync.annotate_view_details(details, logical_views=logical_views)
+
+        self.assertEqual(annotated[0]["logical_view_id"], "view-shared")
+        self.assertEqual(annotated[0]["same_file_view_count"], 2)
+        self.assertTrue(annotated[0]["has_same_file_duplicates"])
+        self.assertEqual(annotated[0]["duplicate_object_count"], 1)
+        self.assertTrue(annotated[0]["logical_is_current"])
+        self.assertEqual(annotated[2]["same_file_view_count"], 1)
+        self.assertFalse(annotated[2]["has_same_file_duplicates"])
+
     def test_describe_view_exposes_structured_analysis_state_fields_from_mock_enum(self):
         view = _FakeView("/tmp/roms/primary.bin", view_id="303")
         view.analysis_state = _MockAnalysisState(2, "IdleState")
@@ -263,6 +340,8 @@ class TestViewSync(unittest.TestCase):
         self.assertEqual(error.get("error"), "BinaryView target required")
         self.assertEqual(error.get("error_code"), "TARGET_REQUIRED")
         self.assertEqual(error.get("open_view_count"), 2)
+        self.assertEqual(error.get("logical_view_count"), 2)
+        self.assertEqual(len(error.get("logical_open_views", [])), 2)
         self.assertTrue(any(item.get("is_current") for item in error.get("open_views", [])))
 
     def test_resolve_target_view_from_candidates_reports_ambiguous_basename(self):
@@ -281,6 +360,7 @@ class TestViewSync(unittest.TestCase):
         self.assertEqual(error.get("error_code"), "TARGET_AMBIGUOUS")
         self.assertEqual(error.get("matched_view_count"), 2)
         self.assertEqual(error.get("open_view_count"), 2)
+        self.assertEqual(error.get("logical_view_count"), 2)
 
     def test_list_ui_view_records_preserves_window_title_metadata(self):
         titled = _FakeView("/tmp/titled.bin")
@@ -314,6 +394,36 @@ class TestViewSync(unittest.TestCase):
 
         self.assertIsNone(error)
         self.assertIs(selected, v1)
+
+    def test_resolve_target_view_from_candidates_error_exposes_logical_duplicate_metadata(self):
+        v1 = _FakeView("/tmp/a/shared.bin", view_id="view-shared")
+        v2 = _FakeView("/tmp/a/shared.bin", view_id="view-shared")
+        v3 = _FakeView("/tmp/b/other.bin", view_id="view-other")
+
+        selected, error = view_sync.resolve_target_view_from_candidates(
+            [v1, v2, v3],
+            fallback_view=v1,
+            require_explicit_target=True,
+            metadata_by_view={
+                id(v1): {"source": "ui"},
+                id(v2): {"source": "registry"},
+                id(v3): {"source": "ui"},
+            },
+        )
+
+        self.assertIsNone(selected)
+        self.assertEqual(error.get("error_code"), "TARGET_REQUIRED")
+        logical = error.get("logical_open_views", [])
+        self.assertEqual(len(logical), 2)
+        shared = next(item for item in logical if item.get("logical_view_id") == "view-shared")
+        self.assertEqual(shared["same_file_view_count"], 2)
+        self.assertTrue(shared["has_same_file_duplicates"])
+        open_views = error.get("open_views", [])
+        shared_entries = [
+            item for item in open_views if item.get("logical_view_id") == "view-shared"
+        ]
+        self.assertEqual(len(shared_entries), 2)
+        self.assertTrue(all(item.get("has_same_file_duplicates") for item in shared_entries))
 
     def test_resolve_target_view_from_candidates_allows_unique_filename_with_multiple_open_files(self):
         v1 = _FakeView("/tmp/a/first.bin", view_id="101")
