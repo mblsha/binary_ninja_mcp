@@ -90,6 +90,81 @@ def test_target_defaults_to_strict_and_blocks_mismatch():
     post_mock.assert_not_called()
 
 
+def test_filename_strict_precheck_uses_views_endpoint():
+    app = _new_app()
+    app.target_filename = "/tmp/target.bin"
+    app.strict_target = True
+
+    with patch.object(
+        binja_cli.requests,
+        "get",
+        return_value=_FakeResponse(
+            {
+                "views": [
+                    {
+                        "view_id": "0x1234",
+                        "filename": "/tmp/target.bin",
+                        "is_current": True,
+                    }
+                ],
+                "count": 1,
+                "current_view_id": "0x1234",
+                "current_filename": "/tmp/target.bin",
+                "_api_version": 1,
+            }
+        ),
+    ) as get_mock:
+        with patch.object(
+            binja_cli.requests,
+            "post",
+            return_value=_FakeResponse({"success": True, "_api_version": 1}),
+        ):
+            out = app._request("POST", "console/execute", data={"command": "1 + 1"})
+
+    assert get_mock.call_args.args[0] == "http://localhost:9009/views"
+    assert out.get("selected_view_filename") == "/tmp/target.bin"
+
+
+def test_filename_strict_precheck_selects_matching_view_from_multiple_open_views():
+    app = _new_app()
+    app.target_filename = "/tmp/target.bin"
+    app.strict_target = True
+
+    with patch.object(
+        binja_cli.requests,
+        "get",
+        return_value=_FakeResponse(
+            {
+                "views": [
+                    {
+                        "view_id": "0x2222",
+                        "filename": "/tmp/other.bin",
+                        "is_current": True,
+                    },
+                    {
+                        "view_id": "0x1234",
+                        "filename": "/tmp/target.bin",
+                        "is_current": False,
+                    },
+                ],
+                "count": 2,
+                "current_view_id": "0x2222",
+                "current_filename": "/tmp/other.bin",
+                "_api_version": 1,
+            }
+        ),
+    ):
+        with patch.object(
+            binja_cli.requests,
+            "post",
+            return_value=_FakeResponse({"success": True, "_api_version": 1}),
+        ):
+            out = app._request("POST", "console/execute", data={"command": "1 + 1"})
+
+    assert out.get("selected_view_filename") == "/tmp/target.bin"
+    assert out.get("selected_view_id") == "0x1234"
+
+
 def test_strict_target_passes_and_sets_selected_view_context_fields():
     app = _new_app()
     app.target_filename = "/tmp/target.bin"
@@ -202,6 +277,27 @@ def test_allow_target_fallback_disables_default_strict_behavior():
 
     post_mock.assert_called_once()
     assert out.get("success") is True
+
+
+def test_print_target_views_hint_lists_open_views(capsys):
+    error_data = {
+        "open_views": [
+            {"view_id": "101", "basename": "first.bin", "filename": "/tmp/first.bin"},
+            {
+                "view_id": "202",
+                "basename": "second.bin",
+                "filename": "/tmp/second.bin",
+                "is_current": True,
+            },
+        ]
+    }
+
+    binja_cli.BinaryNinjaCLI._print_target_views_hint(error_data)
+    captured = capsys.readouterr()
+
+    assert "Currently open views:" in captured.err
+    assert "101  first.bin" in captured.err
+    assert "[*] 202  second.bin" in captured.err
 
 
 def test_views_endpoint_includes_filename_and_view_id_targets():

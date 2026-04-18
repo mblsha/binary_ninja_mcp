@@ -236,6 +236,65 @@ class TestViewSync(unittest.TestCase):
         self.assertIsNone(selected)
         self.assertEqual(error.get("error"), "Requested BinaryView not found")
 
+    def test_resolve_target_view_from_candidates_requires_explicit_target_when_multiple_open(self):
+        v1 = _FakeView("/tmp/first.bin", view_id="101")
+        v2 = _FakeView("/tmp/second.bin", view_id="202")
+
+        selected, error = view_sync.resolve_target_view_from_candidates(
+            [v1, v2],
+            fallback_view=v1,
+            require_explicit_target=True,
+        )
+
+        self.assertIsNone(selected)
+        self.assertEqual(error.get("error"), "BinaryView target required")
+        self.assertEqual(error.get("open_view_count"), 2)
+        self.assertTrue(any(item.get("is_current") for item in error.get("open_views", [])))
+
+    def test_resolve_target_view_from_candidates_reports_ambiguous_basename(self):
+        v1 = _FakeView("/tmp/a/shared.bin", view_id="101")
+        v2 = _FakeView("/tmp/b/shared.bin", view_id="202")
+
+        selected, error = view_sync.resolve_target_view_from_candidates(
+            [v1, v2],
+            requested_filename="shared.bin",
+            fallback_view=v1,
+            require_explicit_target=True,
+        )
+
+        self.assertIsNone(selected)
+        self.assertEqual(error.get("error"), "Ambiguous BinaryView target")
+        self.assertEqual(error.get("matched_view_count"), 2)
+        self.assertEqual(error.get("open_view_count"), 2)
+
+    def test_resolve_target_view_from_candidates_allows_duplicate_views_of_same_file(self):
+        v1 = _FakeView("/tmp/a/shared.bin", view_id="101")
+        v2 = _FakeView("/tmp/a/shared.bin", view_id="202")
+
+        selected, error = view_sync.resolve_target_view_from_candidates(
+            [v1, v2],
+            requested_filename="/tmp/a/shared.bin",
+            fallback_view=v1,
+            require_explicit_target=True,
+        )
+
+        self.assertIsNone(error)
+        self.assertIs(selected, v1)
+
+    def test_resolve_target_view_from_candidates_allows_unique_filename_with_multiple_open_files(self):
+        v1 = _FakeView("/tmp/a/first.bin", view_id="101")
+        v2 = _FakeView("/tmp/b/second.bin", view_id="202")
+
+        selected, error = view_sync.resolve_target_view_from_candidates(
+            [v1, v2],
+            requested_filename="/tmp/b/second.bin",
+            fallback_view=v1,
+            require_explicit_target=True,
+        )
+
+        self.assertIsNone(error)
+        self.assertIs(selected, v2)
+
     def test_list_ui_views_active_context_first_and_deduped(self):
         v_active = _FakeView("/tmp/active.bin")
         v_other = _FakeView("/tmp/other.bin")

@@ -23,7 +23,7 @@ from .view_sync import (
     extract_view_filename,
     extract_view_id,
     list_ui_views,
-    resolve_target_view,
+    resolve_target_view_from_candidates,
     select_preferred_view,
 )
 from ..utils.string_utils import parse_int_or_default
@@ -342,15 +342,62 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             # UI not available (headless) or API mismatch; ignore.
             pass
 
-    @staticmethod
-    def _view_context_fields(view: Any) -> Dict[str, Any]:
-        return {
-            "selected_view_filename": extract_view_filename(view),
-            "selected_view_id": extract_view_id(view),
-        }
+    def _list_candidate_views(self) -> list[Any]:
+        if not self.binary_ops:
+            return []
 
-    def _resolve_python_view(self, params: Optional[Dict[str, Any]]) -> tuple[Any, Optional[dict]]:
-        """Resolve BinaryView for /console/execute without relying only on global current_view."""
+        views: list[Any] = []
+        seen_ids: set[int] = set()
+
+        def add_view(view: Any) -> None:
+            if view is None:
+                return
+            ident = id(view)
+            if ident in seen_ids:
+                return
+            seen_ids.add(ident)
+            views.append(view)
+
+        add_view(self.binary_ops.current_view)
+
+        try:
+            import binaryninjaui  # type: ignore
+
+            for ui_view in list_ui_views(binaryninjaui):
+                try:
+                    self.binary_ops.register_view(ui_view)
+                except Exception:
+                    pass
+                add_view(ui_view)
+        except Exception:
+            pass
+
+        for view in self.binary_ops.list_registered_views():
+            add_view(view)
+
+        return views
+
+    @staticmethod
+    def _target_error_status_code(error: Optional[dict]) -> int:
+        if not isinstance(error, dict):
+            return 400
+        name = str(error.get("error") or "").strip()
+        if name in {
+            "Conflicting BinaryView targets",
+            "Ambiguous BinaryView target",
+            "BinaryView target required",
+        }:
+            return 409
+        if name in {"Requested BinaryView not found", "Requested filename is not loaded"}:
+            return 404
+        return 400
+
+    def _resolve_request_view(
+        self,
+        params: Optional[Dict[str, Any]],
+        *,
+        require_explicit_target: bool = False,
+    ) -> tuple[Any, Optional[dict]]:
         if not self.binary_ops:
             return None, None
 
@@ -360,12 +407,30 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             requested_view_id = params.get("view_id") or params.get("viewId")
             requested_filename = params.get("filename") or params.get("file")
 
-        return resolve_target_view(
+        candidates = self._list_candidate_views()
+        selected_view, target_error = resolve_target_view_from_candidates(
+            candidates,
             requested_view_id=str(requested_view_id) if requested_view_id else None,
             requested_filename=str(requested_filename) if requested_filename else None,
-            get_view_by_id=lambda raw: self.binary_ops.get_registered_view_by_id(raw),
-            get_view_by_filename=lambda raw: self.binary_ops.get_registered_view(raw),
             fallback_view=self.binary_ops.current_view,
+            require_explicit_target=require_explicit_target,
+        )
+        if selected_view is not None:
+            self.binary_ops.current_view = selected_view
+        return selected_view, target_error
+
+    @staticmethod
+    def _view_context_fields(view: Any) -> Dict[str, Any]:
+        return {
+            "selected_view_filename": extract_view_filename(view),
+            "selected_view_id": extract_view_id(view),
+        }
+
+    def _resolve_python_view(self, params: Optional[Dict[str, Any]]) -> tuple[Any, Optional[dict]]:
+        """Resolve BinaryView for /console/execute without relying only on global current_view."""
+        return self._resolve_request_view(
+            params,
+            require_explicit_target=True,
         )
 
     def do_GET(self):
@@ -376,7 +441,16 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             path = urllib.parse.urlparse(self.path).path
             if not self._validate_endpoint_version(path, params):
                 return
-            self._maybe_refresh_current_view(params, clear_if_missing=(path == "/status"))
+            if any(path.startswith(prefix) for prefix in no_binary_required):
+                self._maybe_refresh_current_view(params, clear_if_missing=(path == "/status"))
+            else:
+                _, target_error = self._resolve_request_view(params, require_explicit_target=True)
+                if target_error is not None:
+                    self._send_json_response(
+                        target_error,
+                        self._target_error_status_code(target_error),
+                    )
+                    return
 
             # For most endpoints, check if binary is loaded
             if not any(path.startswith(prefix) for prefix in no_binary_required):
@@ -1166,7 +1240,16 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             params.update(self._parse_post_params())
             if not self._validate_endpoint_version(path, params):
                 return
-            self._maybe_refresh_current_view(params)
+            if not any(path.startswith(prefix) for prefix in no_binary_required):
+                _, target_error = self._resolve_request_view(params, require_explicit_target=True)
+                if target_error is not None:
+                    self._send_json_response(
+                        target_error,
+                        self._target_error_status_code(target_error),
+                    )
+                    return
+            else:
+                self._maybe_refresh_current_view(params)
 
             # For most endpoints, check if binary is loaded
             if not any(path.startswith(prefix) for prefix in no_binary_required):
@@ -1582,12 +1665,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
                 binary_view, target_error = self._resolve_python_view(params)
                 if target_error is not None:
-                    status_code = (
-                        409
-                        if target_error.get("error") == "Conflicting BinaryView targets"
-                        else 404
+                    self._send_json_response(
+                        target_error,
+                        self._target_error_status_code(target_error),
                     )
-                    self._send_json_response(target_error, status_code)
                     return
 
                 try:
