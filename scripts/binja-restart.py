@@ -53,6 +53,14 @@ class BinaryNinjaAdvancedController(cli.Application):
         ["--startup-script"], help="Create a startup script for Binary Ninja (experimental)"
     )
 
+    prefer_raw = cli.Flag(
+        ["--prefer-raw"],
+        help=(
+            "When Binary Ninja prompts to open an existing database for the target file, "
+            "choose 'No' to open the raw file instead of the saved database."
+        ),
+    )
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.temp_script = None
@@ -184,6 +192,72 @@ class BinaryNinjaAdvancedController(cli.Application):
 
         return None
 
+    def _handle_open_existing_database_prompt(self) -> bool:
+        """Resolve Binary Ninja's 'Open existing database?' prompt when it appears."""
+        target_button = "No" if self.prefer_raw else "Yes"
+
+        script = f'''
+tell application "System Events"
+    if not (exists process "Binary Ninja") then
+        return "not-running"
+    end if
+
+    tell process "Binary Ninja"
+        if not (exists window 1) then
+            return "no-window"
+        end if
+
+        if not (exists sheet 1 of window 1) then
+            return "no-sheet"
+        end if
+
+        set promptSheet to sheet 1 of window 1
+        set promptText to ""
+        try
+            set promptText to value of static text 1 of promptSheet
+        end try
+
+        if promptText does not contain "Open existing database" then
+            return "different-sheet:" & promptText
+        end if
+
+        if exists checkbox "Remember for next time" of promptSheet then
+            try
+                set value of checkbox "Remember for next time" of promptSheet to 1
+            end try
+        end if
+
+        if (exists group 1 of promptSheet) and (exists button "{target_button}" of group 1 of promptSheet) then
+            click button "{target_button}" of group 1 of promptSheet
+            return "clicked:{target_button}"
+        end if
+
+        return "missing-button:{target_button}"
+    end tell
+end tell
+'''
+
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except subprocess.TimeoutExpired:
+            self.log("Timed out while checking for 'Open existing database?' prompt", "WARNING")
+            return False
+
+        outcome = (result.stdout or result.stderr or "").strip()
+        if outcome.startswith("clicked:"):
+            chosen = outcome.split(":", 1)[1]
+            self.log(f"Resolved 'Open existing database?' prompt via '{chosen}'")
+            return True
+
+        if outcome and outcome not in {"no-sheet", "no-window", "not-running"}:
+            self.log(f"Database prompt check result: {outcome}")
+        return False
+
     def create_binja_startup_script(self, file_path: str) -> str:
         """Create a temporary Python script for Binary Ninja startup."""
         script_content = f'''
@@ -244,6 +318,7 @@ else:
         window_start = time.time()
 
         while time.time() - window_start < self.window_wait:
+            self._handle_open_existing_database_prompt()
             window_name = self._get_window_name()
 
             if window_name:
@@ -273,7 +348,10 @@ else:
         # Phase 2: Additional wait time
         if self.stabilization_time > 0:
             self.log(f"Waiting {self.stabilization_time}s for stabilization...")
-            time.sleep(self.stabilization_time)
+            stabilization_deadline = time.time() + self.stabilization_time
+            while time.time() < stabilization_deadline:
+                self._handle_open_existing_database_prompt()
+                time.sleep(min(self.monitor_interval, 0.5))
             print("✓ Stabilization wait complete")
 
         return True
