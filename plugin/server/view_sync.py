@@ -381,6 +381,96 @@ def _unique_filename_identities(views: list[Any]) -> set[str]:
     return identities
 
 
+def build_logical_view_summaries(
+    views: list[Any],
+    *,
+    metadata_by_view: Optional[dict[int, dict[str, Any]]] = None,
+    current_view: Any = None,
+) -> list[dict[str, Any]]:
+    """Group BinaryViews by filename identity for a stronger public contract."""
+    groups: dict[str, dict[str, Any]] = {}
+    ordered_identities: list[str] = []
+
+    for view in _dedupe_views(list(views or [])):
+        details = describe_view(view, metadata=(metadata_by_view or {}).get(id(view)))
+        identity = details.get("filename_identity")
+        if not identity:
+            continue
+        if identity not in groups:
+            groups[identity] = {
+                "logical_view_id": details.get("view_id"),
+                "filename": details.get("filename"),
+                "basename": details.get("basename"),
+                "filename_identity": identity,
+                "target_hint": details.get("target_hint"),
+                "view_type": details.get("view_type"),
+                "architecture": details.get("architecture"),
+                "analysis_status": details.get("analysis_status"),
+                "analysis_state_code": details.get("analysis_state_code"),
+                "analysis_state_name": details.get("analysis_state_name"),
+                "sources": [],
+                "window_titles": [],
+                "same_file_view_count": 0,
+                "has_same_file_duplicates": False,
+                "is_current": False,
+            }
+            ordered_identities.append(identity)
+
+        group = groups[identity]
+        group["same_file_view_count"] += 1
+        if current_view is not None and view is current_view:
+            group["is_current"] = True
+
+        source = details.get("source")
+        if source and source not in group["sources"]:
+            group["sources"].append(source)
+        window_title = details.get("window_title")
+        if window_title and window_title not in group["window_titles"]:
+            group["window_titles"].append(window_title)
+
+    summaries: list[dict[str, Any]] = []
+    for identity in ordered_identities:
+        group = groups[identity]
+        count = int(group.get("same_file_view_count") or 0)
+        group["has_same_file_duplicates"] = count > 1
+        group["duplicate_object_count"] = max(0, count - 1)
+        summaries.append(group)
+    return summaries
+
+
+def annotate_view_details(
+    details_list: list[dict[str, Any]],
+    *,
+    logical_views: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach duplicate/logical-view metadata to per-view payload entries."""
+    logical_by_identity = {
+        str(item.get("filename_identity")): item
+        for item in logical_views
+        if item.get("filename_identity") is not None
+    }
+
+    annotated: list[dict[str, Any]] = []
+    for details in details_list:
+        item = dict(details)
+        identity = item.get("filename_identity")
+        logical = logical_by_identity.get(str(identity)) if identity is not None else None
+        if isinstance(logical, dict):
+            item["logical_view_id"] = logical.get("logical_view_id")
+            item["same_file_view_count"] = logical.get("same_file_view_count", 1)
+            item["has_same_file_duplicates"] = logical.get("has_same_file_duplicates", False)
+            item["duplicate_object_count"] = logical.get("duplicate_object_count", 0)
+            item["logical_is_current"] = logical.get("is_current", False)
+        else:
+            item.setdefault("logical_view_id", item.get("view_id"))
+            item.setdefault("same_file_view_count", 1)
+            item.setdefault("has_same_file_duplicates", False)
+            item.setdefault("duplicate_object_count", 0)
+            item.setdefault("logical_is_current", bool(item.get("is_current")))
+        annotated.append(item)
+    return annotated
+
+
 def _build_target_error(
     error_code: str,
     error: str,
@@ -408,14 +498,23 @@ def _build_target_error(
         details = describe_view(view, metadata=(metadata_by_view or {}).get(id(view)))
         details["is_current"] = bool(current_view is not None and view is current_view)
         described_open.append(details)
+    logical_open_views = build_logical_view_summaries(
+        list(open_views or []),
+        metadata_by_view=metadata_by_view,
+        current_view=current_view,
+    )
+    described_open = annotate_view_details(described_open, logical_views=logical_open_views)
     if described_open:
         payload["open_views"] = described_open
         payload["open_view_count"] = len(described_open)
+        payload["logical_open_views"] = logical_open_views
+        payload["logical_view_count"] = len(logical_open_views)
 
     described_matches = [
         describe_view(view, metadata=(metadata_by_view or {}).get(id(view)))
         for view in _dedupe_views(list(matched_views or []))
     ]
+    described_matches = annotate_view_details(described_matches, logical_views=logical_open_views)
     if described_matches:
         payload["matched_views"] = described_matches
         payload["matched_view_count"] = len(described_matches)
