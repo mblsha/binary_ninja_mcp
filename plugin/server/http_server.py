@@ -22,7 +22,12 @@ from .view_sync import (
     describe_view,
     extract_view_filename,
     extract_view_id,
+    list_ui_view_records,
     list_ui_views,
+    TARGET_ERROR_TARGET_AMBIGUOUS,
+    TARGET_ERROR_TARGET_CONFLICT,
+    TARGET_ERROR_TARGET_NOT_FOUND,
+    TARGET_ERROR_TARGET_REQUIRED,
     resolve_target_view_from_candidates,
     select_preferred_view,
 )
@@ -342,53 +347,73 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             # UI not available (headless) or API mismatch; ignore.
             pass
 
-    def _list_candidate_views(self) -> list[Any]:
+    def _collect_candidate_views(self) -> tuple[list[Any], dict[int, dict[str, Any]]]:
         if not self.binary_ops:
-            return []
+            return [], {}
 
         views: list[Any] = []
+        metadata_by_view: dict[int, dict[str, Any]] = {}
         seen_ids: set[int] = set()
 
-        def add_view(view: Any) -> None:
+        def add_view(view: Any, *, source: str, window_title: Optional[str] = None) -> None:
             if view is None:
                 return
             ident = id(view)
+            metadata = {
+                "source": source,
+                "window_title": window_title,
+            }
+            if ident not in metadata_by_view:
+                metadata_by_view[ident] = metadata
+            elif source == "ui":
+                metadata_by_view[ident].update(
+                    {
+                        "source": source,
+                        "window_title": window_title or metadata_by_view[ident].get("window_title"),
+                    }
+                )
+
             if ident in seen_ids:
                 return
             seen_ids.add(ident)
             views.append(view)
 
-        add_view(self.binary_ops.current_view)
+        add_view(self.binary_ops.current_view, source="current")
 
         try:
             import binaryninjaui  # type: ignore
 
-            for ui_view in list_ui_views(binaryninjaui):
+            for record in list_ui_view_records(binaryninjaui):
+                ui_view = record.get("view")
                 try:
                     self.binary_ops.register_view(ui_view)
                 except Exception:
                     pass
-                add_view(ui_view)
+                add_view(
+                    ui_view,
+                    source=str(record.get("source") or "ui"),
+                    window_title=str(record.get("window_title") or "") or None,
+                )
         except Exception:
             pass
 
         for view in self.binary_ops.list_registered_views():
-            add_view(view)
+            add_view(view, source="registry")
 
-        return views
+        return views, metadata_by_view
 
     @staticmethod
     def _target_error_status_code(error: Optional[dict]) -> int:
         if not isinstance(error, dict):
             return 400
-        name = str(error.get("error") or "").strip()
-        if name in {
-            "Conflicting BinaryView targets",
-            "Ambiguous BinaryView target",
-            "BinaryView target required",
+        code = str(error.get("error_code") or "").strip()
+        if code in {
+            TARGET_ERROR_TARGET_CONFLICT,
+            TARGET_ERROR_TARGET_AMBIGUOUS,
+            TARGET_ERROR_TARGET_REQUIRED,
         }:
             return 409
-        if name in {"Requested BinaryView not found", "Requested filename is not loaded"}:
+        if code == TARGET_ERROR_TARGET_NOT_FOUND:
             return 404
         return 400
 
@@ -397,9 +422,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         params: Optional[Dict[str, Any]],
         *,
         require_explicit_target: bool = False,
-    ) -> tuple[Any, Optional[dict]]:
+    ) -> tuple[Any, Optional[dict], list[Any], dict[int, dict[str, Any]]]:
         if not self.binary_ops:
-            return None, None
+            return None, None, [], {}
 
         requested_view_id = None
         requested_filename = None
@@ -407,17 +432,18 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             requested_view_id = params.get("view_id") or params.get("viewId")
             requested_filename = params.get("filename") or params.get("file")
 
-        candidates = self._list_candidate_views()
+        candidates, metadata_by_view = self._collect_candidate_views()
         selected_view, target_error = resolve_target_view_from_candidates(
             candidates,
             requested_view_id=str(requested_view_id) if requested_view_id else None,
             requested_filename=str(requested_filename) if requested_filename else None,
             fallback_view=self.binary_ops.current_view,
             require_explicit_target=require_explicit_target,
+            metadata_by_view=metadata_by_view,
         )
         if selected_view is not None:
             self.binary_ops.current_view = selected_view
-        return selected_view, target_error
+        return selected_view, target_error, candidates, metadata_by_view
 
     @staticmethod
     def _view_context_fields(view: Any) -> Dict[str, Any]:
@@ -426,17 +452,56 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             "selected_view_id": extract_view_id(view),
         }
 
+    def _build_target_resolution_response(
+        self,
+        selected_view: Any,
+        *,
+        candidates: list[Any],
+        metadata_by_view: dict[int, dict[str, Any]],
+        requested_view_id: Optional[str] = None,
+        requested_filename: Optional[str] = None,
+    ) -> dict[str, Any]:
+        current_view = self.binary_ops.current_view if self.binary_ops else None
+        current_view_id = extract_view_id(current_view)
+        open_views: list[dict[str, Any]] = []
+        for view in candidates:
+            details = describe_view(view, metadata=metadata_by_view.get(id(view)))
+            details["is_current"] = bool(current_view is not None and view is current_view)
+            open_views.append(details)
+
+        selected_details = (
+            describe_view(selected_view, metadata=metadata_by_view.get(id(selected_view)))
+            if selected_view is not None
+            else None
+        )
+        if isinstance(selected_details, dict):
+            selected_details["is_current"] = bool(
+                current_view is not None and selected_view is current_view
+            )
+
+        return {
+            "resolved": selected_view is not None,
+            "target": selected_details,
+            "open_views": open_views,
+            "open_view_count": len(open_views),
+            "current_view_id": current_view_id,
+            "current_filename": extract_view_filename(current_view),
+            "requested_view_id": requested_view_id,
+            "requested_filename": requested_filename,
+        }
+
     def _resolve_python_view(self, params: Optional[Dict[str, Any]]) -> tuple[Any, Optional[dict]]:
         """Resolve BinaryView for /console/execute without relying only on global current_view."""
-        return self._resolve_request_view(
+        binary_view, target_error, _candidates, _metadata = self._resolve_request_view(
             params,
             require_explicit_target=True,
         )
+        return binary_view, target_error
 
     def do_GET(self):
         try:
             # Endpoints that don't require a binary to be loaded
-            no_binary_required = ["/status", "/views", "/logs", "/console", "/meta"]
+            no_binary_required = ["/status", "/views", "/target", "/logs", "/console", "/meta"]
             params = self._parse_query_params()
             path = urllib.parse.urlparse(self.path).path
             if not self._validate_endpoint_version(path, params):
@@ -444,7 +509,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             if any(path.startswith(prefix) for prefix in no_binary_required):
                 self._maybe_refresh_current_view(params, clear_if_missing=(path == "/status"))
             else:
-                _, target_error = self._resolve_request_view(params, require_explicit_target=True)
+                _, target_error, _candidates, _metadata = self._resolve_request_view(
+                    params,
+                    require_explicit_target=True,
+                )
                 if target_error is not None:
                     self._send_json_response(
                         target_error,
@@ -473,22 +541,11 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 view_payload: list[dict[str, Any]] = []
                 current_view = self.binary_ops.current_view if self.binary_ops else None
                 current_view_id = extract_view_id(current_view)
-
-                if self.binary_ops:
-                    try:
-                        import binaryninjaui  # type: ignore
-
-                        for ui_view in list_ui_views(binaryninjaui):
-                            self.binary_ops.register_view(ui_view)
-                    except Exception:
-                        pass
-
-                    for view in self.binary_ops.list_registered_views():
-                        details = describe_view(view)
-                        details["is_current"] = bool(
-                            current_view_id and details.get("view_id") == current_view_id
-                        )
-                        view_payload.append(details)
+                candidate_views, metadata_by_view = self._collect_candidate_views()
+                for view in candidate_views:
+                    details = describe_view(view, metadata=metadata_by_view.get(id(view)))
+                    details["is_current"] = bool(current_view is not None and view is current_view)
+                    view_payload.append(details)
 
                 self._send_json_response(
                     {
@@ -497,6 +554,39 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         "current_view_id": current_view_id,
                         "current_filename": extract_view_filename(current_view),
                     }
+                )
+
+            elif path == "/target/resolve":
+                requested_view_id = params.get("view_id") or params.get("viewId")
+                requested_filename = params.get("filename") or params.get("file")
+                selected_view, target_error, candidates, metadata_by_view = self._resolve_request_view(
+                    params,
+                    require_explicit_target=True,
+                )
+                if target_error is not None:
+                    self._send_json_response(
+                        target_error,
+                        self._target_error_status_code(target_error),
+                    )
+                    return
+                if selected_view is None:
+                    self._send_json_response(
+                        {
+                            "error_code": TARGET_ERROR_TARGET_NOT_FOUND,
+                            "error": "No BinaryViews open",
+                            "help": "Open a binary in Binary Ninja before resolving a target.",
+                        },
+                        404,
+                    )
+                    return
+                self._send_json_response(
+                    self._build_target_resolution_response(
+                        selected_view,
+                        candidates=candidates,
+                        metadata_by_view=metadata_by_view,
+                        requested_view_id=str(requested_view_id) if requested_view_id else None,
+                        requested_filename=str(requested_filename) if requested_filename else None,
+                    )
                 )
 
             elif path == "/meta/endpoints":
@@ -1241,7 +1331,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             if not self._validate_endpoint_version(path, params):
                 return
             if not any(path.startswith(prefix) for prefix in no_binary_required):
-                _, target_error = self._resolve_request_view(params, require_explicit_target=True)
+                _, target_error, _candidates, _metadata = self._resolve_request_view(
+                    params,
+                    require_explicit_target=True,
+                )
                 if target_error is not None:
                     self._send_json_response(
                         target_error,

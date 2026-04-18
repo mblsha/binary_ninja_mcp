@@ -224,7 +224,7 @@ class BinaryNinjaCLI(cli.Application):
             strict_requires_precheck = (
                 enforce_strict_target
                 and targeting_requested
-                and endpoint_path not in {"/status", "/views", "/ui/open", "/load"}
+                and endpoint_path not in {"/status", "/views", "/target/resolve", "/ui/open", "/load"}
             )
             if strict_requires_precheck:
                 strict_selected_filename, strict_selected_view_id = (
@@ -292,34 +292,27 @@ class BinaryNinjaCLI(cli.Application):
                 )
 
                 should_validate_target = (
-                    enforce_strict_target and targeting_requested and endpoint_path != "/views"
+                    enforce_strict_target
+                    and targeting_requested
+                    and endpoint_path not in {"/views", "/target/resolve"}
                 )
                 if should_validate_target:
+                    needs_resolution = False
                     if self.target_view_id and not self._view_id_matches_requested(
                         observed_view_id, self.target_view_id
                     ):
-                        (
-                            resolved_filename,
-                            resolved_view_id,
-                        ) = self._resolve_target_via_views(timeout=request_timeout)
-                        observed_filename = observed_filename or resolved_filename
-                        observed_view_id = observed_view_id or resolved_view_id
-
+                        needs_resolution = True
                     if self.target_filename and not self._filename_matches_requested(
                         observed_filename, self.target_filename
                     ):
-                        if self.target_view_id:
-                            (
-                                resolved_filename,
-                                resolved_view_id,
-                            ) = self._resolve_target_via_views(timeout=request_timeout)
-                            observed_filename = resolved_filename or observed_filename
-                            observed_view_id = observed_view_id or resolved_view_id
-                        else:
-                            # Some endpoints (e.g. /ui/open) may not return loaded filename immediately.
-                            observed_filename = self._resolve_target_via_status(
-                                timeout=request_timeout
-                            )
+                        needs_resolution = True
+
+                    if needs_resolution:
+                        resolved_filename, resolved_view_id = self._resolve_target_via_endpoint(
+                            timeout=request_timeout
+                        )
+                        observed_filename = resolved_filename or observed_filename
+                        observed_view_id = resolved_view_id or observed_view_id
 
                     if self.target_filename and not self._filename_matches_requested(
                         observed_filename, self.target_filename
@@ -355,6 +348,9 @@ class BinaryNinjaCLI(cli.Application):
                 if isinstance(error_data, dict) and "error" in error_data:
                     # Display main error
                     print(colors.red | f"Error: {error_data['error']}", file=sys.stderr)
+
+                    if "error_code" in error_data:
+                        print(f"Code: {error_data['error_code']}", file=sys.stderr)
 
                     # Display additional context if available
                     if "help" in error_data:
@@ -418,6 +414,9 @@ class BinaryNinjaCLI(cli.Application):
                 basename = entry.get("basename") or Path(str(filename)).name
                 print(f"  {view_id}  {basename}", file=sys.stderr)
                 print(f"      {filename}", file=sys.stderr)
+                hint = entry.get("target_hint")
+                if hint:
+                    print(f"      hint: {hint}", file=sys.stderr)
 
         open_views = error_data.get("open_views")
         if isinstance(open_views, list) and open_views:
@@ -431,6 +430,15 @@ class BinaryNinjaCLI(cli.Application):
                 basename = entry.get("basename") or Path(str(filename)).name
                 print(f"  [{marker}] {view_id}  {basename}", file=sys.stderr)
                 print(f"      {filename}", file=sys.stderr)
+                source = entry.get("source")
+                window_title = entry.get("window_title")
+                hint = entry.get("target_hint")
+                if source:
+                    print(f"      source: {source}", file=sys.stderr)
+                if window_title:
+                    print(f"      window: {window_title}", file=sys.stderr)
+                if hint:
+                    print(f"      hint: {hint}", file=sys.stderr)
             print(
                 "\nRe-run with `--view-id <id>` or use `views` to inspect targets.",
                 file=sys.stderr,
@@ -510,10 +518,10 @@ class BinaryNinjaCLI(cli.Application):
             cls._view_id_candidates(observed).intersection(cls._view_id_candidates(requested))
         )
 
-    def _resolve_target_via_views(self, timeout: float) -> tuple[str | None, object | None]:
-        endpoint_path = "/views"
+    def _resolve_target_via_endpoint(self, timeout: float) -> tuple[str | None, object | None]:
+        endpoint_path = "/target/resolve"
         expected_api_version = self._expected_api_version(endpoint_path)
-        url = f"{self.server_url}/views"
+        url = f"{self.server_url}/target/resolve"
         params = {
             "_api_version": expected_api_version,
         }
@@ -531,52 +539,21 @@ class BinaryNinjaCLI(cli.Application):
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
-            raise RuntimeError("strict target check failed: unexpected /views payload")
+            raise RuntimeError("strict target check failed: unexpected /target/resolve payload")
 
-        current_filename = self._extract_observed_filename(payload)
-        current_view_id = payload.get("current_view_id")
-
-        views = payload.get("views")
-        if isinstance(views, list):
-            target_entry = None
-            if self.target_view_id:
-                for entry in views:
-                    if isinstance(entry, dict) and self._view_id_matches_requested(
-                        entry.get("view_id"), self.target_view_id
-                    ):
-                        target_entry = entry
-                        break
-            if target_entry is None and self.target_filename:
-                for entry in views:
-                    if isinstance(entry, dict) and self._filename_matches_requested(
-                        entry.get("filename"), self.target_filename
-                    ):
-                        target_entry = entry
-                        break
-            if target_entry is None:
-                for entry in views:
-                    if not isinstance(entry, dict):
-                        continue
-                    if entry.get("is_current"):
-                        target_entry = entry
-                        break
-
-            if isinstance(target_entry, dict):
-                target_filename = target_entry.get("filename")
-                target_view_id = target_entry.get("view_id")
-                if target_filename is not None:
-                    current_filename = target_filename
-                if target_view_id is not None:
-                    current_view_id = target_view_id
-
-        return current_filename, current_view_id
+        target = payload.get("target")
+        if not isinstance(target, dict):
+            raise RuntimeError("strict target check failed: /target/resolve returned no target")
+        return target.get("filename"), target.get("view_id")
 
     def _assert_strict_target_selected(self, timeout: float) -> tuple[str | None, object | None]:
         observed_filename = None
         observed_view_id = None
 
         if self.target_view_id or self.target_filename:
-            observed_filename, observed_view_id = self._resolve_target_via_views(timeout=timeout)
+            observed_filename, observed_view_id = self._resolve_target_via_endpoint(
+                timeout=timeout
+            )
 
         if self.target_filename and not self._filename_matches_requested(
             observed_filename, self.target_filename
@@ -1434,12 +1411,44 @@ class Views(cli.Application):
             view_type = view.get("view_type") or "unknown"
             arch = view.get("architecture") or "unknown"
             analysis = view.get("analysis_status") or "unknown"
+            source = view.get("source") or "unknown"
+            window_title = view.get("window_title") or ""
+            target_hint = view.get("target_hint") or ""
 
             print(f"[{marker}] {view_id}  {basename}")
             print(f"    file: {filename}")
+            print(f"    source: {source}")
             print(f"    type: {view_type}")
             print(f"    arch: {arch}")
             print(f"    analysis: {analysis}")
+            if window_title:
+                print(f"    window: {window_title}")
+            if target_hint:
+                print(f"    hint: {target_hint}")
+
+
+@BinaryNinjaCLI.subcommand("resolve-target")
+class ResolveTarget(cli.Application):
+    """Resolve the effective BinaryView target for the current selectors."""
+
+    def main(self):
+        data = self.parent._request("GET", "target/resolve")
+
+        if self.parent.json_output:
+            self.parent._output(data)
+            return
+
+        target = data.get("target") if isinstance(data, dict) else None
+        if not isinstance(target, dict):
+            print(colors.yellow | "No target resolved")
+            return
+
+        print("Resolved Target:")
+        print(f"  View ID: {target.get('view_id')}")
+        print(f"  File: {target.get('filename')}")
+        hint = target.get("target_hint")
+        if hint:
+            print(f"  Hint: {hint}")
 
 
 @BinaryNinjaCLI.subcommand("statusbar")

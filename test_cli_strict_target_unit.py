@@ -59,7 +59,13 @@ def test_strict_target_blocks_mismatched_view_before_command():
             binja_cli.requests,
             "get",
             return_value=_FakeResponse(
-                {"loaded": True, "filename": "/tmp/other.bin", "_api_version": 1}
+                {
+                    "error_code": "TARGET_NOT_FOUND",
+                    "error": "Requested filename is not loaded",
+                    "filename": "/tmp/target.bin",
+                    "_api_version": 1,
+                },
+                status_code=404,
             ),
         ),
         patch.object(binja_cli.requests, "post") as post_mock,
@@ -79,7 +85,13 @@ def test_target_defaults_to_strict_and_blocks_mismatch():
             binja_cli.requests,
             "get",
             return_value=_FakeResponse(
-                {"loaded": True, "filename": "/tmp/other.bin", "_api_version": 1}
+                {
+                    "error_code": "TARGET_NOT_FOUND",
+                    "error": "Requested filename is not loaded",
+                    "filename": "/tmp/target.bin",
+                    "_api_version": 1,
+                },
+                status_code=404,
             ),
         ),
         patch.object(binja_cli.requests, "post") as post_mock,
@@ -90,7 +102,7 @@ def test_target_defaults_to_strict_and_blocks_mismatch():
     post_mock.assert_not_called()
 
 
-def test_filename_strict_precheck_uses_views_endpoint():
+def test_filename_strict_precheck_uses_target_resolve_endpoint():
     app = _new_app()
     app.target_filename = "/tmp/target.bin"
     app.strict_target = True
@@ -100,16 +112,12 @@ def test_filename_strict_precheck_uses_views_endpoint():
         "get",
         return_value=_FakeResponse(
             {
-                "views": [
-                    {
-                        "view_id": "0x1234",
-                        "filename": "/tmp/target.bin",
-                        "is_current": True,
-                    }
-                ],
-                "count": 1,
-                "current_view_id": "0x1234",
-                "current_filename": "/tmp/target.bin",
+                "resolved": True,
+                "target": {
+                    "view_id": "view-1234",
+                    "filename": "/tmp/target.bin",
+                    "target_hint": "--view-id view-1234",
+                },
                 "_api_version": 1,
             }
         ),
@@ -121,7 +129,7 @@ def test_filename_strict_precheck_uses_views_endpoint():
         ):
             out = app._request("POST", "console/execute", data={"command": "1 + 1"})
 
-    assert get_mock.call_args.args[0] == "http://localhost:9009/views"
+    assert get_mock.call_args.args[0] == "http://localhost:9009/target/resolve"
     assert out.get("selected_view_filename") == "/tmp/target.bin"
 
 
@@ -135,21 +143,16 @@ def test_filename_strict_precheck_selects_matching_view_from_multiple_open_views
         "get",
         return_value=_FakeResponse(
             {
-                "views": [
-                    {
-                        "view_id": "0x2222",
-                        "filename": "/tmp/other.bin",
-                        "is_current": True,
-                    },
-                    {
-                        "view_id": "0x1234",
-                        "filename": "/tmp/target.bin",
-                        "is_current": False,
-                    },
+                "resolved": True,
+                "target": {
+                    "view_id": "view-1234",
+                    "filename": "/tmp/target.bin",
+                    "target_hint": "--view-id view-1234",
+                },
+                "open_views": [
+                    {"view_id": "view-2222", "filename": "/tmp/other.bin", "is_current": True},
+                    {"view_id": "view-1234", "filename": "/tmp/target.bin", "is_current": False},
                 ],
-                "count": 2,
-                "current_view_id": "0x2222",
-                "current_filename": "/tmp/other.bin",
                 "_api_version": 1,
             }
         ),
@@ -162,7 +165,7 @@ def test_filename_strict_precheck_selects_matching_view_from_multiple_open_views
             out = app._request("POST", "console/execute", data={"command": "1 + 1"})
 
     assert out.get("selected_view_filename") == "/tmp/target.bin"
-    assert out.get("selected_view_id") == "0x1234"
+    assert out.get("selected_view_id") == "view-1234"
 
 
 def test_strict_target_passes_and_sets_selected_view_context_fields():
@@ -174,7 +177,11 @@ def test_strict_target_passes_and_sets_selected_view_context_fields():
         binja_cli.requests,
         "get",
         return_value=_FakeResponse(
-            {"loaded": True, "filename": "/tmp/target.bin", "_api_version": 1}
+            {
+                "resolved": True,
+                "target": {"view_id": "view-1234", "filename": "/tmp/target.bin"},
+                "_api_version": 1,
+            }
         ),
     ):
         with patch.object(
@@ -234,7 +241,11 @@ def test_strict_target_open_falls_back_to_status_when_response_has_no_filename()
             binja_cli.requests,
             "get",
             return_value=_FakeResponse(
-                {"loaded": True, "filename": "/tmp/target.bin", "_api_version": 1},
+                {
+                    "resolved": True,
+                    "target": {"view_id": "view-1234", "filename": "/tmp/target.bin"},
+                    "_api_version": 1,
+                },
                 api_version=1,
             ),
         ) as get_mock:
@@ -282,12 +293,19 @@ def test_allow_target_fallback_disables_default_strict_behavior():
 def test_print_target_views_hint_lists_open_views(capsys):
     error_data = {
         "open_views": [
-            {"view_id": "101", "basename": "first.bin", "filename": "/tmp/first.bin"},
             {
-                "view_id": "202",
+                "view_id": "view-101",
+                "basename": "first.bin",
+                "filename": "/tmp/first.bin",
+                "target_hint": "--view-id view-101",
+            },
+            {
+                "view_id": "view-202",
                 "basename": "second.bin",
                 "filename": "/tmp/second.bin",
                 "is_current": True,
+                "source": "ui",
+                "target_hint": "--view-id view-202",
             },
         ]
     }
@@ -296,8 +314,9 @@ def test_print_target_views_hint_lists_open_views(capsys):
     captured = capsys.readouterr()
 
     assert "Currently open views:" in captured.err
-    assert "101  first.bin" in captured.err
-    assert "[*] 202  second.bin" in captured.err
+    assert "view-101  first.bin" in captured.err
+    assert "[*] view-202  second.bin" in captured.err
+    assert "hint: --view-id view-202" in captured.err
 
 
 def test_views_endpoint_includes_filename_and_view_id_targets():
@@ -329,14 +348,12 @@ def test_strict_target_blocks_mismatched_view_id_before_command():
             "get",
             return_value=_FakeResponse(
                 {
-                    "views": [
-                        {"view_id": "0x2222", "filename": "/tmp/other.bin", "is_current": True}
-                    ],
-                    "count": 1,
-                    "current_view_id": "0x2222",
-                    "current_filename": "/tmp/other.bin",
+                    "error_code": "TARGET_NOT_FOUND",
+                    "error": "Requested BinaryView not found",
+                    "view_id": "0x1234",
                     "_api_version": 1,
-                }
+                },
+                status_code=404,
             ),
         ),
         patch.object(binja_cli.requests, "post") as post_mock,
@@ -357,16 +374,12 @@ def test_strict_target_passes_for_view_id_and_sets_context_fields():
         "get",
         return_value=_FakeResponse(
             {
-                "views": [
-                    {
-                        "view_id": "0x1234",
-                        "filename": "/tmp/target.bin",
-                        "is_current": True,
-                    }
-                ],
-                "count": 1,
-                "current_view_id": "0x1234",
-                "current_filename": "/tmp/target.bin",
+                "resolved": True,
+                "target": {
+                    "view_id": "0x1234",
+                    "filename": "/tmp/target.bin",
+                    "target_hint": "--view-id 0x1234",
+                },
                 "_api_version": 1,
             }
         ),

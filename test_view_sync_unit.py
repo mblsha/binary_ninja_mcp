@@ -11,11 +11,11 @@ from unittest.mock import patch
 
 
 THIS_DIR = Path(__file__).resolve().parent
-SERVER_DIR = THIS_DIR / "plugin" / "server"
-if str(SERVER_DIR) not in sys.path:
-    sys.path.insert(0, str(SERVER_DIR))
+PLUGIN_DIR = THIS_DIR / "plugin"
+if str(PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_DIR))
 
-view_sync = importlib.import_module("view_sync")
+view_sync = importlib.import_module("server.view_sync")
 
 
 class _FakeFile:
@@ -28,6 +28,7 @@ class _FakeView:
         self.file = _FakeFile(filename)
         if view_id is not None:
             self.view_id = view_id
+            self._binja_mcp_view_id = view_id
 
 
 class _MockAnalysisState:
@@ -160,6 +161,18 @@ class TestViewSync(unittest.TestCase):
         self.assertIsNone(meta["analysis_state_code"])
         self.assertEqual(meta["analysis_state_name"], "Idle")
 
+    def test_describe_view_includes_target_hint_and_ui_metadata(self):
+        view = _FakeView("/tmp/roms/primary.bin", view_id="view-202")
+
+        meta = view_sync.describe_view(
+            view,
+            metadata={"source": "ui", "window_title": "Primary.bin - Binary Ninja"},
+        )
+
+        self.assertEqual(meta["target_hint"], "--view-id view-202")
+        self.assertEqual(meta["source"], "ui")
+        self.assertEqual(meta["window_title"], "Primary.bin - Binary Ninja")
+
     def test_describe_view_exposes_structured_analysis_state_fields_from_mock_enum(self):
         view = _FakeView("/tmp/roms/primary.bin", view_id="303")
         view.analysis_state = _MockAnalysisState(2, "IdleState")
@@ -248,6 +261,7 @@ class TestViewSync(unittest.TestCase):
 
         self.assertIsNone(selected)
         self.assertEqual(error.get("error"), "BinaryView target required")
+        self.assertEqual(error.get("error_code"), "TARGET_REQUIRED")
         self.assertEqual(error.get("open_view_count"), 2)
         self.assertTrue(any(item.get("is_current") for item in error.get("open_views", [])))
 
@@ -264,8 +278,28 @@ class TestViewSync(unittest.TestCase):
 
         self.assertIsNone(selected)
         self.assertEqual(error.get("error"), "Ambiguous BinaryView target")
+        self.assertEqual(error.get("error_code"), "TARGET_AMBIGUOUS")
         self.assertEqual(error.get("matched_view_count"), 2)
         self.assertEqual(error.get("open_view_count"), 2)
+
+    def test_list_ui_view_records_preserves_window_title_metadata(self):
+        titled = _FakeView("/tmp/titled.bin")
+        active_ctx = _FakeContext(
+            current_frame=_FakeViewFrame(current_binary_view=titled),
+            tabs={},
+        )
+        active_ctx.windowTitle = lambda: "Titled.bin - Binary Ninja"
+
+        _FakeUIContext._active = active_ctx
+        _FakeUIContext._contexts = [active_ctx]
+        _FakeUIContext._current = titled
+
+        fake_bnui = SimpleNamespace(UIContext=_FakeUIContext)
+        records = view_sync.list_ui_view_records(fake_bnui)
+
+        self.assertGreaterEqual(len(records), 1)
+        self.assertEqual(records[0].get("source"), "ui")
+        self.assertEqual(records[0].get("window_title"), "Titled.bin - Binary Ninja")
 
     def test_resolve_target_view_from_candidates_allows_duplicate_views_of_same_file(self):
         v1 = _FakeView("/tmp/a/shared.bin", view_id="101")

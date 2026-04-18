@@ -5,6 +5,25 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+try:
+    from ..core.view_identity import (
+        make_public_view_id,
+        make_target_hint,
+        normalize_view_filename_identity,
+    )
+except ImportError:
+    from core.view_identity import (  # type: ignore
+        make_public_view_id,
+        make_target_hint,
+        normalize_view_filename_identity,
+    )
+
+
+TARGET_ERROR_TARGET_REQUIRED = "TARGET_REQUIRED"
+TARGET_ERROR_TARGET_AMBIGUOUS = "TARGET_AMBIGUOUS"
+TARGET_ERROR_TARGET_NOT_FOUND = "TARGET_NOT_FOUND"
+TARGET_ERROR_TARGET_CONFLICT = "TARGET_CONFLICT"
+
 
 def extract_view_filename(view: Any) -> Optional[str]:
     """Best-effort filename extraction from a BinaryView-like object."""
@@ -19,12 +38,24 @@ def extract_view_filename(view: Any) -> Optional[str]:
 
 
 def extract_view_id(view: Any) -> Optional[str]:
-    """Best-effort BinaryView id extraction.
-
-    Uses explicit attributes when available and falls back to Python object identity.
-    """
+    """Best-effort public BinaryView id extraction."""
     if view is None:
         return None
+
+    for attr in ("_binja_mcp_view_id", "mcp_view_id"):
+        try:
+            raw = getattr(view, attr, None)
+            if raw is not None:
+                text = str(raw).strip()
+                if text:
+                    return text
+        except Exception:
+            continue
+
+    filename = extract_view_filename(view)
+    public_view_id = make_public_view_id(filename)
+    if public_view_id:
+        return public_view_id
 
     for attr in ("view_id", "session_id", "identifier"):
         try:
@@ -241,22 +272,33 @@ def _extract_analysis_state_fields(view: Any) -> tuple[Optional[int], Optional[s
     return state_code, state_name, state_status
 
 
-def describe_view(view: Any) -> dict[str, Any]:
+def describe_view(view: Any, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Return normalized metadata for a BinaryView-like object."""
     filename = extract_view_filename(view)
     basename = Path(filename).name if filename else None
     analysis_state_code, analysis_state_name, analysis_status = _extract_analysis_state_fields(view)
-    return {
+    view_id = extract_view_id(view)
+    details = {
         "view_id": extract_view_id(view),
         "filename": filename,
         "basename": basename,
+        "filename_identity": normalize_view_filename_identity(filename),
         "view_type": _extract_view_type(view),
         "architecture": _extract_architecture(view),
         # Keep analysis_status for backward compatibility; add structured fields for robust parsing.
         "analysis_status": analysis_status,
         "analysis_state_code": analysis_state_code,
         "analysis_state_name": analysis_state_name,
+        "target_hint": make_target_hint(view_id),
     }
+    if isinstance(metadata, dict):
+        source = _coerce_text(metadata.get("source"))
+        if source:
+            details["source"] = source
+        window_title = _coerce_text(metadata.get("window_title"))
+        if window_title:
+            details["window_title"] = window_title
+    return details
 
 
 def resolve_target_view(
@@ -273,6 +315,7 @@ def resolve_target_view(
         selected_by_id = get_view_by_id(str(requested_view_id))
         if selected_by_id is None:
             return None, {
+                "error_code": TARGET_ERROR_TARGET_NOT_FOUND,
                 "error": "Requested BinaryView not found",
                 "view_id": requested_view_id,
                 "help": "Open the target file first or use `--filename` to select by path.",
@@ -283,6 +326,7 @@ def resolve_target_view(
         selected_by_filename = get_view_by_filename(str(requested_filename))
         if selected_by_filename is None:
             return None, {
+                "error_code": TARGET_ERROR_TARGET_NOT_FOUND,
                 "error": "Requested filename is not loaded",
                 "filename": requested_filename,
                 "help": "Open the target file first or provide a matching --view-id.",
@@ -295,6 +339,7 @@ def resolve_target_view(
                 and matches_requested_filename(selected_by_id, str(requested_filename))
             ):
                 return None, {
+                    "error_code": TARGET_ERROR_TARGET_CONFLICT,
                     "error": "Conflicting BinaryView targets",
                     "view_id": requested_view_id,
                     "filename": requested_filename,
@@ -324,14 +369,7 @@ def _dedupe_views(views: list[Any]) -> list[Any]:
 
 
 def _normalize_filename_identity(raw: Optional[str]) -> Optional[str]:
-    text = _coerce_text(raw)
-    if not text:
-        return None
-    try:
-        normalized = str(Path(text).resolve())
-    except Exception:
-        normalized = text
-    return normalized.lower()
+    return normalize_view_filename_identity(raw)
 
 
 def _unique_filename_identities(views: list[Any]) -> set[str]:
@@ -344,6 +382,7 @@ def _unique_filename_identities(views: list[Any]) -> set[str]:
 
 
 def _build_target_error(
+    error_code: str,
     error: str,
     *,
     help_text: str,
@@ -352,8 +391,10 @@ def _build_target_error(
     open_views: Optional[list[Any]] = None,
     matched_views: Optional[list[Any]] = None,
     current_view: Any = None,
+    metadata_by_view: Optional[dict[int, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "error_code": error_code,
         "error": error,
         "help": help_text,
     }
@@ -362,17 +403,19 @@ def _build_target_error(
     if requested_filename:
         payload["filename"] = requested_filename
 
-    current_view_id = extract_view_id(current_view)
     described_open = []
     for view in _dedupe_views(list(open_views or [])):
-        details = describe_view(view)
-        details["is_current"] = bool(current_view_id and details.get("view_id") == current_view_id)
+        details = describe_view(view, metadata=(metadata_by_view or {}).get(id(view)))
+        details["is_current"] = bool(current_view is not None and view is current_view)
         described_open.append(details)
     if described_open:
         payload["open_views"] = described_open
         payload["open_view_count"] = len(described_open)
 
-    described_matches = [describe_view(view) for view in _dedupe_views(list(matched_views or []))]
+    described_matches = [
+        describe_view(view, metadata=(metadata_by_view or {}).get(id(view)))
+        for view in _dedupe_views(list(matched_views or []))
+    ]
     if described_matches:
         payload["matched_views"] = described_matches
         payload["matched_view_count"] = len(described_matches)
@@ -387,6 +430,7 @@ def resolve_target_view_from_candidates(
     *,
     fallback_view: Any = None,
     require_explicit_target: bool = False,
+    metadata_by_view: Optional[dict[int, dict[str, Any]]] = None,
 ) -> tuple[Any, Optional[dict[str, Any]]]:
     """Resolve a BinaryView from a candidate set with ambiguity detection.
 
@@ -402,10 +446,12 @@ def resolve_target_view_from_candidates(
         by_id = [view for view in candidates if matches_requested_view_id(view, requested_view_id)]
         if not by_id:
             return None, _build_target_error(
+                TARGET_ERROR_TARGET_NOT_FOUND,
                 "Requested BinaryView not found",
                 requested_view_id=requested_view_id,
                 open_views=candidates,
                 current_view=fallback_view,
+                metadata_by_view=metadata_by_view,
                 help_text="Open the target file first or use `/views` to pick a valid view id.",
             )
 
@@ -422,20 +468,24 @@ def resolve_target_view_from_candidates(
         filename_matches = exact_filename_matches or loose_filename_matches
         if not filename_matches:
             return None, _build_target_error(
+                TARGET_ERROR_TARGET_NOT_FOUND,
                 "Requested filename is not loaded",
                 requested_filename=requested_filename,
                 open_views=candidates,
                 current_view=fallback_view,
+                metadata_by_view=metadata_by_view,
                 help_text="Open the target file first, use a full path, or provide a matching --view-id.",
             )
         matched_filename_identities = _unique_filename_identities(filename_matches)
         if len(matched_filename_identities) > 1:
             return None, _build_target_error(
+                TARGET_ERROR_TARGET_AMBIGUOUS,
                 "Ambiguous BinaryView target",
                 requested_filename=requested_filename,
                 open_views=candidates,
                 matched_views=filename_matches,
                 current_view=fallback_view,
+                metadata_by_view=metadata_by_view,
                 help_text=(
                     "Multiple open BinaryViews match this filename. "
                     "Use --view-id or a more specific full path."
@@ -449,12 +499,14 @@ def resolve_target_view_from_candidates(
         selected_by_filename = filename_matches[0]
         if selected_by_id is not selected_by_filename:
             return None, _build_target_error(
+                TARGET_ERROR_TARGET_CONFLICT,
                 "Conflicting BinaryView targets",
                 requested_view_id=requested_view_id,
                 requested_filename=requested_filename,
                 open_views=candidates,
                 matched_views=[selected_by_id, selected_by_filename],
                 current_view=fallback_view,
+                metadata_by_view=metadata_by_view,
                 help_text="Use either --view-id or --filename, or ensure both selectors identify the same view.",
             )
         return selected_by_id, None
@@ -466,9 +518,11 @@ def resolve_target_view_from_candidates(
 
     if require_explicit_target and len(candidate_filename_identities) > 1:
         return None, _build_target_error(
+            TARGET_ERROR_TARGET_REQUIRED,
             "BinaryView target required",
             open_views=candidates,
             current_view=fallback_view,
+            metadata_by_view=metadata_by_view,
             help_text=(
                 "Multiple BinaryViews are open. Re-run with --view-id, or use --filename when it "
                 "uniquely identifies the desired tab."
@@ -566,15 +620,28 @@ def get_view_from_frame(view_frame: Any) -> Any:
     return None
 
 
-def list_ui_views(binaryninjaui_module: Any) -> list[Any]:
-    """Return UI BinaryViews in deterministic priority order.
+def _extract_window_title(*objects: Any) -> Optional[str]:
+    for obj in objects:
+        if obj is None:
+            continue
+        for attr in ("windowTitle", "getWindowTitle", "title", "getTitle", "name"):
+            try:
+                raw = getattr(obj, attr, None)
+            except Exception:
+                raw = None
+            if callable(raw):
+                try:
+                    raw = raw()
+                except Exception:
+                    raw = None
+            text = _coerce_text(raw)
+            if text:
+                return text
+    return None
 
-    Order:
-    1) active context current frame
-    2) each context current frame
-    3) each context tab frames
-    4) UIContext.currentBinaryView fallback
-    """
+
+def list_ui_view_records(binaryninjaui_module: Any) -> list[dict[str, Any]]:
+    """Return UI BinaryViews plus best-effort UI metadata."""
     if binaryninjaui_module is None:
         return []
     ui_context_cls = getattr(binaryninjaui_module, "UIContext", None)
@@ -582,16 +649,22 @@ def list_ui_views(binaryninjaui_module: Any) -> list[Any]:
         return []
 
     seen_ids: set[int] = set()
-    views: list[Any] = []
+    records: list[dict[str, Any]] = []
 
-    def add_view(view: Any) -> None:
+    def add_record(view: Any, *, window_title: Optional[str] = None) -> None:
         if view is None:
             return
         ident = id(view)
         if ident in seen_ids:
             return
         seen_ids.add(ident)
-        views.append(view)
+        records.append(
+            {
+                "view": view,
+                "source": "ui",
+                "window_title": _coerce_text(window_title),
+            }
+        )
 
     ordered_contexts: list[Any] = []
     try:
@@ -615,7 +688,10 @@ def list_ui_views(binaryninjaui_module: Any) -> list[Any]:
             frame = ctx.getCurrentViewFrame()
         except Exception:
             frame = None
-        add_view(get_view_from_frame(frame))
+        add_record(
+            get_view_from_frame(frame),
+            window_title=_extract_window_title(frame, ctx),
+        )
 
     for ctx in ordered_contexts:
         try:
@@ -627,15 +703,30 @@ def list_ui_views(binaryninjaui_module: Any) -> list[Any]:
                 frame = ctx.getViewFrameForTab(tab)
             except Exception:
                 frame = None
-            add_view(get_view_from_frame(frame))
+            add_record(
+                get_view_from_frame(frame),
+                window_title=_extract_window_title(frame, tab, ctx),
+            )
 
     try:
         if hasattr(ui_context_cls, "currentBinaryView"):
-            add_view(ui_context_cls.currentBinaryView())
+            add_record(ui_context_cls.currentBinaryView())
     except Exception:
         pass
 
-    return views
+    return records
+
+
+def list_ui_views(binaryninjaui_module: Any) -> list[Any]:
+    """Return UI BinaryViews in deterministic priority order.
+
+    Order:
+    1) active context current frame
+    2) each context current frame
+    3) each context tab frames
+    4) UIContext.currentBinaryView fallback
+    """
+    return [record.get("view") for record in list_ui_view_records(binaryninjaui_module)]
 
 
 def select_preferred_view(
