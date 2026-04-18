@@ -366,6 +366,14 @@ class BinaryNinjaCLI(cli.Application):
                     if "requested_name" in error_data:
                         print(f"Requested: {error_data['requested_name']}", file=sys.stderr)
 
+                    if "filename" in error_data:
+                        print(f"Filename: {error_data['filename']}", file=sys.stderr)
+
+                    if "view_id" in error_data:
+                        print(f"View ID: {error_data['view_id']}", file=sys.stderr)
+
+                    self._print_target_views_hint(error_data)
+
                     # Show available functions if provided (e.g., for function not found errors)
                     if "available_functions" in error_data and error_data["available_functions"]:
                         funcs = error_data["available_functions"][:5]  # Show first 5
@@ -393,6 +401,40 @@ class BinaryNinjaCLI(cli.Application):
         except Exception as e:
             print(colors.red | f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+
+    @staticmethod
+    def _print_target_views_hint(error_data: dict) -> None:
+        if not isinstance(error_data, dict):
+            return
+
+        matched_views = error_data.get("matched_views")
+        if isinstance(matched_views, list) and matched_views:
+            print("\nMatching open views:", file=sys.stderr)
+            for entry in matched_views:
+                if not isinstance(entry, dict):
+                    continue
+                view_id = entry.get("view_id") or "?"
+                filename = entry.get("filename") or "<unknown>"
+                basename = entry.get("basename") or Path(str(filename)).name
+                print(f"  {view_id}  {basename}", file=sys.stderr)
+                print(f"      {filename}", file=sys.stderr)
+
+        open_views = error_data.get("open_views")
+        if isinstance(open_views, list) and open_views:
+            print("\nCurrently open views:", file=sys.stderr)
+            for entry in open_views:
+                if not isinstance(entry, dict):
+                    continue
+                marker = "*" if entry.get("is_current") else " "
+                view_id = entry.get("view_id") or "?"
+                filename = entry.get("filename") or "<unknown>"
+                basename = entry.get("basename") or Path(str(filename)).name
+                print(f"  [{marker}] {view_id}  {basename}", file=sys.stderr)
+                print(f"      {filename}", file=sys.stderr)
+            print(
+                "\nRe-run with `--view-id <id>` or use `views` to inspect targets.",
+                file=sys.stderr,
+            )
 
     @staticmethod
     def _filename_matches_requested(observed: str | None, requested: str | None) -> bool:
@@ -497,13 +539,7 @@ class BinaryNinjaCLI(cli.Application):
         views = payload.get("views")
         if isinstance(views, list):
             target_entry = None
-            for entry in views:
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("is_current"):
-                    target_entry = entry
-                    break
-            if target_entry is None and self.target_view_id:
+            if self.target_view_id:
                 for entry in views:
                     if isinstance(entry, dict) and self._view_id_matches_requested(
                         entry.get("view_id"), self.target_view_id
@@ -517,12 +553,21 @@ class BinaryNinjaCLI(cli.Application):
                     ):
                         target_entry = entry
                         break
+            if target_entry is None:
+                for entry in views:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("is_current"):
+                        target_entry = entry
+                        break
 
             if isinstance(target_entry, dict):
-                if current_filename is None:
-                    current_filename = target_entry.get("filename")
-                if current_view_id is None:
-                    current_view_id = target_entry.get("view_id")
+                target_filename = target_entry.get("filename")
+                target_view_id = target_entry.get("view_id")
+                if target_filename is not None:
+                    current_filename = target_filename
+                if target_view_id is not None:
+                    current_view_id = target_view_id
 
         return current_filename, current_view_id
 
@@ -530,10 +575,8 @@ class BinaryNinjaCLI(cli.Application):
         observed_filename = None
         observed_view_id = None
 
-        if self.target_view_id:
+        if self.target_view_id or self.target_filename:
             observed_filename, observed_view_id = self._resolve_target_via_views(timeout=timeout)
-        elif self.target_filename:
-            observed_filename = self._resolve_target_via_status(timeout=timeout)
 
         if self.target_filename and not self._filename_matches_requested(
             observed_filename, self.target_filename
