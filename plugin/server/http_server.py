@@ -583,9 +583,11 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             elif path == "/target/resolve":
                 requested_view_id = params.get("view_id") or params.get("viewId")
                 requested_filename = params.get("filename") or params.get("file")
-                selected_view, target_error, candidates, metadata_by_view = self._resolve_request_view(
-                    params,
-                    require_explicit_target=True,
+                selected_view, target_error, candidates, metadata_by_view = (
+                    self._resolve_request_view(
+                        params,
+                        require_explicit_target=True,
+                    )
                 )
                 if target_error is not None:
                     self._send_json_response(

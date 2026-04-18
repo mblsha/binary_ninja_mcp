@@ -470,7 +470,9 @@ class TestViewSync(unittest.TestCase):
         self.assertIsNone(error)
         self.assertIs(selected, v2)
 
-    def test_resolve_target_view_from_candidates_allows_unique_filename_with_multiple_open_files(self):
+    def test_resolve_target_view_from_candidates_allows_unique_filename_with_multiple_open_files(
+        self,
+    ):
         v1 = _FakeView("/tmp/a/first.bin", view_id="101")
         v2 = _FakeView("/tmp/b/second.bin", view_id="202")
 
