@@ -3,6 +3,7 @@ import weakref
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 from .config import BinaryNinjaConfig
+from .view_identity import make_public_view_id
 from binaryninja.enums import TypeClass, StructureVariant
 
 
@@ -50,6 +51,7 @@ class BinaryOperations:
                 return
 
             filename_str = str(filename)
+            public_view_id = make_public_view_id(filename_str)
             try:
                 view_ref: object = weakref.ref(bv)
             except TypeError:
@@ -63,6 +65,14 @@ class BinaryOperations:
             self._views_by_basename[base] = view_ref
             self._views_by_basename[base.lower()] = view_ref
 
+            if public_view_id:
+                self._views_by_id[public_view_id] = view_ref
+                try:
+                    setattr(bv, "_binja_mcp_view_id", public_view_id)
+                except Exception:
+                    pass
+
+            # Keep legacy aliases internally for compatibility with older clients.
             explicit_view_id = getattr(bv, "view_id", None)
             for key in self._view_id_candidates(explicit_view_id):
                 self._views_by_id[key] = view_ref
