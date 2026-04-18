@@ -6,7 +6,7 @@ from itertools import count
 from hashlib import sha1
 from pathlib import Path
 from threading import Lock
-from typing import Any, Optional
+from typing import Any
 from weakref import WeakKeyDictionary
 
 
