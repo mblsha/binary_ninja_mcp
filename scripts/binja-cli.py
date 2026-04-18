@@ -224,7 +224,8 @@ class BinaryNinjaCLI(cli.Application):
             strict_requires_precheck = (
                 enforce_strict_target
                 and targeting_requested
-                and endpoint_path not in {"/status", "/views", "/target/resolve", "/ui/open", "/load"}
+                and endpoint_path
+                not in {"/status", "/views", "/target/resolve", "/ui/open", "/load"}
             )
             if strict_requires_precheck:
                 strict_selected_filename, strict_selected_view_id = (
@@ -551,9 +552,7 @@ class BinaryNinjaCLI(cli.Application):
         observed_view_id = None
 
         if self.target_view_id or self.target_filename:
-            observed_filename, observed_view_id = self._resolve_target_via_endpoint(
-                timeout=timeout
-            )
+            observed_filename, observed_view_id = self._resolve_target_via_endpoint(timeout=timeout)
 
         if self.target_filename and not self._filename_matches_requested(
             observed_filename, self.target_filename
