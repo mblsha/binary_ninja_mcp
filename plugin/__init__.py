@@ -1,6 +1,14 @@
 import binaryninja as bn
 from .core.config import Config
+from .core.save_guard import install_binaryview_save_guard
 from .server.http_server import MCPServer
+
+
+try:
+    if install_binaryview_save_guard(bn):
+        bn.log_info("BinaryView.save(...) guard installed by Binary Ninja MCP")
+except Exception as e:
+    bn.log_error(f"Failed to install BinaryView.save guard: {str(e)}")
 
 
 class BinaryNinjaMCP:

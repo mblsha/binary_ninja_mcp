@@ -5,7 +5,10 @@ A command-line interface for interacting with the Binary Ninja MCP server.
 ## IMPORTANT: Don’t call `bv.save(...)` from the CLI
 
 Never call `bv.save(...)` from the CLI unless you have explicit user permission.
-Saving writes the `.bndb` to disk and is not always safe/desirable during automation.
+The plugin monkey-patches `BinaryView.save(...)` to raise at runtime because this
+API writes raw original binary bytes and can corrupt a BNDB when used as a
+database save operation. Use `bv.save_auto_snapshot()` for an existing BNDB, or
+`bv.create_database(path)` to create a new BNDB.
 
 ## Installation
 
