@@ -39,6 +39,10 @@ STARTUP_FATAL_PATTERNS = (
     "fatal error",
 )
 
+DEFAULT_SERVER_URL = "http://localhost:9009"
+DISCOVERY_HOST = "localhost"
+DISCOVERY_PORTS = (9009, 9000, 9001, 9002, 9003, 9004, 9005, 9006, 9007, 9008)
+
 
 def _float_env(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -65,7 +69,7 @@ class BinaryNinjaCLI(cli.Application):
     DESCRIPTION = "Command-line interface for Binary Ninja MCP server"
 
     server_url = cli.SwitchAttr(
-        ["--server", "-s"], str, default="http://localhost:9009", help="MCP server URL"
+        ["--server", "-s"], str, default=DEFAULT_SERVER_URL, help="MCP server URL"
     )
 
     target_filename = cli.SwitchAttr(
@@ -179,6 +183,208 @@ class BinaryNinjaCLI(cli.Application):
             )
         return payload
 
+    @staticmethod
+    def _server_switch_was_explicit() -> bool:
+        for arg in sys.argv[1:]:
+            if arg == "--server" or arg == "-s" or arg.startswith("--server="):
+                return True
+        return False
+
+    def _discovery_enabled(self) -> bool:
+        if self._server_switch_was_explicit():
+            return False
+        return str(self.server_url or "").rstrip("/") == DEFAULT_SERVER_URL
+
+    @staticmethod
+    def _split_global_view_id(view_id: object | None) -> tuple[str | None, str | None]:
+        text = str(view_id or "").strip()
+        if ":" not in text:
+            return None, text or None
+        instance_id, local_view_id = text.split(":", 1)
+        instance_id = instance_id.strip()
+        local_view_id = local_view_id.strip()
+        if not instance_id or not local_view_id:
+            return None, text or None
+        return instance_id, local_view_id
+
+    def _discover_servers(self, timeout: float = 0.25) -> list[dict]:
+        cached = getattr(self, "_cached_discovered_servers", None)
+        if isinstance(cached, list):
+            return cached
+
+        endpoint = "/meta/instance"
+        expected = self._expected_api_version(endpoint)
+        discovered: list[dict] = []
+        for port in DISCOVERY_PORTS:
+            base_url = f"http://{DISCOVERY_HOST}:{port}"
+            try:
+                response = requests.get(
+                    f"{base_url}{endpoint}",
+                    params={"_api_version": expected},
+                    headers={"X-Binja-MCP-Api-Version": str(expected)},
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("service") != "binary_ninja_mcp":
+                continue
+            instance_id = str(payload.get("instance_id") or "").strip()
+            if not instance_id:
+                continue
+            payload = dict(payload)
+            payload["host"] = DISCOVERY_HOST
+            payload["base_url"] = base_url.rstrip("/")
+            discovered.append(payload)
+
+        legacy_url = DEFAULT_SERVER_URL.rstrip("/")
+        discovered_urls = {str(item.get("base_url") or "").rstrip("/") for item in discovered}
+        if legacy_url not in discovered_urls:
+            try:
+                if self._probe_server_reachable(legacy_url, timeout=timeout):
+                    discovered.append(
+                        {
+                            "service": "binary_ninja_mcp",
+                            "instance_id": "legacy-9009",
+                            "host": "localhost",
+                            "port": 9009,
+                            "base_url": legacy_url,
+                            "legacy": True,
+                        }
+                    )
+            except Exception:
+                pass
+
+        self._cached_discovered_servers = discovered
+        return discovered
+
+    def _probe_server_reachable(self, base_url: str, timeout: float = 0.5) -> bool:
+        url = f"{str(base_url).rstrip('/')}/status"
+        expected_api_version = self._expected_api_version("/status")
+        try:
+            response = requests.get(
+                url,
+                params={"_api_version": expected_api_version},
+                headers={"X-Binja-MCP-Api-Version": str(expected_api_version)},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return isinstance(payload, dict)
+        except Exception:
+            return False
+
+    def _get_discovered_views(self, timeout: float | None = None) -> list[dict]:
+        cached = getattr(self, "_cached_discovered_views", None)
+        if isinstance(cached, list):
+            return cached
+
+        views: list[dict] = []
+        endpoint = "/views"
+        expected = self._expected_api_version(endpoint)
+        request_timeout = self.request_timeout if timeout is None else float(timeout)
+        for server in self._discover_servers(timeout=min(request_timeout, 0.25)):
+            base_url = str(server.get("base_url") or "").rstrip("/")
+            if not base_url:
+                continue
+            try:
+                response = requests.get(
+                    f"{base_url}{endpoint}",
+                    params={"_api_version": expected},
+                    headers={"X-Binja-MCP-Api-Version": str(expected)},
+                    timeout=request_timeout,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except Exception:
+                continue
+            raw_views = payload.get("views") if isinstance(payload, dict) else None
+            if not isinstance(raw_views, list):
+                continue
+            instance_id = str(server.get("instance_id") or "")
+            for view in raw_views:
+                if not isinstance(view, dict):
+                    continue
+                item = dict(view)
+                item.setdefault("instance_id", instance_id)
+                item.setdefault("server_url", base_url)
+                local_view_id = item.get("view_id")
+                if instance_id and local_view_id is not None:
+                    item.setdefault("global_view_id", f"{instance_id}:{local_view_id}")
+                    item["target_hint"] = f"--view-id {item['global_view_id']}"
+                views.append(item)
+
+        self._cached_discovered_views = views
+        return views
+
+    def _route_discovered_target(self, timeout: float) -> str | None:
+        if not self._discovery_enabled() or not self.target_view_id:
+            return None
+
+        instance_id, local_view_id = self._split_global_view_id(self.target_view_id)
+        if instance_id:
+            servers = self._discover_servers(timeout=0.25)
+            for server in servers:
+                if server.get("instance_id") == instance_id:
+                    self.server_url = str(server.get("base_url") or self.server_url).rstrip("/")
+                    return local_view_id
+            raise RuntimeError(f"no discovered Binary Ninja MCP instance matches {instance_id!r}")
+
+        views = self._get_discovered_views(timeout=timeout)
+        raise RuntimeError(
+            f"local --view-id {local_view_id!r} is not valid in discovery mode; "
+            "use a global --view-id in the form <instance_id>:<local_view_id>.\n"
+            + self._format_discovered_targets(views)
+        )
+
+    @staticmethod
+    def _endpoint_requires_explicit_discovered_view(endpoint_path: str) -> bool:
+        path = normalize_endpoint_path(endpoint_path)
+        if path in {
+            "/status",
+            "/views",
+            "/meta/instance",
+            "/meta/endpoints",
+        }:
+            return False
+        return True
+
+    @staticmethod
+    def _format_discovered_targets(views: list[dict]) -> str:
+        if not views:
+            return "No open BinaryViews were discovered."
+        lines = ["Valid --view-id targets:"]
+        for view in views:
+            view_id = view.get("global_view_id") or view.get("view_id") or "?"
+            filename = view.get("filename") or "<unknown>"
+            server_url = view.get("server_url")
+            lines.append(f"  {view_id}  {filename}")
+            if server_url:
+                lines.append(f"      server: {server_url}")
+        return "\n".join(lines)
+
+    def _require_discovered_view_id_if_needed(self, endpoint_path: str, timeout: float) -> None:
+        if not self._discovery_enabled() or self.target_view_id:
+            return
+        if not self._endpoint_requires_explicit_discovered_view(endpoint_path):
+            return
+        views = self._get_discovered_views(timeout=timeout)
+        if not views:
+            return
+        raise RuntimeError(
+            "missing required --view-id for instance-scoped command in discovery mode.\n"
+            + self._format_discovered_targets(views)
+        )
+
+    def _select_server_from_target_view_id(self, timeout: float = 0.5) -> str | None:
+        if not self.target_view_id:
+            return None
+        routed_view_id = self._route_discovered_target(timeout=timeout)
+        return routed_view_id
+
     def _request(
         self,
         method: str,
@@ -189,11 +395,11 @@ class BinaryNinjaCLI(cli.Application):
     ) -> dict:
         """Make HTTP request to the server"""
         endpoint_path = self._normalize_endpoint_path(endpoint)
-        url = f"{self.server_url}/{endpoint.lstrip('/')}"
         request_timeout = self.request_timeout if timeout is None else float(timeout)
         expected_api_version = self._expected_api_version(endpoint_path)
         strict_selected_filename = None
         strict_selected_view_id = None
+        outgoing_view_id = self.target_view_id
 
         request_headers = {
             "X-Binja-MCP-Api-Version": str(expected_api_version),
@@ -203,11 +409,12 @@ class BinaryNinjaCLI(cli.Application):
         if self.target_filename:
             request_params.setdefault("filename", self.target_filename)
             request_data.setdefault("filename", self.target_filename)
-        if self.target_view_id:
-            request_params.setdefault("view_id", self.target_view_id)
-            request_data.setdefault("view_id", self.target_view_id)
+        if outgoing_view_id:
+            request_params.setdefault("view_id", outgoing_view_id)
+            request_data.setdefault("view_id", outgoing_view_id)
         request_params["_api_version"] = expected_api_version
         request_data["_api_version"] = expected_api_version
+        url = f"{self.server_url}/{endpoint.lstrip('/')}"
 
         if self.verbose:
             print(f"[{method}] {url}", file=sys.stderr)
@@ -217,6 +424,14 @@ class BinaryNinjaCLI(cli.Application):
                 print(f"Data: {request_data}", file=sys.stderr)
 
         try:
+            self._require_discovered_view_id_if_needed(endpoint_path, request_timeout)
+
+            if endpoint_path not in {"/views", "/meta/instance", "/meta/endpoints"}:
+                routed_view_id = self._route_discovered_target(timeout=request_timeout)
+                if routed_view_id:
+                    outgoing_view_id = routed_view_id
+                    request_params["view_id"] = outgoing_view_id
+                    request_data["view_id"] = outgoing_view_id
             targeting_requested = bool(self.target_filename or self.target_view_id)
             enforce_strict_target = bool(
                 self.strict_target or (targeting_requested and not self.allow_target_fallback)
@@ -299,8 +514,8 @@ class BinaryNinjaCLI(cli.Application):
                 )
                 if should_validate_target:
                     needs_resolution = False
-                    if self.target_view_id and not self._view_id_matches_requested(
-                        observed_view_id, self.target_view_id
+                    if outgoing_view_id and not self._view_id_matches_requested(
+                        observed_view_id, outgoing_view_id
                     ):
                         needs_resolution = True
                     if self.target_filename and not self._filename_matches_requested(
@@ -322,12 +537,12 @@ class BinaryNinjaCLI(cli.Application):
                             "strict target mismatch: "
                             f"requested '{self.target_filename}', observed '{observed_filename}'"
                         )
-                    if self.target_view_id and not self._view_id_matches_requested(
-                        observed_view_id, self.target_view_id
+                    if outgoing_view_id and not self._view_id_matches_requested(
+                        observed_view_id, outgoing_view_id
                     ):
                         raise RuntimeError(
                             "strict target mismatch: "
-                            f"requested view_id '{self.target_view_id}', observed '{observed_view_id}'"
+                            f"requested view_id '{outgoing_view_id}', observed '{observed_view_id}'"
                         )
 
                 response_data.setdefault("selected_view_filename", observed_filename)
@@ -523,13 +738,14 @@ class BinaryNinjaCLI(cli.Application):
         endpoint_path = "/target/resolve"
         expected_api_version = self._expected_api_version(endpoint_path)
         url = f"{self.server_url}/target/resolve"
+        _instance_id, local_target_view_id = self._split_global_view_id(self.target_view_id)
         params = {
             "_api_version": expected_api_version,
         }
         if self.target_filename:
             params["filename"] = self.target_filename
-        if self.target_view_id:
-            params["view_id"] = self.target_view_id
+        if local_target_view_id:
+            params["view_id"] = local_target_view_id
 
         response = requests.get(
             url,
@@ -562,12 +778,13 @@ class BinaryNinjaCLI(cli.Application):
                 f"requested '{self.target_filename}', observed '{observed_filename}'"
             )
 
-        if self.target_view_id and not self._view_id_matches_requested(
-            observed_view_id, self.target_view_id
+        _instance_id, local_target_view_id = self._split_global_view_id(self.target_view_id)
+        if local_target_view_id and not self._view_id_matches_requested(
+            observed_view_id, local_target_view_id
         ):
             raise RuntimeError(
                 "strict target mismatch: "
-                f"requested view_id '{self.target_view_id}', observed '{observed_view_id}'"
+                f"requested view_id '{local_target_view_id}', observed '{observed_view_id}'"
             )
 
         return observed_filename, observed_view_id
@@ -952,19 +1169,7 @@ class BinaryNinjaCLI(cli.Application):
 
     def _server_reachable(self, timeout: float = 2.0) -> bool:
         """Check whether MCP server is reachable without exiting."""
-        url = f"{self.server_url}/status"
-        expected_api_version = self._expected_api_version("/status")
-        try:
-            response = requests.get(
-                url,
-                params={"_api_version": expected_api_version},
-                headers={"X-Binja-MCP-Api-Version": str(expected_api_version)},
-                timeout=timeout,
-            )
-            response.raise_for_status()
-            return True
-        except Exception:
-            return False
+        return self._probe_server_reachable(self.server_url, timeout=timeout)
 
     @staticmethod
     def _platform_adapter():
@@ -1077,6 +1282,8 @@ class BinaryNinjaCLI(cli.Application):
 
     def _ensure_server_for_open(self, filepath: str = "") -> dict:
         """Ensure MCP server is available before running open workflow."""
+        if self.target_view_id:
+            self._select_server_from_target_view_id(timeout=1.0)
         if self._server_reachable(timeout=1.0):
             return {"ok": True, "launched": False}
 
@@ -1105,6 +1312,16 @@ class BinaryNinjaCLI(cli.Application):
                 out["ok"] = True
                 out["launched"] = True
                 return out
+            if self._discovery_enabled():
+                self._cached_discovered_servers = None
+                servers = self._discover_servers(timeout=0.5)
+                if servers:
+                    self.server_url = str(servers[0].get("base_url") or self.server_url).rstrip("/")
+                    out = dict(launch)
+                    out["ok"] = True
+                    out["launched"] = True
+                    out["server_url"] = self.server_url
+                    return out
             time.sleep(0.5)
 
         killed = False
@@ -1164,6 +1381,12 @@ class BinaryNinjaCLI(cli.Application):
     def _capture_error_snapshot(self, *, count: int | None = None) -> dict | None:
         if bool(getattr(self, "no_auto_errors", False)):
             return None
+
+        if self.target_view_id:
+            try:
+                self._select_server_from_target_view_id(timeout=0.5)
+            except Exception:
+                pass
 
         raw_count = count if count is not None else getattr(self, "error_probe_count", 50)
         try:
@@ -1390,7 +1613,21 @@ class Views(cli.Application):
     """List loaded BinaryViews for explicit per-view targeting."""
 
     def main(self):
-        data = self.parent._request("GET", "views")
+        if self.parent._discovery_enabled():
+            servers = self.parent._discover_servers()
+            if not servers and self.parent._server_reachable(timeout=0.5):
+                data = self.parent._request("GET", "views")
+            else:
+                views = self.parent._get_discovered_views()
+                data = {
+                    "service": "binary_ninja_mcp",
+                    "discovered_instance_count": len(servers),
+                    "views": views,
+                    "count": len(views),
+                    "_api_version": self.parent._expected_api_version("/views"),
+                }
+        else:
+            data = self.parent._request("GET", "views")
 
         if self.parent.json_output:
             self.parent._output(data)
@@ -1404,7 +1641,7 @@ class Views(cli.Application):
         print(f"Loaded views ({len(views)}):")
         for view in views:
             marker = "*" if view.get("is_current") else " "
-            view_id = view.get("view_id") or "?"
+            view_id = view.get("global_view_id") or view.get("view_id") or "?"
             basename = view.get("basename") or "<unknown>"
             filename = view.get("filename") or "<unknown>"
             view_type = view.get("view_type") or "unknown"
@@ -1637,7 +1874,115 @@ class Open(cli.Application):
                     filtered.append(warning)
                 parsed["warnings"] = filtered
 
+    def _missing_filepath_help(self) -> dict:
+        usage = [
+            "binja-mcp open <file>",
+            "binja-mcp open --new-server <file>",
+            "binja-mcp --view-id <global-view-id> open <file>",
+            "binja-mcp --server http://localhost:<port> open <file>",
+            "binja-mcp views",
+        ]
+        targets = []
+        if self.parent._discovery_enabled():
+            try:
+                targets = self.parent._get_discovered_views(timeout=0.5)
+            except Exception:
+                targets = []
+        return {
+            "error": "missing file path for open",
+            "help": (
+                "Pass the file to open. When multiple Binary Ninja instances are running, "
+                "choose the target instance with --view-id from `views`, use --server, "
+                "or launch a fresh instance with --new-server."
+            ),
+            "usage": usage,
+            "targets": targets,
+        }
+
+    def _open_target_selection_help(self, filepath: str) -> dict:
+        target_file = str(filepath or "<file>").strip() or "<file>"
+        targets = []
+        if self.parent._discovery_enabled():
+            try:
+                targets = self.parent._get_discovered_views(timeout=0.5)
+            except Exception:
+                targets = []
+        examples = [
+            f"binja-mcp open --new-server {target_file}",
+            f"binja-mcp --server http://localhost:<port> open {target_file}",
+        ]
+        for view in targets:
+            global_view_id = view.get("global_view_id")
+            if global_view_id:
+                examples.insert(0, f"binja-mcp --view-id {global_view_id} open {target_file}")
+        return {
+            "error": "target Binary Ninja instance required for open",
+            "help": (
+                "Choose where to open this file. Use --new-server for a fresh Binary Ninja "
+                "instance, --view-id for an existing discovered instance, or --server for a "
+                "known MCP server URL."
+            ),
+            "file": target_file,
+            "examples": examples,
+            "targets": targets,
+        }
+
+    def _print_open_target_selection_help(self, filepath: str) -> int:
+        payload = self._open_target_selection_help(filepath)
+        if self.parent.json_output:
+            self.parent._output(payload)
+            return 1
+
+        print(colors.red | f"Error: {payload['error']}", file=sys.stderr)
+        print(payload["help"], file=sys.stderr)
+        print("\nOptions:", file=sys.stderr)
+        print(f"  binja-mcp open --new-server {payload['file']}", file=sys.stderr)
+        print(
+            f"  binja-mcp --server http://localhost:<port> open {payload['file']}", file=sys.stderr
+        )
+        targets = payload.get("targets") if isinstance(payload, dict) else None
+        if isinstance(targets, list) and targets:
+            print("\nExisting instances:", file=sys.stderr)
+            print(self.parent._format_discovered_targets(targets), file=sys.stderr)
+            first = targets[0].get("global_view_id")
+            if first:
+                print("\nExample:", file=sys.stderr)
+                print(f"  binja-mcp --view-id {first} open {payload['file']}", file=sys.stderr)
+        else:
+            print("\nNo open BinaryViews were discovered.", file=sys.stderr)
+        return 1
+
+    def _print_missing_filepath_help(self) -> int:
+        payload = self._missing_filepath_help()
+        if self.parent.json_output:
+            self.parent._output(payload)
+            return 1
+
+        print(colors.red | f"Error: {payload['error']}", file=sys.stderr)
+        print(payload["help"], file=sys.stderr)
+        print("\nUsage:", file=sys.stderr)
+        for line in payload["usage"]:
+            print(f"  {line}", file=sys.stderr)
+        targets = payload.get("targets") if isinstance(payload, dict) else None
+        if isinstance(targets, list) and targets:
+            print("\nAvailable target instances:", file=sys.stderr)
+            print(self.parent._format_discovered_targets(targets), file=sys.stderr)
+        else:
+            print("\nRun `binja-mcp views` to list open instances and views.", file=sys.stderr)
+        return 1
+
     def main(self, filepath: str = ""):
+        if not str(filepath or "").strip() and not self.inspect_only:
+            return self._print_missing_filepath_help()
+
+        if (
+            str(filepath or "").strip()
+            and not self.inspect_only
+            and self.parent._discovery_enabled()
+            and not self.parent.target_view_id
+        ):
+            return self._print_open_target_selection_help(str(filepath))
+
         ensure = self.parent._ensure_server_for_open(filepath=filepath)
         if not ensure.get("ok"):
             print(colors.red | f"Error: {ensure.get('error', 'unable to start Binary Ninja')}")

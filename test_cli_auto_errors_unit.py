@@ -122,6 +122,7 @@ def test_apply_post_command_error_report_respects_fail_on_new_errors():
 
 def test_open_json_includes_new_errors_and_fails_when_requested():
     app = _new_app()
+    app.server_url = "http://testserver:9009"
     app.fail_on_new_errors = True
     target = "/tmp/target.bin"
     open_cmd = binja_cli.Open("open")

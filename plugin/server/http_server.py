@@ -2,6 +2,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import urllib.parse
 import errno
+import os
+import time
+import uuid
 from typing import Dict, Any, Optional
 import binaryninja as bn
 import threading
@@ -107,6 +110,7 @@ def get_active_log_capture():
 
 class MCPRequestHandler(BaseHTTPRequestHandler):
     binary_ops = None  # Will be set by the server
+    mcp_server = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -144,6 +148,26 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         else:
             payload = data
         self.wfile.write(json.dumps(payload).encode("utf-8"))
+
+    def _instance_metadata(self) -> Dict[str, Any]:
+        server = getattr(self, "mcp_server", None)
+        if server is None:
+            return {"service": "binary_ninja_mcp"}
+        return server.instance_metadata()
+
+    def _attach_instance_fields(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = self._instance_metadata()
+        instance_id = metadata.get("instance_id")
+        if instance_id:
+            item.setdefault("instance_id", instance_id)
+            view_id = item.get("view_id")
+            if view_id is not None:
+                item.setdefault("global_view_id", f"{instance_id}:{view_id}")
+                item["target_hint"] = f"--view-id {item['global_view_id']}"
+        return item
+
+    def _attach_instance_to_views(self, views: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        return [self._attach_instance_fields(dict(view)) for view in views]
 
     def _parse_query_params(self) -> Dict[str, str]:
         parsed_path = urllib.parse.urlparse(self.path)
@@ -477,6 +501,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             current_view=current_view,
         )
         open_views = annotate_view_details(open_views_raw, logical_views=logical_open_views)
+        open_views = self._attach_instance_to_views(open_views)
+        for logical_view in logical_open_views:
+            if isinstance(logical_view, dict):
+                self._attach_instance_fields(logical_view)
 
         selected_details = (
             describe_view(selected_view, metadata=metadata_by_view.get(id(selected_view)))
@@ -491,8 +519,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 [selected_details],
                 logical_views=logical_open_views,
             )[0]
+            selected_details = self._attach_instance_fields(selected_details)
 
         return {
+            **self._instance_metadata(),
             "resolved": selected_view is not None,
             "target": selected_details,
             "open_views": open_views,
@@ -550,6 +580,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     if self.binary_ops and self.binary_ops.current_view
                     else None,
                 }
+                status.update(self._instance_metadata())
                 self._send_json_response(status)
 
             elif path == "/views":
@@ -568,9 +599,14 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     current_view=current_view,
                 )
                 view_payload = annotate_view_details(view_payload_raw, logical_views=logical_views)
+                view_payload = self._attach_instance_to_views(view_payload)
+                for logical_view in logical_views:
+                    if isinstance(logical_view, dict):
+                        self._attach_instance_fields(logical_view)
 
                 self._send_json_response(
                     {
+                        **self._instance_metadata(),
                         "views": view_payload,
                         "count": len(view_payload),
                         "logical_views": logical_views,
@@ -617,6 +653,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
             elif path == "/meta/endpoints":
                 self._send_json_response({"endpoints": get_endpoint_registry_json()})
+
+            elif path == "/meta/instance":
+                self._send_json_response(self._instance_metadata())
 
             elif path == "/functions" or path == "/methods":
                 functions = self.binary_ops.get_function_names(offset, limit)
@@ -1879,6 +1918,21 @@ class MCPServer:
         self.thread = None
         self.binary_ops = BinaryOperations(config.binary_ninja)
         self._lock = threading.Lock()
+        self.instance_id = f"bnmcp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        self.started_at = time.time()
+
+    def instance_metadata(self) -> Dict[str, Any]:
+        host = str(self.config.server.host)
+        port = int(self.config.server.port)
+        return {
+            "service": "binary_ninja_mcp",
+            "instance_id": self.instance_id,
+            "host": host,
+            "port": port,
+            "base_url": f"http://{host}:{port}",
+            "pid": os.getpid(),
+            "started_at": self.started_at,
+        }
 
     def is_running(self) -> bool:
         return self.server is not None and self.thread is not None and self.thread.is_alive()
@@ -1901,34 +1955,56 @@ class MCPServer:
                 self.server = None
                 self.thread = None
 
-            server_address = (self.config.server.host, self.config.server.port)
+            preferred_port = int(self.config.server.port)
+            candidate_ports = [preferred_port]
+            for port in getattr(self.config.server, "fallback_ports", ()):
+                port_int = int(port)
+                if port_int not in candidate_ports:
+                    candidate_ports.append(port_int)
 
             # Create handler with access to binary operations
             handler_class = type(
                 "MCPRequestHandlerWithOps",
                 (MCPRequestHandler,),
-                {"binary_ops": self.binary_ops},
+                {"binary_ops": self.binary_ops, "mcp_server": self},
             )
 
-            try:
-                self.server = HTTPServer(server_address, handler_class)
-            except OSError as e:
-                if e.errno == errno.EADDRINUSE:
+            last_error = None
+            for port in candidate_ports:
+                server_address = (self.config.server.host, port)
+                try:
+                    self.server = HTTPServer(server_address, handler_class)
+                    bound_host, bound_port = self.server.server_address[:2]
+                    self.config.server.host = str(bound_host)
+                    self.config.server.port = int(bound_port)
+                    break
+                except OSError as e:
+                    last_error = e
+                    if e.errno == errno.EADDRINUSE:
+                        bn.log_warn(
+                            f"[MCP] Port in use, trying next candidate: http://{self.config.server.host}:{port}"
+                        )
+                        continue
                     bn.log_error(
-                        f"[MCP] Failed to start server: http://{self.config.server.host}:{self.config.server.port} is already in use"
+                        f"[MCP] Failed to start server on http://{self.config.server.host}:{port}: {e}"
                     )
-                else:
+                    self.server = None
+                    self.thread = None
+                    return False
+                except Exception as e:
+                    last_error = e
                     bn.log_error(
-                        f"[MCP] Failed to start server on http://{self.config.server.host}:{self.config.server.port}: {e}"
+                        f"[MCP] Failed to start server on http://{self.config.server.host}:{port}: {e}"
                     )
-                self.server = None
-                self.thread = None
-                return False
-            except Exception as e:
+                    self.server = None
+                    self.thread = None
+                    return False
+
+            if self.server is None:
                 bn.log_error(
-                    f"[MCP] Failed to start server on http://{self.config.server.host}:{self.config.server.port}: {e}"
+                    "[MCP] Failed to start server: all configured loopback ports are in use "
+                    f"({candidate_ports}); last error: {last_error}"
                 )
-                self.server = None
                 self.thread = None
                 return False
 

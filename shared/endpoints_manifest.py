@@ -40,6 +40,7 @@ class EndpointSpec:
 # - __MISSING_TYPE__
 ENDPOINT_SPECS: tuple[EndpointSpec, ...] = (
     EndpointSpec("GET", "/meta/endpoints", False),
+    EndpointSpec("GET", "/meta/instance", False),
     EndpointSpec("GET", "/status", False),
     EndpointSpec("GET", "/views", False),
     EndpointSpec("GET", "/target/resolve", False),
