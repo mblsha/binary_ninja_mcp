@@ -451,6 +451,7 @@ def test_wait_for_analysis_returns_contract_error_when_state_code_missing():
 
 def test_open_main_confirms_target_and_reports_view_context():
     app = _new_app()
+    app.server_url = "http://testserver:9009"
     open_cmd = binja_cli.Open("open")
     open_cmd.parent = app
     open_cmd.platform = None
@@ -508,6 +509,7 @@ def test_open_main_confirms_target_and_reports_view_context():
 
 def test_open_main_uses_confirmed_target_as_effective_when_loaded_filename_is_stale():
     app = _new_app()
+    app.server_url = "http://testserver:9009"
     open_cmd = binja_cli.Open("open")
     open_cmd.parent = app
     open_cmd.platform = None
@@ -571,6 +573,7 @@ def test_open_main_uses_confirmed_target_as_effective_when_loaded_filename_is_st
 
 def test_open_main_returns_structured_error_when_target_not_confirmed():
     app = _new_app()
+    app.server_url = "http://testserver:9009"
     open_cmd = binja_cli.Open("open")
     open_cmd.parent = app
     open_cmd.platform = None
