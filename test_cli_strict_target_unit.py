@@ -35,7 +35,8 @@ class _FakeResponse:
 def _new_app():
     app = binja_cli.BinaryNinjaCLI("binja-mcp")
     app.server_url = "http://localhost:9009"
-    app.request_timeout = 5.0
+    app.request_timeout = 120.0
+    app.connect_timeout = 5.0
     app.verbose = False
     app.json_output = True
     app.no_auto_errors = True
@@ -48,6 +49,52 @@ def test_filename_match_allows_basename_for_non_path_requests():
     app = _new_app()
     assert app._filename_matches_requested("/tmp/a/secondary.bin", "secondary.bin")
     assert not app._filename_matches_requested("/tmp/a/primary.bin", "secondary.bin")
+
+
+def test_request_uses_separate_connect_and_action_timeouts():
+    app = _new_app()
+
+    with patch.object(
+        binja_cli.requests,
+        "get",
+        return_value=_FakeResponse({"loaded": True, "_api_version": 1}),
+    ) as get_mock:
+        out = app._request("GET", "status")
+
+    assert out.get("loaded") is True
+    assert get_mock.call_args.kwargs["timeout"] == (5.0, 120.0)
+
+
+def test_request_timeout_override_keeps_fast_connect_timeout():
+    app = _new_app()
+
+    with patch.object(
+        binja_cli.requests,
+        "get",
+        return_value=_FakeResponse({"loaded": True, "_api_version": 1}),
+    ) as get_mock:
+        out = app._request("GET", "status", timeout=30.0)
+
+    assert out.get("loaded") is True
+    assert get_mock.call_args.kwargs["timeout"] == (5.0, 30.0)
+
+
+def test_connect_timeout_reports_explicit_connection_timeout(capsys):
+    app = _new_app()
+
+    with (
+        patch.object(
+            binja_cli.requests,
+            "get",
+            side_effect=binja_cli.requests.exceptions.ConnectTimeout(),
+        ),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        app._request("GET", "status")
+
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "Connection to server at http://localhost:9009 timed out after 5s" in err
 
 
 def test_strict_target_blocks_mismatched_view_before_command():

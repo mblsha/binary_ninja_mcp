@@ -2,9 +2,8 @@
 
 ## Project Structure & Module Organization
 - `plugin/`: Binary Ninja plugin code (core operations, HTTP API handlers, server).
-- `bridge/`: MCP bridge that connects clients (e.g., Claude Desktop) to the plugin server.
 - `docs/`: Design and usage documentation for the executor/CLI.
-- `scripts/`: Setup helpers (e.g., `scripts/setup_claude_desktop.py`).
+- `scripts/`: CLI and local utility scripts.
 - `examples/`: Sample scripts for integrations.
 - `images/`: Documentation assets.
 - Root test scripts: `test_*.py` (manual/integration helpers).
@@ -12,10 +11,6 @@
 ## Build, Test, and Development Commands
 - Create/sync the local environment (creates `.venv/`):
   - `uv sync`
-- Run the bridge (Binary Ninja must be running with the MCP server started):
-  - `uv run python bridge/binja_mcp_bridge.py`
-- macOS setup helper for Claude Desktop:
-  - `./scripts/setup_claude_desktop.py`
 - There is no build step; the plugin loads directly from the Binary Ninja plugins directory.
 
 ## Coding Style & Naming Conventions
@@ -35,7 +30,7 @@
 - Include screenshots or GIFs for UI-facing changes (e.g., new CLI output or plugin UI).
 
 ## Agent-Specific Notes
-- The MCP server must be started from Binary Ninja (`Plugins > MCP Server > Start MCP Server`) before running the bridge.
+- The MCP server must be started from Binary Ninja (`Plugins > MCP Server > Start MCP Server`) before running `binja-cli`.
 - `BinaryView.save(...)` is intentionally monkey-patched by the plugin to raise at runtime. Do not remove this guard; use `bv.save_auto_snapshot()` for existing BNDBs and `bv.create_database(path)` for new BNDBs.
 - Treat macOS and Linux as required target platforms for fixes and new features; do not ship a solution that only works on one of them unless explicitly scoped that way.
 - This project runs against the GUI build of Binary Ninja, not just headless APIs. If automation or startup appears stalled, inspect the live Binary Ninja UI state first and unblock the app before adding workarounds.
