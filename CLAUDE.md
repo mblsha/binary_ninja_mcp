@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Binary Ninja plugin that exposes binary analysis functionality through MCP (Model Context Protocol). It consists of two main components:
-- **Plugin** (`/plugin/`): Runs inside Binary Ninja, provides HTTP API on localhost:9009
-- **Bridge** (`/bridge/`): Connects MCP clients to the Binary Ninja HTTP server
+This is a Binary Ninja plugin that exposes binary analysis functionality through a local HTTP API and a terminal CLI.
+- **Plugin** (`/plugin/`): Runs inside Binary Ninja and provides the HTTP API on localhost ports
+- **CLI** (`/scripts/binja-cli.py`): Discovers running plugin servers and drives analysis from the terminal
 
 ## Development Commands
 
@@ -14,8 +14,8 @@ This is a Binary Ninja plugin that exposes binary analysis functionality through
 # Create/sync local environment (creates `.venv/`)
 uv sync
 
-# Run the MCP bridge (after starting server in Binary Ninja)
-uv run python bridge/binja_mcp_bridge.py
+# Run the CLI (after starting server in Binary Ninja)
+uv run python scripts/binja-cli.py status
 ```
 
 ## Architecture
@@ -31,7 +31,7 @@ uv run python bridge/binja_mcp_bridge.py
 ### Key Architectural Decisions
 1. **Stateful HTTP Server**: Server maintains reference to current binary view
 2. **RESTful API**: Simple GET/POST endpoints for all operations
-3. **Bridge Pattern**: MCP bridge adapts between protocols without modifying core functionality
+3. **CLI Client**: `binja-cli` discovers running plugin servers and calls the HTTP API directly
 4. **In-Memory Log Storage**: Uses thread-safe deques with configurable size limits (default 10k entries)
 5. **Listener Pattern**: Captures logs/console at the source, not from UI components
 
@@ -60,8 +60,8 @@ All endpoints are on `http://localhost:9009/`:
 - No test suite exists - when adding features, test manually in Binary Ninja
 - No linting configuration - follow existing code style
 - Plugin loads automatically from Binary Ninja's plugins directory
-- Server must be started from Binary Ninja's plugin menu before using bridge
-- Binary view state is managed by the HTTP server, not the bridge
+- Server must be started from Binary Ninja's plugin menu before using `binja-cli`
+- Binary view state is managed by the HTTP server
 - PRs for this workspace should target `mblsha/binary_ninja_mcp` unless explicitly instructed otherwise
 
 ### Important Implementation Details
@@ -93,11 +93,11 @@ All endpoints are on `http://localhost:9009/`:
 1. Create handler in `/plugin/api/handlers/`
 2. Implement operation in `/plugin/core/binary_operations.py` if needed
 3. Register endpoint in `/plugin/server/http_server.py`
-4. Update bridge's tool definitions in `/bridge/binja_mcp_bridge.py`
+4. Update CLI command support in `/scripts/binja-cli.py` when the endpoint should be user-facing
 
 **Debugging:**
 - Binary Ninja logs: Check Binary Ninja's console/log view
-- Bridge logs: Run bridge directly to see stdout/stderr
+- CLI output: Run `uv run python scripts/binja-cli.py --help` or the specific command with `--help`
 - HTTP traffic: Server logs requests to Binary Ninja's console
 
 **Version Updates:**

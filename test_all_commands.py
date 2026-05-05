@@ -12,7 +12,7 @@ import requests
 
 # Configuration
 CLI_PATH = "scripts/binja-cli.py"
-BRIDGE_URL = "http://localhost:9009"
+HTTP_URL = "http://localhost:9009"
 DEFAULT_ENDPOINT_API_VERSION = 1
 ENDPOINT_API_VERSION_OVERRIDES = {
     "/ui/open": 2,
@@ -46,10 +46,10 @@ class CommandTester:
             path = f"/{path}"
         return ENDPOINT_API_VERSION_OVERRIDES.get(path, DEFAULT_ENDPOINT_API_VERSION)
 
-    def run_curl(self, endpoint: str, method: str = "GET", data: Dict = None) -> Dict[str, Any]:
-        """Run curl command to test bridge-only endpoints"""
+    def run_http(self, endpoint: str, method: str = "GET", data: Dict = None) -> Dict[str, Any]:
+        """Run HTTP request to test endpoints without CLI wrappers."""
         path, _, query = endpoint.partition("?")
-        url = f"{BRIDGE_URL}/{path}"
+        url = f"{HTTP_URL}/{path}"
         params = dict(urllib.parse.parse_qsl(query)) if query else {}
         api_version = self._expected_api_version(endpoint)
         params["_api_version"] = api_version
@@ -98,7 +98,7 @@ class CommandTester:
         self,
         name: str,
         cli_cmd: str = None,
-        bridge_endpoint: str = None,
+        http_endpoint: str = None,
         method: str = "GET",
         data: Dict = None,
     ) -> Dict[str, Any]:
@@ -108,9 +108,9 @@ class CommandTester:
         if cli_cmd:
             result = self.run_cli(cli_cmd)
             interface = "CLI"
-        elif bridge_endpoint:
-            result = self.run_curl(bridge_endpoint, method, data)
-            interface = "Bridge"
+        elif http_endpoint:
+            result = self.run_http(http_endpoint, method, data)
+            interface = "HTTP"
         else:
             result = {"success": False, "error": "No command specified"}
             interface = "Unknown"
@@ -118,7 +118,7 @@ class CommandTester:
         test_result = {
             "name": name,
             "interface": interface,
-            "command": cli_cmd or bridge_endpoint,
+            "command": cli_cmd or http_endpoint,
             "success": result["success"],
             "output": result.get("output"),
             "error": result.get("error"),
@@ -136,18 +136,18 @@ class CommandTester:
 
         # 2. Code Listing & Search
         self.test_command("list_methods", cli_cmd="functions --limit 5")
-        self.test_command("list_classes", bridge_endpoint="classes?limit=5")
-        self.test_command("list_segments", bridge_endpoint="segments?limit=5")
+        self.test_command("list_classes", http_endpoint="classes?limit=5")
+        self.test_command("list_segments", http_endpoint="segments?limit=5")
         self.test_command("list_imports", cli_cmd="imports --limit 5")
         self.test_command("list_exports", cli_cmd="exports --limit 5")
-        self.test_command("list_namespaces", bridge_endpoint="namespaces?limit=5")
-        self.test_command("list_data_items", bridge_endpoint="data?limit=5")
+        self.test_command("list_namespaces", http_endpoint="namespaces?limit=5")
+        self.test_command("list_data_items", http_endpoint="data?limit=5")
         self.test_command("search_functions_by_name", cli_cmd="functions --search room --limit 5")
 
         # 3. Code Analysis
         self.test_command("decompile_function", cli_cmd=f"decompile {self.test_function}")
         self.test_command("fetch_disassembly", cli_cmd=f"assembly {self.test_function}")
-        self.test_command("function_at", bridge_endpoint=f"functionAt?address={self.test_address}")
+        self.test_command("function_at", http_endpoint=f"functionAt?address={self.test_address}")
         self.test_command("code_references", cli_cmd=f"refs {self.test_function}")
         self.test_command("get_user_defined_type", cli_cmd="type Point")
 
@@ -156,18 +156,18 @@ class CommandTester:
         self.test_command("rename_data", cli_cmd="rename data 0x8282 my_data")
         self.test_command(
             "rename_variable",
-            bridge_endpoint="renameVariable?functionName=room2_entry&variableName=var_1&newName=counter",
+            http_endpoint="renameVariable?functionName=room2_entry&variableName=var_1&newName=counter",
         )
         self.test_command(
             "retype_variable",
-            bridge_endpoint="retypeVariable?functionName=room2_entry&variableName=counter&type=uint32_t",
+            http_endpoint="retypeVariable?functionName=room2_entry&variableName=counter&type=uint32_t",
         )
         self.test_command(
             "define_types", cli_cmd='type --define "struct Rectangle { int width; int height; };"'
         )
         self.test_command(
             "edit_function_signature",
-            bridge_endpoint="editFunctionSignature?functionName=room2_entry&signature=void room2_entry(int param)",
+            http_endpoint="editFunctionSignature?functionName=room2_entry&signature=void room2_entry(int param)",
         )
 
         # 5. Comments
@@ -177,13 +177,11 @@ class CommandTester:
             "set_function_comment",
             cli_cmd='comment --function room2_entry "Entry point for room 2"',
         )
-        self.test_command(
-            "get_function_comment", bridge_endpoint="comment/function?name=room2_entry"
-        )
+        self.test_command("get_function_comment", http_endpoint="comment/function?name=room2_entry")
         self.test_command("delete_comment", cli_cmd="comment --delete 0x8250")
         self.test_command(
             "delete_function_comment",
-            bridge_endpoint="comment/function",
+            http_endpoint="comment/function",
             method="POST",
             data={"name": "room2_entry", "_method": "DELETE"},
         )
@@ -196,16 +194,16 @@ class CommandTester:
         self.test_command("clear_logs", cli_cmd="logs --clear")
 
         # 7. Console
-        self.test_command("get_console_output", bridge_endpoint="console?count=5")
-        self.test_command("get_console_stats", bridge_endpoint="console/stats")
-        self.test_command("get_console_errors", bridge_endpoint="console/errors?count=5")
+        self.test_command("get_console_output", http_endpoint="console?count=5")
+        self.test_command("get_console_stats", http_endpoint="console/stats")
+        self.test_command("get_console_errors", http_endpoint="console/errors?count=5")
         self.test_command(
             "execute_python_command",
-            bridge_endpoint="console/execute",
+            http_endpoint="console/execute",
             method="POST",
             data={"command": "print('Test from MCP')"},
         )
-        self.test_command("clear_console", bridge_endpoint="console/clear", method="POST")
+        self.test_command("clear_console", http_endpoint="console/clear", method="POST")
 
         print(f"\nTests completed: {len(self.results)}")
 

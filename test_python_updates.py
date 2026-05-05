@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Test script to verify the updated MCP Bridge and CLI work with the new Python executor
-"""
+"""Test script to verify the HTTP API and CLI work with the Python executor."""
 
 import subprocess
 import json
@@ -25,10 +23,35 @@ def _server_reachable(url: str = "http://localhost:9009") -> bool:
         return False
 
 
+def _cli_target_args() -> list[str]:
+    """Return an explicit CLI target when discovery mode sees open BinaryViews."""
+    cmd = ["uv", "run", "python", "scripts/binja-cli.py", "--json", "views"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            return []
+        data = json.loads(result.stdout)
+    except Exception:
+        return []
+
+    views = data.get("views") if isinstance(data, dict) else None
+    if not isinstance(views, list) or not views:
+        return []
+
+    first = views[0]
+    if not isinstance(first, dict):
+        return []
+    view_id = first.get("global_view_id") or first.get("view_id")
+    if not view_id:
+        return []
+    return ["--view-id", str(view_id)]
+
+
 def _run_cli_python_command() -> bool:
     """Run CLI python command checks."""
     print("Testing CLI Python Command")
     print("=" * 50)
+    target_args = _cli_target_args()
 
     tests = [
         {
@@ -58,7 +81,7 @@ def _run_cli_python_command() -> bool:
 
     for test in tests:
         print(f"\nTest: {test['name']}")
-        cmd = ["uv", "run", "python", "scripts/binja-cli.py"] + test["command"]
+        cmd = ["uv", "run", "python", "scripts/binja-cli.py"] + target_args + test["command"]
         print(f"Command: {' '.join(cmd)}")
 
         try:
@@ -92,28 +115,25 @@ def _run_cli_python_command() -> bool:
     return failed == 0
 
 
-def _run_mcp_bridge() -> bool:
-    """Run MCP bridge execute_python_command checks."""
-    print("\n\nTesting MCP Bridge")
+def _run_http_python_endpoint() -> bool:
+    """Run HTTP execute_python_command checks."""
+    print("\n\nTesting HTTP Python Endpoint")
     print("=" * 50)
-
-    # This would require starting the bridge and using an MCP client
-    # For now, we'll test the HTTP endpoint directly
 
     import requests
 
     tests = [
         {
-            "name": "Execute via bridge endpoint",
+            "name": "Execute via HTTP endpoint",
             "command": "2 + 2",
             "check": lambda r: r.get("success") and r.get("return_value") == 4,
         },
         {
             "name": "Execute with output",
-            "command": "print('Bridge test'); 42",
+            "command": "print('HTTP test'); 42",
             "check": lambda r: (
                 r.get("success")
-                and "Bridge test" in r.get("stdout", "")
+                and "HTTP test" in r.get("stdout", "")
                 and r.get("return_value") == 42
             ),
         },
@@ -179,7 +199,7 @@ def _run_mcp_bridge() -> bool:
         return False
 
     print(f"\n{'=' * 50}")
-    print(f"Bridge Tests: {passed} passed, {failed} failed")
+    print(f"HTTP Endpoint Tests: {passed} passed, {failed} failed")
     return failed == 0
 
 
@@ -209,12 +229,12 @@ def test_cli_python_command():
 test_cli_python_command = pytest.mark.binja(test_cli_python_command)
 
 
-def test_mcp_bridge():
-    """Test the MCP bridge execute_python_command."""
-    assert _run_mcp_bridge()
+def test_http_python_endpoint():
+    """Test the HTTP execute_python_command endpoint."""
+    assert _run_http_python_endpoint()
 
 
-test_mcp_bridge = pytest.mark.binja(test_mcp_bridge)
+test_http_python_endpoint = pytest.mark.binja(test_http_python_endpoint)
 
 
 def test_interactive_mode():
@@ -234,8 +254,8 @@ def main():
     # Test CLI
     cli_ok = _run_cli_python_command()
 
-    # Test Bridge/HTTP
-    bridge_ok = _run_mcp_bridge()
+    # Test HTTP endpoint
+    http_ok = _run_http_python_endpoint()
 
     # Note about interactive mode
     interactive_ok = _run_interactive_mode()
@@ -243,15 +263,15 @@ def main():
     print(f"\n{'=' * 70}")
     print("Summary:")
     print(f"  CLI Python command: {'✅ Working' if cli_ok else '❌ Failed'}")
-    print(f"  MCP Bridge integration: {'✅ Working' if bridge_ok else '❌ Failed'}")
+    print(f"  HTTP Python endpoint: {'✅ Working' if http_ok else '❌ Failed'}")
     print(f"  Interactive mode: {'✅ Available' if interactive_ok else '❌ Failed'}")
 
-    if cli_ok and bridge_ok:
+    if cli_ok and http_ok:
         print("\n✅ All tests passed! The Python executor integration is working correctly.")
     else:
         print("\n❌ Some tests failed. Please check the implementation.")
 
-    return 0 if (cli_ok and bridge_ok) else 1
+    return 0 if (cli_ok and http_ok) else 1
 
 
 if __name__ == "__main__":

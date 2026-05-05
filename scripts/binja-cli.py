@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Binary Ninja MCP CLI - Command-line interface for Binary Ninja MCP server
-Uses the same HTTP API as the MCP bridge but provides a terminal interface
+Uses the plugin server HTTP API from a terminal interface
 """
 
 import json
@@ -115,8 +115,21 @@ class BinaryNinjaCLI(cli.Application):
     request_timeout = cli.SwitchAttr(
         ["--request-timeout", "-t"],
         float,
-        default=_float_env("BINJA_CLI_TIMEOUT", 5.0),
-        help=("HTTP request timeout in seconds (default: 5; can also set BINJA_CLI_TIMEOUT)"),
+        default=_float_env("BINJA_CLI_TIMEOUT", 120.0),
+        help=(
+            "HTTP action/read timeout in seconds after connection succeeds "
+            "(default: 120; can also set BINJA_CLI_TIMEOUT)"
+        ),
+    )
+
+    connect_timeout = cli.SwitchAttr(
+        ["--connect-timeout"],
+        float,
+        default=_float_env("BINJA_CLI_CONNECT_TIMEOUT", 5.0),
+        help=(
+            "HTTP connection timeout in seconds before failing fast "
+            "(default: 5; can also set BINJA_CLI_CONNECT_TIMEOUT)"
+        ),
     )
 
     no_auto_errors = cli.Flag(
@@ -321,17 +334,24 @@ class BinaryNinjaCLI(cli.Application):
         return views
 
     def _route_discovered_target(self, timeout: float) -> str | None:
-        if not self._discovery_enabled() or not self.target_view_id:
+        if not self.target_view_id:
             return None
 
         instance_id, local_view_id = self._split_global_view_id(self.target_view_id)
         if instance_id:
-            servers = self._discover_servers(timeout=0.25)
-            for server in servers:
-                if server.get("instance_id") == instance_id:
-                    self.server_url = str(server.get("base_url") or self.server_url).rstrip("/")
-                    return local_view_id
-            raise RuntimeError(f"no discovered Binary Ninja MCP instance matches {instance_id!r}")
+            if self._discovery_enabled():
+                servers = self._discover_servers(timeout=0.25)
+                for server in servers:
+                    if server.get("instance_id") == instance_id:
+                        self.server_url = str(server.get("base_url") or self.server_url).rstrip("/")
+                        return local_view_id
+                raise RuntimeError(
+                    f"no discovered Binary Ninja MCP instance matches {instance_id!r}"
+                )
+            return local_view_id
+
+        if not self._discovery_enabled():
+            return None
 
         views = self._get_discovered_views(timeout=timeout)
         raise RuntimeError(
@@ -385,6 +405,27 @@ class BinaryNinjaCLI(cli.Application):
         routed_view_id = self._route_discovered_target(timeout=timeout)
         return routed_view_id
 
+    def _http_timeout(self, read_timeout: float | None = None) -> tuple[float, float]:
+        try:
+            connect_timeout = float(getattr(self, "connect_timeout", 5.0))
+        except (TypeError, ValueError):
+            connect_timeout = 5.0
+        if connect_timeout <= 0.0:
+            connect_timeout = 5.0
+
+        try:
+            action_timeout = (
+                float(getattr(self, "request_timeout", 120.0))
+                if read_timeout is None
+                else float(read_timeout)
+            )
+        except (TypeError, ValueError):
+            action_timeout = 120.0
+        if action_timeout <= 0.0:
+            action_timeout = 120.0
+
+        return connect_timeout, action_timeout
+
     def _request(
         self,
         method: str,
@@ -396,6 +437,7 @@ class BinaryNinjaCLI(cli.Application):
         """Make HTTP request to the server"""
         endpoint_path = self._normalize_endpoint_path(endpoint)
         request_timeout = self.request_timeout if timeout is None else float(timeout)
+        http_timeout = self._http_timeout(request_timeout)
         expected_api_version = self._expected_api_version(endpoint_path)
         strict_selected_filename = None
         strict_selected_view_id = None
@@ -414,14 +456,6 @@ class BinaryNinjaCLI(cli.Application):
             request_data.setdefault("view_id", outgoing_view_id)
         request_params["_api_version"] = expected_api_version
         request_data["_api_version"] = expected_api_version
-        url = f"{self.server_url}/{endpoint.lstrip('/')}"
-
-        if self.verbose:
-            print(f"[{method}] {url}", file=sys.stderr)
-            if request_params:
-                print(f"Params: {request_params}", file=sys.stderr)
-            if request_data:
-                print(f"Data: {request_data}", file=sys.stderr)
 
         try:
             self._require_discovered_view_id_if_needed(endpoint_path, request_timeout)
@@ -432,6 +466,14 @@ class BinaryNinjaCLI(cli.Application):
                     outgoing_view_id = routed_view_id
                     request_params["view_id"] = outgoing_view_id
                     request_data["view_id"] = outgoing_view_id
+            url = f"{self.server_url}/{endpoint.lstrip('/')}"
+            if self.verbose:
+                print(f"[{method}] {url}", file=sys.stderr)
+                if request_params:
+                    print(f"Params: {request_params}", file=sys.stderr)
+                if request_data:
+                    print(f"Data: {request_data}", file=sys.stderr)
+
             targeting_requested = bool(self.target_filename or self.target_view_id)
             enforce_strict_target = bool(
                 self.strict_target or (targeting_requested and not self.allow_target_fallback)
@@ -452,14 +494,14 @@ class BinaryNinjaCLI(cli.Application):
                     url,
                     params=request_params,
                     headers=request_headers,
-                    timeout=request_timeout,
+                    timeout=http_timeout,
                 )
             else:
                 response = requests.post(
                     url,
                     json=request_data,
                     headers=request_headers,
-                    timeout=request_timeout,
+                    timeout=http_timeout,
                 )
 
             response.raise_for_status()
@@ -550,6 +592,29 @@ class BinaryNinjaCLI(cli.Application):
 
             return response_data
 
+        except requests.exceptions.ConnectTimeout:
+            connect_timeout = self._http_timeout(request_timeout)[0]
+            print(
+                colors.red
+                | (
+                    f"Error: Connection to server at {self.server_url} "
+                    f"timed out after {connect_timeout:g}s"
+                ),
+                file=sys.stderr,
+            )
+            print("Make sure the MCP server is running and reachable", file=sys.stderr)
+            sys.exit(1)
+        except requests.exceptions.ReadTimeout:
+            action_timeout = self._http_timeout(request_timeout)[1]
+            print(
+                colors.red
+                | (
+                    f"Error: Request to server at {self.server_url} "
+                    f"timed out after {action_timeout:g}s"
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(1)
         except requests.exceptions.ConnectionError:
             print(
                 colors.red | f"Error: Cannot connect to server at {self.server_url}",
@@ -703,7 +768,7 @@ class BinaryNinjaCLI(cli.Application):
                 "filename": self.target_filename,
             },
             headers={"X-Binja-MCP-Api-Version": str(expected_api_version)},
-            timeout=timeout,
+            timeout=self._http_timeout(timeout),
         )
         response.raise_for_status()
         payload = response.json()
@@ -751,7 +816,7 @@ class BinaryNinjaCLI(cli.Application):
             url,
             params=params,
             headers={"X-Binja-MCP-Api-Version": str(expected_api_version)},
-            timeout=timeout,
+            timeout=self._http_timeout(timeout),
         )
         response.raise_for_status()
         payload = response.json()
