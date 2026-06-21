@@ -137,8 +137,24 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Binja-MCP-Endpoint", path)
         self.end_headers()
 
-    def _send_json_response(self, data: Dict[str, Any], status_code: int = 200):
-        self._set_headers(status_code=status_code)
+    @staticmethod
+    def _is_client_disconnect_error(exc: BaseException) -> bool:
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return True
+        if not isinstance(exc, OSError):
+            return False
+
+        if exc.errno in {errno.EPIPE, errno.ECONNRESET}:
+            return True
+
+        # Windows socket disconnects can surface as generic OSError values.
+        return getattr(exc, "winerror", None) in {10053, 10054, 10058}
+
+    def _mark_client_disconnected(self) -> bool:
+        self.close_connection = True
+        return False
+
+    def _send_json_response(self, data: Dict[str, Any], status_code: int = 200) -> bool:
         path = urllib.parse.urlparse(self.path).path
         version = self._expected_api_version(path)
         if isinstance(data, dict):
@@ -147,7 +163,19 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             payload.setdefault("_api_version", version)
         else:
             payload = data
-        self.wfile.write(json.dumps(payload).encode("utf-8"))
+        response = json.dumps(payload).encode("utf-8")
+
+        try:
+            self._set_headers(status_code=status_code)
+            self.wfile.write(response)
+            flush = getattr(self.wfile, "flush", None)
+            if callable(flush):
+                flush()
+        except OSError as exc:
+            if self._is_client_disconnect_error(exc):
+                return self._mark_client_disconnected()
+            raise
+        return True
 
     def _instance_metadata(self) -> Dict[str, Any]:
         server = getattr(self, "mcp_server", None)
@@ -1333,6 +1361,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response({"error": "Not found"}, 404)
 
         except Exception as e:
+            if self._is_client_disconnect_error(e):
+                self._mark_client_disconnected()
+                return
             bn.log_error(f"Error handling GET request: {e}")
             self._send_json_response({"error": str(e)}, 500)
 
@@ -1898,6 +1929,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json_response({"error": "Not found"}, 404)
         except Exception as e:
+            if self._is_client_disconnect_error(e):
+                self._mark_client_disconnected()
+                return
             bn.log_error(f"Error handling POST request: {e}")
             self._send_json_response({"error": str(e)}, 500)
 
