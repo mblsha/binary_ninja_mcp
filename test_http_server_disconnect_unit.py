@@ -106,6 +106,16 @@ def test_send_json_response_treats_broken_pipe_as_client_disconnect():
     assert handler.responses == [("application/json", 200)]
 
 
+def test_send_json_response_treats_posix_connection_abort_as_client_disconnect():
+    http_server = _import_http_server()
+    handler = _new_handler(http_server, write_exc=OSError(errno.ECONNABORTED, "aborted"))
+
+    sent = handler._send_json_response({"service": "binary_ninja_mcp"})
+
+    assert sent is False
+    assert handler.close_connection is True
+
+
 def test_send_json_response_treats_connection_reset_during_flush_as_disconnect():
     http_server = _import_http_server()
     handler = _new_handler(
