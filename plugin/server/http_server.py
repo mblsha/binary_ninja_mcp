@@ -144,7 +144,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(exc, OSError):
             return False
 
-        if exc.errno in {errno.EPIPE, errno.ECONNRESET}:
+        if exc.errno in {errno.EPIPE, errno.ECONNABORTED, errno.ECONNRESET}:
             return True
 
         # Windows socket disconnects can surface as generic OSError values.
