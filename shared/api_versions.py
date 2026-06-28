@@ -5,6 +5,7 @@ from __future__ import annotations
 DEFAULT_ENDPOINT_API_VERSION = 1
 ENDPOINT_API_VERSION_OVERRIDES = {
     "/ui/open": 2,
+    "/ui/close": 2,
     "/ui/quit": 2,
     "/ui/statusbar": 2,
 }

@@ -7,19 +7,20 @@ import sys
 import unittest
 from pathlib import Path
 
-from shared.api_versions import (
-    DEFAULT_ENDPOINT_API_VERSION,
-    ENDPOINT_API_VERSION_OVERRIDES,
-    UI_CONTRACT_SCHEMA_VERSION,
-    expected_api_version,
-)
-
 THIS_DIR = Path(__file__).resolve().parent
 PLUGIN_DIR = THIS_DIR / "plugin"
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
 if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
+api_versions = importlib.import_module("shared.api_versions")
 api_contracts = importlib.import_module("server.api_contracts")
+
+DEFAULT_ENDPOINT_API_VERSION = api_versions.DEFAULT_ENDPOINT_API_VERSION
+ENDPOINT_API_VERSION_OVERRIDES = api_versions.ENDPOINT_API_VERSION_OVERRIDES
+UI_CONTRACT_SCHEMA_VERSION = api_versions.UI_CONTRACT_SCHEMA_VERSION
+expected_api_version = api_versions.expected_api_version
 
 SNAPSHOT_DIR = THIS_DIR / "tests" / "snapshots" / "ui_contracts"
 
@@ -43,6 +44,21 @@ RAW_CASES = {
             "warnings": ["confirmation dialog still visible"],
             "errors": [],
             "state": {"stuck_confirmation": True},
+            "policy": {"resolved_decision": "dont-save"},
+        },
+    },
+    "ui_close": {
+        "endpoint": "/ui/close",
+        "raw": {
+            "ok": True,
+            "actions": ["close_tab_requested:/tmp/sample.bndb"],
+            "warnings": [],
+            "errors": [],
+            "state": {
+                "selected_tabs": [{"filename": "/tmp/sample.bndb"}],
+                "tabs_after": [],
+                "stuck_confirmation": False,
+            },
             "policy": {"resolved_decision": "dont-save"},
         },
     },
@@ -72,7 +88,7 @@ class TestUIContractSnapshots(unittest.TestCase):
                 self.assertEqual(actual, expected)
 
     def test_ui_contract_shape_and_versions(self):
-        for endpoint in ("/ui/open", "/ui/quit", "/ui/statusbar"):
+        for endpoint in ("/ui/open", "/ui/close", "/ui/quit", "/ui/statusbar"):
             with self.subTest(endpoint=endpoint):
                 self.assertEqual(expected_api_version(endpoint), 2)
                 payload = api_contracts.normalize_ui_contract(endpoint, {"ok": True})

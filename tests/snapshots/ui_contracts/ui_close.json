@@ -1,0 +1,39 @@
+{
+  "ok": true,
+  "schema_version": 1,
+  "endpoint": "/ui/close",
+  "actions": [
+    "close_tab_requested:/tmp/sample.bndb"
+  ],
+  "warnings": [],
+  "errors": [],
+  "state": {
+    "selected_tabs": [
+      {
+        "filename": "/tmp/sample.bndb"
+      }
+    ],
+    "tabs_after": [],
+    "stuck_confirmation": false
+  },
+  "result": {
+    "ok": true,
+    "actions": [
+      "close_tab_requested:/tmp/sample.bndb"
+    ],
+    "warnings": [],
+    "errors": [],
+    "state": {
+      "selected_tabs": [
+        {
+          "filename": "/tmp/sample.bndb"
+        }
+      ],
+      "tabs_after": [],
+      "stuck_confirmation": false
+    },
+    "policy": {
+      "resolved_decision": "dont-save"
+    }
+  }
+}

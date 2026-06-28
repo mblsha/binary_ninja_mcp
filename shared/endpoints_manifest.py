@@ -135,6 +135,12 @@ ENDPOINT_SPECS: tuple[EndpointSpec, ...] = (
     ),
     EndpointSpec(
         "POST",
+        "/ui/close",
+        False,
+        minimal_json={"inspect_only": True, "all": True, "decision": "dont-save", "wait_ms": 0},
+    ),
+    EndpointSpec(
+        "POST",
         "/ui/quit",
         False,
         minimal_json={"inspect_only": True, "decision": "dont-save", "wait_ms": 0},

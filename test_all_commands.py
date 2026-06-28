@@ -15,6 +15,7 @@ CLI_PATH = "scripts/binja-cli.py"
 HTTP_URL = "http://localhost:9009"
 DEFAULT_ENDPOINT_API_VERSION = 1
 ENDPOINT_API_VERSION_OVERRIDES = {
+    "/ui/close": 2,
     "/ui/open": 2,
     "/ui/quit": 2,
     "/ui/statusbar": 2,

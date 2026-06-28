@@ -723,6 +723,188 @@ def test_views_command_falls_back_to_legacy_default_server_when_discovery_empty(
     assert "view-old" in captured.out
 
 
+def test_close_command_local_view_id_feeds_parent_router():
+    app = _new_app()
+    command = object.__new__(binja_cli.Close)
+    command.parent = app
+    command.decision = "dont-save"
+    command.view_id = "inst-a:view-1"
+    command.filename = ""
+    command.all_tabs = False
+    command.except_view_id = ""
+    command.except_filename = ""
+    command.inspect_only = True
+    command.wait_ms = 0
+    command.exec_timeout = 10.0
+
+    observed = {}
+
+    def fake_request(method, endpoint, data=None, timeout=None):
+        observed["parent_view_id"] = app.target_view_id
+        observed["data"] = dict(data or {})
+        return {
+            "ok": True,
+            "schema_version": 1,
+            "endpoint": "/ui/close",
+            "actions": [],
+            "warnings": [],
+            "errors": [],
+            "state": {},
+            "result": {"ok": True, "state": {}, "policy": {"resolved_decision": "dont-save"}},
+        }
+
+    with patch.object(app, "_request", side_effect=fake_request):
+        command.main()
+
+    assert observed["parent_view_id"] == "inst-a:view-1"
+    assert observed["data"]["view_id"] == "inst-a:view-1"
+    assert observed["data"]["wait_ms"] == 0
+    assert app.target_view_id == ""
+
+
+def test_close_all_global_except_view_id_routes_and_sends_local_except():
+    app = _new_app()
+    command = object.__new__(binja_cli.Close)
+    command.parent = app
+    command.decision = "dont-save"
+    command.view_id = ""
+    command.filename = ""
+    command.all_tabs = True
+    command.except_view_id = "inst-a:view-keep"
+    command.except_filename = ""
+    command.inspect_only = True
+    command.wait_ms = 0
+    command.exec_timeout = 10.0
+
+    observed = {}
+
+    def fake_get(url, **kwargs):
+        assert url == "http://localhost:9000/target/resolve"
+        return _FakeResponse(
+            {
+                "resolved": True,
+                "target": {"filename": "/tmp/keep.bndb", "view_id": "view-keep"},
+                "_api_version": 1,
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        observed["url"] = url
+        observed["json"] = dict(kwargs.get("json") or {})
+        return _FakeResponse(
+            {
+                "ok": True,
+                "schema_version": 1,
+                "endpoint": "/ui/close",
+                "actions": [],
+                "warnings": [],
+                "errors": [],
+                "state": {},
+                "result": {
+                    "ok": True,
+                    "state": {},
+                    "policy": {"resolved_decision": "dont-save"},
+                },
+                "_api_version": 2,
+            },
+            api_version=2,
+        )
+
+    with (
+        patch.object(
+            app,
+            "_discover_servers",
+            return_value=[{"instance_id": "inst-a", "base_url": "http://localhost:9000"}],
+        ),
+        patch.object(binja_cli.requests, "get", side_effect=fake_get),
+        patch.object(binja_cli.requests, "post", side_effect=fake_post),
+    ):
+        command.main()
+
+    assert observed["url"] == "http://localhost:9000/ui/close"
+    assert observed["json"]["all"] is True
+    assert observed["json"]["view_id"] == "view-keep"
+    assert observed["json"]["except_view_id"] == "view-keep"
+    assert app.target_view_id == ""
+
+
+def test_close_filename_unique_discovery_match_routes_to_matching_instance():
+    app = _new_app()
+    command = object.__new__(binja_cli.Close)
+    command.parent = app
+    command.decision = "dont-save"
+    command.view_id = ""
+    command.filename = "target.bin"
+    command.all_tabs = False
+    command.except_view_id = ""
+    command.except_filename = ""
+    command.inspect_only = True
+    command.wait_ms = 0
+    command.exec_timeout = 10.0
+
+    observed = {}
+
+    def fake_get(url, **kwargs):
+        assert url == "http://localhost:9001/target/resolve"
+        return _FakeResponse(
+            {
+                "resolved": True,
+                "target": {"filename": "/tmp/target.bin", "view_id": "view-target"},
+                "_api_version": 1,
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        observed["url"] = url
+        observed["json"] = dict(kwargs.get("json") or {})
+        return _FakeResponse(
+            {
+                "ok": True,
+                "schema_version": 1,
+                "endpoint": "/ui/close",
+                "actions": [],
+                "warnings": [],
+                "errors": [],
+                "state": {},
+                "result": {
+                    "ok": True,
+                    "state": {},
+                    "policy": {"resolved_decision": "dont-save"},
+                },
+                "_api_version": 2,
+            },
+            api_version=2,
+        )
+
+    with (
+        patch.object(
+            app,
+            "_get_discovered_views",
+            return_value=[
+                {
+                    "global_view_id": "inst-b:view-target",
+                    "view_id": "view-target",
+                    "filename": "/tmp/target.bin",
+                    "server_url": "http://localhost:9001",
+                }
+            ],
+        ),
+        patch.object(
+            app,
+            "_discover_servers",
+            return_value=[{"instance_id": "inst-b", "base_url": "http://localhost:9001"}],
+        ),
+        patch.object(binja_cli.requests, "get", side_effect=fake_get),
+        patch.object(binja_cli.requests, "post", side_effect=fake_post),
+    ):
+        command.main()
+
+    assert observed["url"] == "http://localhost:9001/ui/close"
+    assert observed["json"]["filename"] == "target.bin"
+    assert observed["json"]["view_id"] == "view-target"
+    assert app.target_view_id == ""
+
+
 def test_allow_target_fallback_disables_default_strict_behavior():
     app = _new_app()
     app.server_url = "http://testserver:9009"

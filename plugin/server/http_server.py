@@ -391,11 +391,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 return
 
             if clear_if_missing:
-                existing = self.binary_ops.current_view
-                keep_existing = (
-                    bool(extract_view_filename(existing)) if existing is not None else False
-                )
-                if not keep_existing:
+                if hasattr(self.binary_ops, "prune_registered_views"):
+                    self.binary_ops.prune_registered_views(ui_views)
+                else:
                     self.binary_ops.current_view = None
         except Exception:
             # UI not available (headless) or API mismatch; ignore.
@@ -432,13 +430,14 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             seen_ids.add(ident)
             views.append(view)
 
-        add_view(self.binary_ops.current_view, source="current")
-
+        ui_views_seen = False
         try:
             import binaryninjaui  # type: ignore
 
             for record in list_ui_view_records(binaryninjaui):
                 ui_view = record.get("view")
+                if ui_view is not None:
+                    ui_views_seen = True
                 try:
                     self.binary_ops.register_view(ui_view)
                 except Exception:
@@ -448,11 +447,15 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     source=str(record.get("source") or "ui"),
                     window_title=str(record.get("window_title") or "") or None,
                 )
+            if ui_views_seen and hasattr(self.binary_ops, "prune_registered_views"):
+                self.binary_ops.prune_registered_views(views)
         except Exception:
             pass
 
-        for view in self.binary_ops.list_registered_views():
-            add_view(view, source="registry")
+        if not ui_views_seen:
+            add_view(self.binary_ops.current_view, source="current")
+            for view in self.binary_ops.list_registered_views():
+                add_view(view, source="registry")
 
         return views, metadata_by_view
 
@@ -612,6 +615,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response(status)
 
             elif path == "/views":
+                self._maybe_refresh_current_view(params, clear_if_missing=True)
                 view_payload_raw: list[dict[str, Any]] = []
                 current_view = self.binary_ops.current_view if self.binary_ops else None
                 current_view_id = extract_view_id(current_view)
@@ -1901,6 +1905,27 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 result = self._normalize_ui_contract(path, raw_result)
                 self._send_json_response(result)
 
+            elif path == "/ui/close":
+                from ..automation.close_tabs import close_tabs_workflow
+
+                raw_result = close_tabs_workflow(
+                    decision=str(params.get("decision") or "auto"),
+                    view_id=str(params.get("view_id") or params.get("viewId") or ""),
+                    filename=str(params.get("filename") or params.get("file") or ""),
+                    all_tabs=self._parse_bool(params.get("all"), False),
+                    except_view_id=str(
+                        params.get("except_view_id") or params.get("exceptViewId") or ""
+                    ),
+                    except_filename=str(
+                        params.get("except_filename") or params.get("exceptFile") or ""
+                    ),
+                    inspect_only=self._parse_bool(params.get("inspect_only"), False),
+                    wait_ms=parse_int_or_default(params.get("wait_ms"), 2000),
+                )
+                self._maybe_refresh_current_view(clear_if_missing=True)
+                result = self._normalize_ui_contract(path, raw_result)
+                self._send_json_response(result)
+
             elif path == "/ui/quit":
                 from ..automation.quit_app import quit_workflow
 
@@ -2008,8 +2033,7 @@ class MCPServer:
                 server_address = (self.config.server.host, port)
                 try:
                     self.server = HTTPServer(server_address, handler_class)
-                    bound_host, bound_port = self.server.server_address[:2]
-                    self.config.server.host = str(bound_host)
+                    _bound_host, bound_port = self.server.server_address[:2]
                     self.config.server.port = int(bound_port)
                     break
                 except OSError as e:
