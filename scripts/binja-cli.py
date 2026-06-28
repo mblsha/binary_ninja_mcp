@@ -2439,7 +2439,14 @@ class Close(cli.Application):
         if self.all_tabs and not route_view_id and except_view_id:
             route_view_id = except_view_id
         if not route_view_id and filename:
-            route_view_id = self._route_view_id_for_filename(filename)
+            try:
+                route_view_id = self._route_view_id_for_filename(filename)
+            except RuntimeError as exc:
+                if self.parent.json_output:
+                    self.parent._output({"error": str(exc)})
+                else:
+                    print(colors.red | f"Error: {exc}", file=sys.stderr)
+                return 2
         except_view_id = local_except_view_id or except_view_id
 
         if not self.all_tabs and not view_id and not filename:
@@ -2485,9 +2492,14 @@ class Close(cli.Application):
             print(colors.yellow | "Close endpoint returned an unexpected payload.")
             return 1
         parsed = self.parent._validate_ui_contract(parsed, "/ui/close")
+        state_for_status = parsed.get("state", {}) if isinstance(parsed.get("state"), dict) else {}
+        ok_for_status = bool(parsed.get("ok"))
+        stuck_for_status = bool(state_for_status.get("stuck_confirmation"))
 
         if self.parent.json_output:
             self.parent._output({"close_result": parsed})
+            if not ok_for_status or stuck_for_status:
+                return 1
             return
 
         details = parsed.get("result", {}) if isinstance(parsed.get("result"), dict) else {}
@@ -2529,6 +2541,8 @@ class Close(cli.Application):
             print(colors.red | "  Errors:")
             for err in errors:
                 print(colors.red | f"    - {err}")
+            return 1
+        if not ok or stuck:
             return 1
 
 
