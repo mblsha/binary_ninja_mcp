@@ -157,7 +157,7 @@ class _FakeSaveDialog:
         self.buttons = [
             _FakeButton("Save", lambda: self._save(finish_close)),
             _FakeButton("Don't Save", lambda: self._dont_save(finish_close)),
-            _FakeButton("Cancel"),
+            _FakeButton("Cancel", self._cancel),
         ]
 
     def _save(self, finish_close):
@@ -167,6 +167,9 @@ class _FakeSaveDialog:
     def _dont_save(self, finish_close):
         self.visible = False
         finish_close()
+
+    def _cancel(self):
+        self.visible = False
 
     def isVisible(self):
         return self.visible
@@ -315,84 +318,13 @@ class TestCloseTabSelection(unittest.TestCase):
         self.assertEqual(result["input"]["wait_ms"], 0)
         self.assertIn("close requires --view-id, --filename, or --all", result["errors"])
 
-    def test_macos_dont_save_shortcut_requires_visible_sheet(self):
-        with (
-            patch.object(close_tabs, "_macos_save_sheet_count", return_value=0),
-            patch.object(close_tabs.subprocess, "run") as run_mock,
-        ):
-            clicked = close_tabs._click_macos_save_sheet("dont-save")
-
-        self.assertFalse(clicked)
-        run_mock.assert_not_called()
-
-    def test_macos_save_sheet_detection_requires_save_prompt_text(self):
+    def test_save_dialog_detection_requires_save_prompt_text(self):
         self.assertTrue(
-            close_tabs._looks_like_macos_save_sheet(
+            close_tabs._looks_like_save_dialog(
                 "Analysis database has been modified Save Don't Save Cancel"
             )
         )
-        self.assertFalse(
-            close_tabs._looks_like_macos_save_sheet("Software Update Available OK Cancel")
-        )
-
-    def test_macos_buttonless_save_prompt_requires_manual_resolution(self):
-        prompt = (
-            "Analysis database for file sample.bndb has been modified. "
-            "Do you want to save it before closing?"
-        )
-
-        self.assertTrue(close_tabs._looks_like_macos_save_prompt(prompt))
-        self.assertFalse(close_tabs._looks_like_macos_save_sheet(prompt))
-        self.assertTrue(close_tabs._looks_like_macos_manual_save_sheet(prompt))
-
-        with patch.object(close_tabs, "_macos_save_sheet_texts", return_value=[prompt]):
-            self.assertEqual(close_tabs._macos_save_sheet_count(), 0)
-            self.assertEqual(close_tabs._macos_manual_save_sheet_count(), 1)
-            self.assertEqual(close_tabs._macos_any_save_sheet_count(), 1)
-
-    def test_macos_sheet_scrape_is_scoped_to_current_process(self):
-        fake_proc = type(
-            "FakeProc",
-            (),
-            {
-                "returncode": 0,
-                "stdout": "Analysis database has been modified Save Don't Save Cancel\n",
-            },
-        )()
-
-        with (
-            patch.object(close_tabs.platform, "system", return_value="Darwin"),
-            patch.object(close_tabs.subprocess, "run", return_value=fake_proc) as run_mock,
-        ):
-            texts = close_tabs._macos_save_sheet_texts(process_id=4242)
-
-        self.assertEqual(
-            texts,
-            ["Analysis database has been modified Save Don't Save Cancel"],
-        )
-        script = run_mock.call_args.args[0][2]
-        self.assertIn("set targetPid to 4242", script)
-        self.assertIn("every process whose unix id is targetPid", script)
-        self.assertNotIn("procNames", script)
-        self.assertNotIn("process (procName as text)", script)
-
-    def test_macos_decision_shortcuts_for_save_dont_save_cancel_are_pid_scoped(self):
-        fake_proc = type("FakeProc", (), {"returncode": 0, "stdout": "sent\n"})()
-
-        with (
-            patch.object(close_tabs, "_current_process_id", return_value=4242),
-            patch.object(close_tabs, "_macos_save_sheet_count", return_value=1),
-            patch.object(close_tabs.subprocess, "run", return_value=fake_proc) as run_mock,
-        ):
-            self.assertTrue(close_tabs._click_macos_save_sheet("save"))
-            self.assertTrue(close_tabs._click_macos_save_sheet("dont-save"))
-            self.assertTrue(close_tabs._click_macos_save_sheet("cancel"))
-
-        scripts = [call.args[0][2] for call in run_mock.call_args_list]
-        self.assertTrue(all("set targetPid to 4242" in script for script in scripts))
-        self.assertIn("key code 36", scripts[0])
-        self.assertIn('keystroke "d" using command down', scripts[1])
-        self.assertIn("key code 53", scripts[2])
+        self.assertFalse(close_tabs._looks_like_save_dialog("Software Update Available OK Cancel"))
 
     def test_qt_save_dialog_detection_requires_modified_prompt_text(self):
         app = _FakeApplication()
@@ -406,10 +338,7 @@ class TestCloseTabSelection(unittest.TestCase):
         dirty = _FakeCloseView("/tmp/dirty.bndb", "view-dirty", modified=True)
         ctx = _FakeContext(app, [dirty])
 
-        with (
-            patch.dict(sys.modules, _fake_ui_modules([ctx])),
-            patch.object(close_tabs, "_macos_save_sheet_count", return_value=0),
-        ):
+        with patch.dict(sys.modules, _fake_ui_modules([ctx])):
             result = close_tabs.close_tabs_workflow(
                 view_id="view-dirty",
                 decision="dont-save",
@@ -429,15 +358,34 @@ class TestCloseTabSelection(unittest.TestCase):
         )
         self.assertEqual(result["state"]["tabs_after"], [])
 
+    def test_close_workflow_cancel_keeps_dirty_tab_without_manual_error(self):
+        app = _FakeApplication()
+        dirty = _FakeCloseView("/tmp/dirty.bndb", "view-dirty", modified=True)
+        ctx = _FakeContext(app, [dirty])
+
+        with patch.dict(sys.modules, _fake_ui_modules([ctx])):
+            result = close_tabs.close_tabs_workflow(
+                view_id="view-dirty",
+                decision="cancel",
+                wait_ms=100,
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([tab.view for tab in ctx.tabs], [dirty])
+        self.assertEqual(ctx.close_calls, ["/tmp/dirty.bndb"])
+        self.assertIn("clicked_confirmation_button:cancel", result["actions"])
+        self.assertEqual(
+            [item["filename"] for item in result["state"]["unclosed_selected_tabs"]],
+            ["/tmp/dirty.bndb"],
+        )
+        self.assertNotIn(close_tabs.MANUAL_CLOSE_RESOLUTION_ERROR, result["errors"])
+
     def test_close_workflow_explicit_missing_target_fails(self):
         app = _FakeApplication()
         visible = _FakeCloseView("/tmp/visible.bndb", "view-visible", modified=True)
         ctx = _FakeContext(app, [visible])
 
-        with (
-            patch.dict(sys.modules, _fake_ui_modules([ctx])),
-            patch.object(close_tabs, "_macos_save_sheet_count", return_value=0),
-        ):
+        with patch.dict(sys.modules, _fake_ui_modules([ctx])):
             result = close_tabs.close_tabs_workflow(
                 view_id="view-missing",
                 decision="dont-save",
@@ -449,7 +397,7 @@ class TestCloseTabSelection(unittest.TestCase):
         self.assertEqual(ctx.close_calls, [])
         self.assertIn("no visible UI tab matched the requested selector", result["errors"])
 
-    def test_close_workflow_reports_manual_macos_sheet_when_buttons_unreadable(self):
+    def test_close_workflow_reports_manual_resolution_when_tab_stays_open(self):
         app = _FakeApplication()
         dirty = _FakeCloseView("/tmp/dirty.bndb", "view-dirty", modified=True)
         ctx = _FakeContext(app, [dirty])
@@ -457,10 +405,6 @@ class TestCloseTabSelection(unittest.TestCase):
         with (
             patch.dict(sys.modules, _fake_ui_modules([ctx])),
             patch.object(close_tabs, "_collect_save_dialogs", return_value=[]),
-            patch.object(close_tabs, "_macos_save_sheet_count", return_value=0),
-            patch.object(close_tabs, "_macos_manual_save_sheet_count", return_value=1),
-            patch.object(close_tabs, "_macos_any_save_sheet_count", return_value=1),
-            patch.object(close_tabs, "_click_macos_save_sheet", return_value=False),
         ):
             result = close_tabs.close_tabs_workflow(
                 view_id="view-dirty",
@@ -470,10 +414,13 @@ class TestCloseTabSelection(unittest.TestCase):
 
         self.assertFalse(result["ok"], result)
         self.assertTrue(result["state"]["stuck_confirmation"])
-        self.assertEqual(result["state"]["macos_manual_sheets_after_action"], 1)
-        self.assertIn(close_tabs.MACOS_MANUAL_SAVE_SHEET_ERROR, result["errors"])
+        self.assertEqual(
+            [item["filename"] for item in result["state"]["unclosed_selected_tabs"]],
+            ["/tmp/dirty.bndb"],
+        )
+        self.assertIn(close_tabs.MANUAL_CLOSE_RESOLUTION_ERROR, result["errors"])
         self.assertFalse(
-            any(action.startswith("sent_macos_") for action in result["actions"]),
+            any(action.startswith("clicked_confirmation_button:") for action in result["actions"]),
             result["actions"],
         )
 
@@ -482,10 +429,7 @@ class TestCloseTabSelection(unittest.TestCase):
         close_me = _FakeCloseView("/tmp/close-me.bndb", "view-close", modified=True)
         ctx = _FakeContext(app, [close_me])
 
-        with (
-            patch.dict(sys.modules, _fake_ui_modules([ctx])),
-            patch.object(close_tabs, "_macos_save_sheet_count", return_value=0),
-        ):
+        with patch.dict(sys.modules, _fake_ui_modules([ctx])):
             result = close_tabs.close_tabs_workflow(
                 all_tabs=True,
                 except_view_id="view-missing",
@@ -504,10 +448,7 @@ class TestCloseTabSelection(unittest.TestCase):
         database = _FakeCloseView("/tmp/db.bndb", "view-db", modified=True)
         ctx = _FakeContext(app, [raw, database])
 
-        with (
-            patch.dict(sys.modules, _fake_ui_modules([ctx])),
-            patch.object(close_tabs, "_macos_save_sheet_count", return_value=0),
-        ):
+        with patch.dict(sys.modules, _fake_ui_modules([ctx])):
             result = close_tabs.close_tabs_workflow(
                 all_tabs=True,
                 decision="auto",
@@ -530,10 +471,7 @@ class TestCloseTabSelection(unittest.TestCase):
         keep_me = _FakeCloseView("/tmp/keep-me.bndb", "view-keep", modified=True)
         ctx = _FakeContext(app, [close_me, keep_me])
 
-        with (
-            patch.dict(sys.modules, _fake_ui_modules([ctx])),
-            patch.object(close_tabs, "_macos_save_sheet_count", return_value=0),
-        ):
+        with patch.dict(sys.modules, _fake_ui_modules([ctx])):
             result = close_tabs.close_tabs_workflow(
                 all_tabs=True,
                 except_view_id="view-keep",
