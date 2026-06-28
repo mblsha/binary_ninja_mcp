@@ -458,9 +458,34 @@ class BinaryNinjaCLI(cli.Application):
         request_data["_api_version"] = expected_api_version
 
         try:
-            self._require_discovered_view_id_if_needed(endpoint_path, request_timeout)
+            skip_discovery_view_requirement = False
+            if (
+                endpoint_path == "/ui/close"
+                and request_data.get("all")
+                and not self.target_view_id
+                and self._discovery_enabled()
+            ):
+                servers = self._discover_servers(timeout=0.25)
+                if len(servers) == 1:
+                    self.server_url = str(servers[0].get("base_url") or self.server_url).rstrip("/")
+                    skip_discovery_view_requirement = True
+                elif len(servers) > 1:
+                    raise RuntimeError(
+                        "close --all found multiple Binary Ninja instances; use --server "
+                        "to select one instance or --view-id to target a specific view.\n"
+                        + self._format_discovered_targets(
+                            self._get_discovered_views(timeout=request_timeout)
+                        )
+                    )
 
-            if endpoint_path not in {"/views", "/meta/instance", "/meta/endpoints"}:
+            if not skip_discovery_view_requirement:
+                self._require_discovered_view_id_if_needed(endpoint_path, request_timeout)
+
+            if not skip_discovery_view_requirement and endpoint_path not in {
+                "/views",
+                "/meta/instance",
+                "/meta/endpoints",
+            }:
                 routed_view_id = self._route_discovered_target(timeout=request_timeout)
                 if routed_view_id:
                     outgoing_view_id = routed_view_id
@@ -1199,7 +1224,7 @@ class BinaryNinjaCLI(cli.Application):
         if direct:
             return direct
 
-        for wrapper_key in ("open_result", "quit_result", "statusbar_result"):
+        for wrapper_key in ("open_result", "close_result", "quit_result", "statusbar_result"):
             wrapped = payload.get(wrapper_key)
             if not isinstance(wrapped, dict):
                 continue
@@ -1226,7 +1251,7 @@ class BinaryNinjaCLI(cli.Application):
         direct = payload.get("selected_view_id")
         if direct is not None:
             return direct
-        for wrapper_key in ("open_result", "quit_result", "statusbar_result"):
+        for wrapper_key in ("open_result", "close_result", "quit_result", "statusbar_result"):
             wrapped = payload.get(wrapper_key)
             if isinstance(wrapped, dict) and wrapped.get("selected_view_id") is not None:
                 return wrapped.get("selected_view_id")
@@ -2258,6 +2283,255 @@ class Open(cli.Application):
             return 1
 
 
+@BinaryNinjaCLI.subcommand("close")
+class Close(cli.Application):
+    """Close visible Binary Ninja UI tabs.
+
+    Examples:
+      close --view-id <id> --decision dont-save
+      close --filename /path/to/file.bndb --decision save
+      close --all --except-view-id <id> --decision dont-save
+    """
+
+    decision = cli.SwitchAttr(
+        ["--decision"],
+        str,
+        default="auto",
+        help="Dirty-file decision: auto, save, dont-save, or cancel.",
+    )
+
+    view_id = cli.SwitchAttr(
+        ["--view-id"],
+        str,
+        default="",
+        help="Close the visible tab matching this BinaryView id.",
+    )
+
+    filename = cli.SwitchAttr(
+        ["--filename", "--file"],
+        str,
+        default="",
+        help="Close the visible tab matching this path or basename.",
+    )
+
+    all_tabs = cli.Flag(
+        ["--all"],
+        help="Close all visible UI tabs, optionally excluding one target.",
+    )
+
+    except_view_id = cli.SwitchAttr(
+        ["--except-view-id"],
+        str,
+        default="",
+        help="When --all is used, keep the visible tab matching this view id.",
+    )
+
+    except_filename = cli.SwitchAttr(
+        ["--except-filename", "--except-file"],
+        str,
+        default="",
+        help="When --all is used, keep the visible tab matching this filename.",
+    )
+
+    inspect_only = cli.Flag(
+        ["--inspect-only"],
+        help="Inspect selected tabs and dialogs only; do not close tabs or click buttons.",
+    )
+
+    wait_ms = cli.SwitchAttr(
+        ["--wait-ms"],
+        int,
+        default=2000,
+        help="Maximum time to wait for each confirmation dialog after close (ms).",
+    )
+
+    exec_timeout = cli.SwitchAttr(
+        ["--exec-timeout"],
+        float,
+        default=120.0,
+        help="UI close request timeout in seconds.",
+    )
+
+    def _print_selector_help(self) -> None:
+        print(colors.yellow | "Close needs a target selector.")
+        print("Use one of:")
+        print("  binja-mcp close --view-id <id> [--decision dont-save]")
+        print("  binja-mcp close --filename <path-or-name> [--decision save]")
+        print("  binja-mcp close --all --except-view-id <id> [--decision dont-save]")
+        print("  binja-mcp --server http://localhost:<port> close --filename <path-or-name>")
+        try:
+            targets = self.parent._get_discovered_views(timeout=0.5)
+        except Exception:
+            targets = []
+        if targets:
+            print("\nVisible views:")
+            for view in targets:
+                view_id = view.get("global_view_id") or view.get("view_id") or "?"
+                filename = view.get("filename") or "<unknown>"
+                print(f"  --view-id {view_id}")
+                print(f"      file: {filename}")
+        else:
+            print("\nNo visible Binary Ninja views were discovered.")
+
+    def _route_view_id_for_filename(self, filename: str) -> str:
+        if not filename or not self.parent._discovery_enabled():
+            return ""
+        try:
+            views = self.parent._get_discovered_views(timeout=0.5)
+        except Exception:
+            return ""
+
+        matches = []
+        for view in views:
+            if not isinstance(view, dict):
+                continue
+            if self.parent._filename_matches_requested(view.get("filename"), filename):
+                matches.append(view)
+
+        if not matches:
+            return ""
+
+        unique_view_ids = []
+        seen = set()
+        for view in matches:
+            global_view_id = view.get("global_view_id") or view.get("view_id")
+            if not global_view_id:
+                continue
+            key = str(global_view_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_view_ids.append(key)
+
+        if len(unique_view_ids) == 1:
+            return unique_view_ids[0]
+
+        raise RuntimeError(
+            f"filename selector {filename!r} matches multiple discovered views; use --view-id.\n"
+            + self.parent._format_discovered_targets(matches)
+        )
+
+    def main(self):
+        decision_in = (self.decision or "auto").strip().lower()
+        valid = {"auto", "save", "dont-save", "dont_save", "cancel"}
+        if decision_in not in valid:
+            print(
+                colors.red
+                | f"Invalid --decision '{self.decision}'. Expected one of: auto, save, dont-save, cancel"
+            )
+            return 1
+        if decision_in == "dont_save":
+            decision_in = "dont-save"
+
+        view_id = self.view_id or self.parent.target_view_id or ""
+        filename = self.filename or self.parent.target_filename or ""
+        except_view_id = self.except_view_id or ""
+        view_instance_id, _local_view_id = self.parent._split_global_view_id(view_id)
+        except_instance_id, local_except_view_id = self.parent._split_global_view_id(except_view_id)
+        if view_instance_id and except_instance_id and view_instance_id != except_instance_id:
+            print(
+                colors.red
+                | "Conflicting close targets: --view-id and --except-view-id refer to different instances."
+            )
+            return 2
+
+        route_view_id = view_id
+        if self.all_tabs and not route_view_id and except_view_id:
+            route_view_id = except_view_id
+        if not route_view_id and filename:
+            route_view_id = self._route_view_id_for_filename(filename)
+        except_view_id = local_except_view_id or except_view_id
+
+        if not self.all_tabs and not view_id and not filename:
+            if self.parent.json_output:
+                self.parent._output(
+                    {
+                        "error": "close requires --view-id, --filename, or --all",
+                        "views": self.parent._get_discovered_views(timeout=0.5),
+                    }
+                )
+            else:
+                self._print_selector_help()
+            return 2
+
+        config = {
+            "decision": decision_in,
+            "view_id": view_id,
+            "filename": filename,
+            "all": bool(self.all_tabs),
+            "except_view_id": except_view_id,
+            "except_filename": self.except_filename or "",
+            "inspect_only": bool(self.inspect_only),
+            "wait_ms": int(2000 if self.wait_ms is None else self.wait_ms),
+        }
+
+        previous_parent_view_id = self.parent.target_view_id
+        previous_parent_filename = self.parent.target_filename
+        if route_view_id:
+            self.parent.target_view_id = route_view_id
+        if filename:
+            self.parent.target_filename = filename
+        try:
+            parsed = self.parent._request(
+                "POST",
+                "ui/close",
+                data=config,
+                timeout=max(self.parent.request_timeout, float(self.exec_timeout or 120.0)),
+            )
+        finally:
+            self.parent.target_view_id = previous_parent_view_id
+            self.parent.target_filename = previous_parent_filename
+        if not isinstance(parsed, dict):
+            print(colors.yellow | "Close endpoint returned an unexpected payload.")
+            return 1
+        parsed = self.parent._validate_ui_contract(parsed, "/ui/close")
+
+        if self.parent.json_output:
+            self.parent._output({"close_result": parsed})
+            return
+
+        details = parsed.get("result", {}) if isinstance(parsed.get("result"), dict) else {}
+        policy = details.get("policy", {}) if isinstance(details.get("policy"), dict) else {}
+        state = details.get("state", {}) if isinstance(details.get("state"), dict) else {}
+        selected = (
+            state.get("selected_tabs") if isinstance(state.get("selected_tabs"), list) else []
+        )
+        remaining = state.get("tabs_after") if isinstance(state.get("tabs_after"), list) else []
+
+        ok = bool(parsed.get("ok"))
+        stuck = bool(state.get("stuck_confirmation"))
+        status_line = (
+            "✓ Close workflow completed"
+            if ok and not stuck
+            else "⚠ Close workflow completed with issues"
+        )
+        color = colors.green if ok and not stuck else colors.yellow
+        print(color | status_line)
+        print(f"  Policy Decision: {policy.get('resolved_decision')}")
+        print(f"  Selected Tabs: {len(selected)}")
+        print(f"  Remaining Tabs: {len(remaining)}")
+        print(f"  Stuck On Confirmation: {stuck}")
+
+        actions = parsed.get("actions", [])
+        if actions:
+            print("  Actions:")
+            for action in actions:
+                print(f"    - {action}")
+
+        warnings = parsed.get("warnings", [])
+        if warnings:
+            print(colors.yellow | "  Warnings:")
+            for warning in warnings:
+                print(colors.yellow | f"    - {warning}")
+
+        errors = parsed.get("errors", [])
+        if errors:
+            print(colors.red | "  Errors:")
+            for err in errors:
+                print(colors.red | f"    - {err}")
+            return 1
+
+
 @BinaryNinjaCLI.subcommand("quit")
 class Quit(cli.Application):
     """Close Binary Ninja windows and auto-answer save confirmation dialogs.
@@ -2326,9 +2600,9 @@ class Quit(cli.Application):
             "decision": decision_in,
             "mark_dirty": bool(self.mark_dirty),
             "inspect_only": bool(self.inspect_only),
-            "wait_ms": int(self.wait_ms or 2000),
+            "wait_ms": int(2000 if self.wait_ms is None else self.wait_ms),
             "quit_app": bool(self.quit_app),
-            "quit_delay_ms": int(self.quit_delay_ms or 300),
+            "quit_delay_ms": int(300 if self.quit_delay_ms is None else self.quit_delay_ms),
         }
 
         parsed = self.parent._request(

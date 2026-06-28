@@ -91,6 +91,24 @@ class TestBinaryOperationsTargetIds(unittest.TestCase):
         self.assertIs(ops.get_registered_view_by_id(expected_view_id), view)
         self.assertIs(ops.get_registered_view_by_id("0x1234"), view)
 
+    def test_prune_registered_views_removes_closed_ui_views(self):
+        helper, module = self._import_modules()
+        ops = module.BinaryOperations(config=object())
+        live = _FakeBinaryView("/tmp/roms/live.bin")
+        stale = _FakeBinaryView("/tmp/roms/stale.bin")
+
+        ops.current_view = stale
+        ops.register_view(live)
+        stale_id = getattr(stale, "_binja_mcp_view_id", None)
+        live_id = getattr(live, "_binja_mcp_view_id", None)
+
+        removed = ops.prune_registered_views([live])
+
+        self.assertGreaterEqual(removed, 1)
+        self.assertIsNone(ops.current_view)
+        self.assertIsNone(ops.get_registered_view_by_id(stale_id))
+        self.assertIs(ops.get_registered_view_by_id(live_id), live)
+
 
 if __name__ == "__main__":
     unittest.main()

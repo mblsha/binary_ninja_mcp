@@ -64,6 +64,10 @@ uv run python scripts/binja-cli.py open /path/to/binary --view-type Mapped --pla
 
 # Close Binary Ninja and auto-answer save confirmation dialogs
 uv run python scripts/binja-cli.py quit
+
+# Close one dirty tab without saving, or close all tabs except one
+uv run python scripts/binja-cli.py close --view-id <id> --decision dont-save
+uv run python scripts/binja-cli.py close --all --except-view-id <id> --decision dont-save
 ```
 
 ## Common Tasks
@@ -73,6 +77,8 @@ uv run python scripts/binja-cli.py quit
 - Work in Python: `uv run python scripts/binja-cli.py python -i` (interactive), or `... python -f script.py`
 - Open a binary robustly: `uv run python scripts/binja-cli.py open <path> [--view-type Mapped] [--platform x86_16]`
   - On Linux, `open` auto-launches Binary Ninja with Wayland defaults when MCP is not reachable.
+- Close visible UI tabs safely: `uv run python scripts/binja-cli.py close --view-id <id> --decision dont-save`
+  - To verify dirty-tab handling manually: open a BNDB, make a small change, run `views`, then run `close --view-id <id> --decision dont-save` and confirm the tab disappears without a save prompt left behind.
 - Close safely without modal prompt stalls: `uv run python scripts/binja-cli.py quit [--decision auto|save|dont-save|cancel]` (auto pre-saves when the loaded target is `.bndb`)
 
 ## Troubleshooting

@@ -28,7 +28,7 @@ FORBIDDEN_CODEPOINTS = {
     0x2069,  # POP DIRECTIONAL ISOLATE
 }
 
-SKIP_DIRS = {".git", ".venv", "__pycache__", ".ruff_cache"}
+SKIP_DIRS = {".git", ".venv", "venv", "__pycache__", ".ruff_cache", "binaryninja-api"}
 
 
 def iter_files(root: Path):

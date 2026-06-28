@@ -149,8 +149,14 @@ def quit_workflow(
     """Close windows/tabs and auto-answer save dialogs."""
 
     decision_in = normalize_decision(decision)
-    wait_ms = max(0, int(wait_ms or 2000))
-    quit_delay_ms = max(0, int(quit_delay_ms or 300))
+    try:
+        wait_ms = max(0, int(2000 if wait_ms is None else wait_ms))
+    except Exception:
+        wait_ms = 2000
+    try:
+        quit_delay_ms = max(0, int(300 if quit_delay_ms is None else quit_delay_ms))
+    except Exception:
+        quit_delay_ms = 300
     # Optional override for main-thread quit workflow completion timeout.
     # Kept separate from dialog wait_ms because pre-save can be significantly slower.
     timeout_override_raw = _unused.get("workflow_timeout_s")

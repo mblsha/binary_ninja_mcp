@@ -172,6 +172,24 @@ class BinaryOperations:
 
         return views
 
+    def prune_registered_views(self, live_views: List[bn.BinaryView]) -> int:
+        """Drop registry entries that do not refer to one of the supplied live views."""
+        live_ids = {id(view) for view in live_views if view is not None}
+        removed = 0
+
+        if self._current_view is not None and id(self._current_view) not in live_ids:
+            self._current_view = None
+            removed += 1
+
+        for mapping in (self._views_by_id, self._views_by_path, self._views_by_basename):
+            for key, ref in list(mapping.items()):
+                view = self._deref_view(ref)
+                if view is None or id(view) not in live_ids:
+                    mapping.pop(key, None)
+                    removed += 1
+
+        return removed
+
     @property
     def current_view(self) -> Optional[bn.BinaryView]:
         return self._current_view
