@@ -989,6 +989,59 @@ def test_close_command_failed_contract_returns_nonzero_without_errors():
     assert rc == 1
 
 
+def test_close_command_prints_manual_resolution_error(capsys):
+    app = _new_app()
+    app.json_output = False
+    command = object.__new__(binja_cli.Close)
+    command.parent = app
+    command.decision = "dont-save"
+    command.view_id = "inst-a:view-1"
+    command.filename = ""
+    command.all_tabs = False
+    command.except_view_id = ""
+    command.except_filename = ""
+    command.inspect_only = False
+    command.wait_ms = 0
+    command.exec_timeout = 10.0
+    manual_error = (
+        "Manual resolution required: Binary Ninja is showing a macOS save confirmation, "
+        "but binja-cli could not safely read its buttons. Select Save, Don't Save, or "
+        "Cancel in Binary Ninja, then retry the command."
+    )
+    payload = {
+        "ok": False,
+        "schema_version": 1,
+        "endpoint": "/ui/close",
+        "actions": ["close_tab_queued:/tmp/a.bndb"],
+        "warnings": [],
+        "errors": [manual_error],
+        "state": {
+            "stuck_confirmation": True,
+            "macos_manual_sheets_after_action": 1,
+            "selected_tabs": [{"filename": "/tmp/a.bndb"}],
+            "tabs_after": [{"filename": "/tmp/a.bndb"}],
+        },
+        "result": {
+            "ok": False,
+            "policy": {"resolved_decision": "dont-save"},
+            "state": {
+                "stuck_confirmation": True,
+                "macos_manual_sheets_after_action": 1,
+                "selected_tabs": [{"filename": "/tmp/a.bndb"}],
+                "tabs_after": [{"filename": "/tmp/a.bndb"}],
+            },
+        },
+    }
+
+    with patch.object(app, "_request", return_value=payload):
+        rc = command.main()
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "Close workflow completed with issues" in captured.out
+    assert manual_error in captured.out
+
+
 def test_close_command_failed_json_contract_returns_nonzero(capsys):
     app = _new_app()
     command = object.__new__(binja_cli.Close)
