@@ -1004,9 +1004,9 @@ def test_close_command_prints_manual_resolution_error(capsys):
     command.wait_ms = 0
     command.exec_timeout = 10.0
     manual_error = (
-        "Manual resolution required: Binary Ninja is showing a macOS save confirmation, "
-        "but binja-cli could not safely read its buttons. Select Save, Don't Save, or "
-        "Cancel in Binary Ninja, then retry the command."
+        "Manual resolution required: Binary Ninja did not close one or more selected tabs, "
+        "and binja-cli did not handle an inspectable Qt save dialog. Resolve any visible "
+        "Binary Ninja prompt manually, then retry the command."
     )
     payload = {
         "ok": False,
@@ -1017,18 +1017,18 @@ def test_close_command_prints_manual_resolution_error(capsys):
         "errors": [manual_error],
         "state": {
             "stuck_confirmation": True,
-            "macos_manual_sheets_after_action": 1,
             "selected_tabs": [{"filename": "/tmp/a.bndb"}],
             "tabs_after": [{"filename": "/tmp/a.bndb"}],
+            "unclosed_selected_tabs": [{"filename": "/tmp/a.bndb"}],
         },
         "result": {
             "ok": False,
             "policy": {"resolved_decision": "dont-save"},
             "state": {
                 "stuck_confirmation": True,
-                "macos_manual_sheets_after_action": 1,
                 "selected_tabs": [{"filename": "/tmp/a.bndb"}],
                 "tabs_after": [{"filename": "/tmp/a.bndb"}],
+                "unclosed_selected_tabs": [{"filename": "/tmp/a.bndb"}],
             },
         },
     }

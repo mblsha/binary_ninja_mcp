@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import platform
-import subprocess
 import threading
 import time
 from typing import Any, Optional
@@ -21,10 +18,10 @@ except Exception:
     bn = None
 
 
-MACOS_MANUAL_SAVE_SHEET_ERROR = (
-    "Manual resolution required: Binary Ninja is showing a macOS save confirmation, "
-    "but binja-cli could not safely read its buttons. Select Save, Don't Save, or "
-    "Cancel in Binary Ninja, then retry the command."
+MANUAL_CLOSE_RESOLUTION_ERROR = (
+    "Manual resolution required: Binary Ninja did not close one or more selected tabs, "
+    "and binja-cli did not handle an inspectable Qt save dialog. Resolve any visible "
+    "Binary Ninja prompt manually, then retry the command."
 )
 
 
@@ -223,6 +220,34 @@ def _select_records(
     return selected, warnings
 
 
+def _looks_like_save_prompt(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if "save" not in lowered:
+        return False
+    return (
+        "modified" in lowered
+        or "changed" in lowered
+        or "do you want to save" in lowered
+        or "save it before closing" in lowered
+        or "save changes" in lowered
+    )
+
+
+def _looks_like_save_dialog(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if not _looks_like_save_prompt(lowered):
+        return False
+    has_discard = (
+        "don't save" in lowered
+        or "dont save" in lowered
+        or "discard" in lowered
+        or "close without saving" in lowered
+        or "close without save" in lowered
+    )
+    has_cancel = "cancel" in lowered
+    return has_discard or has_cancel
+
+
 def _collect_save_dialogs(app: Any) -> list[dict[str, Any]]:
     try:
         from PySide6.QtWidgets import QPushButton
@@ -270,7 +295,7 @@ def _collect_save_dialogs(app: Any) -> list[dict[str, Any]]:
                 pass
         prompt_text_parts.extend(labels)
         prompt_text = " ".join(prompt_text_parts)
-        if _looks_like_macos_save_sheet(prompt_text) and (
+        if _looks_like_save_dialog(prompt_text) and (
             choose_decision_label(labels, "save")
             or choose_decision_label(labels, "dont-save")
             or choose_decision_label(labels, "cancel")
@@ -312,166 +337,6 @@ def _click_save_dialog(app: Any, decision: str) -> bool:
         except Exception:
             continue
     return False
-
-
-def _looks_like_macos_save_prompt(text: str) -> bool:
-    lowered = str(text or "").lower()
-    if "save" not in lowered:
-        return False
-    return (
-        "modified" in lowered
-        or "changed" in lowered
-        or "do you want to save" in lowered
-        or "save it before closing" in lowered
-        or "save changes" in lowered
-    )
-
-
-def _looks_like_macos_save_sheet(text: str) -> bool:
-    lowered = str(text or "").lower()
-    if not _looks_like_macos_save_prompt(lowered):
-        return False
-    has_discard = (
-        "don't save" in lowered
-        or "dont save" in lowered
-        or "discard" in lowered
-        or "close without saving" in lowered
-        or "close without save" in lowered
-    )
-    has_cancel = "cancel" in lowered
-    return has_discard or has_cancel
-
-
-def _looks_like_macos_manual_save_sheet(text: str) -> bool:
-    return _looks_like_macos_save_prompt(text) and not _looks_like_macos_save_sheet(text)
-
-
-def _current_process_id() -> int:
-    try:
-        return int(os.getpid())
-    except Exception:
-        return 0
-
-
-def _macos_save_sheet_texts(process_id: Optional[int] = None) -> list[str]:
-    if platform.system() != "Darwin":
-        return []
-    pid = _current_process_id() if process_id is None else int(process_id or 0)
-    if pid <= 0:
-        return []
-    script = (
-        'tell application "System Events"\n'
-        f"  set targetPid to {pid}\n"
-        "  set outputLines to {}\n"
-        "  set targetProcesses to every process whose unix id is targetPid\n"
-        "  repeat with targetProcess in targetProcesses\n"
-        "    tell targetProcess\n"
-        "      repeat with w in windows\n"
-        "        try\n"
-        "          repeat with s in sheets of w\n"
-        "            set bits to {}\n"
-        "            try\n"
-        "              set end of bits to (name of s as text)\n"
-        "            end try\n"
-        "            try\n"
-        "              set end of bits to ((value of every static text of s) as text)\n"
-        "            end try\n"
-        "            try\n"
-        "              set end of bits to ((name of every button of s) as text)\n"
-        "            end try\n"
-        '            set AppleScript\'s text item delimiters to " "\n'
-        "            set end of outputLines to (bits as text)\n"
-        "          end repeat\n"
-        "        end try\n"
-        "      end repeat\n"
-        "    end tell\n"
-        "  end repeat\n"
-        "  set AppleScript's text item delimiters to linefeed\n"
-        "  return outputLines as text\n"
-        "end tell\n"
-    )
-    try:
-        proc = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=0.75,
-            check=False,
-        )
-        if proc.returncode != 0:
-            return []
-        return [line.strip() for line in str(proc.stdout or "").splitlines() if line.strip()]
-    except Exception:
-        return []
-
-
-def _macos_save_sheet_count(process_id: Optional[int] = None) -> int:
-    return sum(
-        1
-        for text in _macos_save_sheet_texts(process_id=process_id)
-        if _looks_like_macos_save_sheet(text)
-    )
-
-
-def _macos_manual_save_sheet_count(process_id: Optional[int] = None) -> int:
-    return sum(
-        1
-        for text in _macos_save_sheet_texts(process_id=process_id)
-        if _looks_like_macos_manual_save_sheet(text)
-    )
-
-
-def _macos_any_save_sheet_count(process_id: Optional[int] = None) -> int:
-    texts = _macos_save_sheet_texts(process_id=process_id)
-    return sum(
-        1
-        for text in texts
-        if _looks_like_macos_save_sheet(text) or _looks_like_macos_manual_save_sheet(text)
-    )
-
-
-def _macos_decision_shortcut(decision: str) -> Optional[str]:
-    decision_in = normalize_decision(decision)
-    if decision_in == "save":
-        return "key code 36"
-    if decision_in == "dont-save":
-        return 'keystroke "d" using command down'
-    if decision_in == "cancel":
-        return "key code 53"
-    return None
-
-
-def _click_macos_save_sheet(decision: str) -> bool:
-    shortcut = _macos_decision_shortcut(decision)
-    if not shortcut:
-        return False
-    pid = _current_process_id()
-    if pid <= 0:
-        return False
-    if _macos_save_sheet_count(process_id=pid) <= 0:
-        return False
-    script = (
-        'tell application "System Events"\n'
-        f"  set targetPid to {pid}\n"
-        "  set targetProcesses to every process whose unix id is targetPid\n"
-        '  if (count of targetProcesses) is 0 then return "missing-process"\n'
-        "  set frontmost of item 1 of targetProcesses to true\n"
-        "  delay 0.05\n"
-        f"  {shortcut}\n"
-        '  return "sent"\n'
-        "end tell\n"
-    )
-    try:
-        proc = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=0.75,
-            check=False,
-        )
-        return proc.returncode == 0
-    except Exception:
-        return False
 
 
 def _queue_close_tab(qtimer_cls: Any, ctx: Any, tab: Any) -> bool:
@@ -523,6 +388,7 @@ def close_tabs_workflow(
             "selected_tabs": [],
             "dialogs_before_action": [],
             "dialogs_after_action": [],
+            "unclosed_selected_tabs": [],
             "stuck_confirmation": False,
         },
         "actions": [],
@@ -552,6 +418,31 @@ def close_tabs_workflow(
             "context_index": record.get("context_index"),
             "tab_index": record.get("tab_index"),
         }
+
+    def same_visible_tab(left: dict[str, Any], right: dict[str, Any]) -> bool:
+        left_view_id = _coerce_text(left.get("view_id"))
+        right_view_id = _coerce_text(right.get("view_id"))
+        if left_view_id and right_view_id and left_view_id == right_view_id:
+            return True
+        left_filename = _coerce_text(left.get("filename"))
+        right_filename = _coerce_text(right.get("filename"))
+        return bool(left_filename and right_filename and left_filename == right_filename)
+
+    def remaining_selected_records(
+        selected_records: list[dict[str, Any]],
+        visible_records_after: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        remaining = []
+        for selected_record in selected_records:
+            if any(same_visible_tab(selected_record, after) for after in visible_records_after):
+                remaining.append(selected_record)
+        return remaining
+
+    def expected_cancel_result() -> bool:
+        selected_decisions = result["policy"].get("selected_tab_decisions")
+        if not isinstance(selected_decisions, list) or not selected_decisions:
+            return False
+        return all(item.get("resolved_decision") == "cancel" for item in selected_decisions)
 
     def _runner() -> dict[str, Any]:
         app = QApplication.instance()
@@ -603,8 +494,8 @@ def close_tabs_workflow(
         else:
             result["policy"]["resolved_decision"] = decision_in
 
+        click_count = {"count": 0}
         if not inspect_only:
-            click_count = {"count": 0}
             current_decision = {"value": decision_in}
             timer = QTimer()
             timer.setInterval(30)
@@ -615,9 +506,6 @@ def close_tabs_workflow(
                     if _click_save_dialog(app, resolved):
                         click_count["count"] += 1
                         result["actions"].append(f"clicked_confirmation_button:{resolved}")
-                    elif _click_macos_save_sheet(resolved):
-                        click_count["count"] += 1
-                        result["actions"].append(f"sent_macos_{resolved}_shortcut")
                 except Exception:
                     return
 
@@ -654,7 +542,7 @@ def close_tabs_workflow(
                     quiet_cycles = 0
                     while time.time() < deadline:
                         app.processEvents()
-                        if _collect_save_dialogs(app) or _macos_any_save_sheet_count() > 0:
+                        if _collect_save_dialogs(app):
                             quiet_cycles = 0
                         else:
                             quiet_cycles += 1
@@ -665,7 +553,7 @@ def close_tabs_workflow(
                 deadline = time.time() + (wait_ms / 1000.0)
                 while time.time() < deadline:
                     app.processEvents()
-                    if not _collect_save_dialogs(app) and _macos_any_save_sheet_count() <= 0:
+                    if not _collect_save_dialogs(app):
                         break
                     time.sleep(0.03)
             finally:
@@ -680,15 +568,21 @@ def close_tabs_workflow(
         result["state"]["dialogs_after_action"] = [
             {k: v for k, v in dialog.items() if k != "_widget"} for dialog in dialogs_after
         ]
-        macos_sheets_after = _macos_save_sheet_count()
-        macos_manual_sheets_after = _macos_manual_save_sheet_count()
-        result["state"]["macos_sheets_after_action"] = macos_sheets_after
-        result["state"]["macos_manual_sheets_after_action"] = macos_manual_sheets_after
-        result["state"]["stuck_confirmation"] = (
-            bool(dialogs_after) or macos_sheets_after > 0 or macos_manual_sheets_after > 0
+        unclosed_selected = remaining_selected_records(selected, records_after)
+        result["state"]["unclosed_selected_tabs"] = [
+            summarize(record) for record in unclosed_selected
+        ]
+        expected_cancel_unclosed = (
+            expected_cancel_result()
+            and click_count.get("count", 0) > 0
+            and all(bool(record.get("modified")) for record in unclosed_selected)
         )
-        if macos_manual_sheets_after > 0 and MACOS_MANUAL_SAVE_SHEET_ERROR not in result["errors"]:
-            result["errors"].append(MACOS_MANUAL_SAVE_SHEET_ERROR)
+        unhandled_unclosed = (
+            (not inspect_only) and bool(unclosed_selected) and not expected_cancel_unclosed
+        )
+        result["state"]["stuck_confirmation"] = bool(dialogs_after) or unhandled_unclosed
+        if unhandled_unclosed and MANUAL_CLOSE_RESOLUTION_ERROR not in result["errors"]:
+            result["errors"].append(MANUAL_CLOSE_RESOLUTION_ERROR)
         if result["state"]["stuck_confirmation"]:
             result["ok"] = False
         if result["errors"]:
@@ -739,7 +633,8 @@ def close_tabs_workflow(
             if not finished.wait(wait_timeout_s):
                 result["ok"] = False
                 result["errors"].append(
-                    f"close workflow timed out after {wait_timeout_s:.1f}s on main thread"
+                    f"{MANUAL_CLOSE_RESOLUTION_ERROR} "
+                    f"The close workflow timed out after {wait_timeout_s:.1f}s on the main thread."
                 )
                 return result
             if state["exception"] is not None:
