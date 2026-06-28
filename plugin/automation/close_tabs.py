@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+import os
 import subprocess
 import threading
 import time
@@ -328,36 +329,45 @@ def _looks_like_macos_save_sheet(text: str) -> bool:
     return (has_discard or has_cancel) and has_modified_context
 
 
-def _macos_save_sheet_texts() -> list[str]:
+def _current_process_id() -> int:
+    try:
+        return int(os.getpid())
+    except Exception:
+        return 0
+
+
+def _macos_save_sheet_texts(process_id: Optional[int] = None) -> list[str]:
     if platform.system() != "Darwin":
+        return []
+    pid = _current_process_id() if process_id is None else int(process_id or 0)
+    if pid <= 0:
         return []
     script = (
         'tell application "System Events"\n'
-        '  set procNames to {"Binary Ninja", "binaryninja"}\n'
+        f"  set targetPid to {pid}\n"
         "  set outputLines to {}\n"
-        "  repeat with procName in procNames\n"
-        "    if exists process (procName as text) then\n"
-        "      tell process (procName as text)\n"
-        "        repeat with w in windows\n"
-        "          try\n"
-        "            repeat with s in sheets of w\n"
-        "              set bits to {}\n"
-        "              try\n"
-        "                set end of bits to (name of s as text)\n"
-        "              end try\n"
-        "              try\n"
-        "                set end of bits to ((value of every static text of s) as text)\n"
-        "              end try\n"
-        "              try\n"
-        "                set end of bits to ((name of every button of s) as text)\n"
-        "              end try\n"
-        '              set AppleScript\'s text item delimiters to " "\n'
-        "              set end of outputLines to (bits as text)\n"
-        "            end repeat\n"
-        "          end try\n"
-        "        end repeat\n"
-        "      end tell\n"
-        "    end if\n"
+        "  set targetProcesses to every process whose unix id is targetPid\n"
+        "  repeat with targetProcess in targetProcesses\n"
+        "    tell targetProcess\n"
+        "      repeat with w in windows\n"
+        "        try\n"
+        "          repeat with s in sheets of w\n"
+        "            set bits to {}\n"
+        "            try\n"
+        "              set end of bits to (name of s as text)\n"
+        "            end try\n"
+        "            try\n"
+        "              set end of bits to ((value of every static text of s) as text)\n"
+        "            end try\n"
+        "            try\n"
+        "              set end of bits to ((name of every button of s) as text)\n"
+        "            end try\n"
+        '            set AppleScript\'s text item delimiters to " "\n'
+        "            set end of outputLines to (bits as text)\n"
+        "          end repeat\n"
+        "        end try\n"
+        "      end repeat\n"
+        "    end tell\n"
         "  end repeat\n"
         "  set AppleScript's text item delimiters to linefeed\n"
         "  return outputLines as text\n"
@@ -378,18 +388,44 @@ def _macos_save_sheet_texts() -> list[str]:
         return []
 
 
-def _macos_save_sheet_count() -> int:
-    return sum(1 for text in _macos_save_sheet_texts() if _looks_like_macos_save_sheet(text))
+def _macos_save_sheet_count(process_id: Optional[int] = None) -> int:
+    return sum(
+        1
+        for text in _macos_save_sheet_texts(process_id=process_id)
+        if _looks_like_macos_save_sheet(text)
+    )
+
+
+def _macos_decision_shortcut(decision: str) -> Optional[str]:
+    decision_in = normalize_decision(decision)
+    if decision_in == "save":
+        return "key code 36"
+    if decision_in == "dont-save":
+        return 'keystroke "d" using command down'
+    if decision_in == "cancel":
+        return "key code 53"
+    return None
 
 
 def _click_macos_save_sheet(decision: str) -> bool:
-    if normalize_decision(decision) != "dont-save":
+    shortcut = _macos_decision_shortcut(decision)
+    if not shortcut:
         return False
-    if _macos_save_sheet_count() <= 0:
+    pid = _current_process_id()
+    if pid <= 0:
+        return False
+    if _macos_save_sheet_count(process_id=pid) <= 0:
         return False
     script = (
-        'tell application "Binary Ninja" to activate\n'
-        'tell application "System Events" to keystroke "d" using command down\n'
+        'tell application "System Events"\n'
+        f"  set targetPid to {pid}\n"
+        "  set targetProcesses to every process whose unix id is targetPid\n"
+        '  if (count of targetProcesses) is 0 then return "missing-process"\n'
+        "  set frontmost of item 1 of targetProcesses to true\n"
+        "  delay 0.05\n"
+        f"  {shortcut}\n"
+        '  return "sent"\n'
+        "end tell\n"
     )
     try:
         proc = subprocess.run(
@@ -547,7 +583,7 @@ def close_tabs_workflow(
                         result["actions"].append(f"clicked_confirmation_button:{resolved}")
                     elif _click_macos_save_sheet(resolved):
                         click_count["count"] += 1
-                        result["actions"].append("sent_macos_dont_save_shortcut")
+                        result["actions"].append(f"sent_macos_{resolved}_shortcut")
                 except Exception:
                     return
 

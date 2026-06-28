@@ -905,6 +905,126 @@ def test_close_filename_unique_discovery_match_routes_to_matching_instance():
     assert app.target_view_id == ""
 
 
+def test_close_filename_ambiguous_discovery_match_returns_structured_error(capsys):
+    app = _new_app()
+    command = object.__new__(binja_cli.Close)
+    command.parent = app
+    command.decision = "dont-save"
+    command.view_id = ""
+    command.filename = "target.bin"
+    command.all_tabs = False
+    command.except_view_id = ""
+    command.except_filename = ""
+    command.inspect_only = True
+    command.wait_ms = 0
+    command.exec_timeout = 10.0
+
+    with patch.object(
+        app,
+        "_get_discovered_views",
+        return_value=[
+            {
+                "global_view_id": "inst-a:view-1",
+                "view_id": "view-1",
+                "filename": "/a/target.bin",
+                "server_url": "http://localhost:9000",
+            },
+            {
+                "global_view_id": "inst-b:view-2",
+                "view_id": "view-2",
+                "filename": "/b/target.bin",
+                "server_url": "http://localhost:9001",
+            },
+        ],
+    ):
+        rc = command.main()
+
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert "matches multiple discovered views" in payload["error"]
+    assert "inst-a:view-1" in payload["error"]
+    assert "inst-b:view-2" in payload["error"]
+
+
+def test_close_command_failed_contract_returns_nonzero_without_errors():
+    app = _new_app()
+    app.json_output = False
+    command = object.__new__(binja_cli.Close)
+    command.parent = app
+    command.decision = "dont-save"
+    command.view_id = "inst-a:view-1"
+    command.filename = ""
+    command.all_tabs = False
+    command.except_view_id = ""
+    command.except_filename = ""
+    command.inspect_only = False
+    command.wait_ms = 0
+    command.exec_timeout = 10.0
+    payload = {
+        "ok": False,
+        "schema_version": 1,
+        "endpoint": "/ui/close",
+        "actions": ["close_tab_queued:/tmp/a.bndb"],
+        "warnings": ["confirmation still visible"],
+        "errors": [],
+        "state": {
+            "stuck_confirmation": True,
+            "selected_tabs": [{"filename": "/tmp/a.bndb"}],
+            "tabs_after": [{"filename": "/tmp/a.bndb"}],
+        },
+        "result": {
+            "ok": False,
+            "policy": {"resolved_decision": "dont-save"},
+            "state": {
+                "stuck_confirmation": True,
+                "selected_tabs": [{"filename": "/tmp/a.bndb"}],
+                "tabs_after": [{"filename": "/tmp/a.bndb"}],
+            },
+        },
+    }
+
+    with patch.object(app, "_request", return_value=payload):
+        rc = command.main()
+
+    assert rc == 1
+
+
+def test_close_command_failed_json_contract_returns_nonzero(capsys):
+    app = _new_app()
+    command = object.__new__(binja_cli.Close)
+    command.parent = app
+    command.decision = "dont-save"
+    command.view_id = "inst-a:view-1"
+    command.filename = ""
+    command.all_tabs = False
+    command.except_view_id = ""
+    command.except_filename = ""
+    command.inspect_only = False
+    command.wait_ms = 0
+    command.exec_timeout = 10.0
+    payload = {
+        "ok": False,
+        "schema_version": 1,
+        "endpoint": "/ui/close",
+        "actions": [],
+        "warnings": [],
+        "errors": [],
+        "state": {"stuck_confirmation": False},
+        "result": {
+            "ok": False,
+            "policy": {"resolved_decision": "dont-save"},
+            "state": {"stuck_confirmation": False},
+        },
+    }
+
+    with patch.object(app, "_request", return_value=payload):
+        rc = command.main()
+
+    assert rc == 1
+    payload_out = json.loads(capsys.readouterr().out)
+    assert payload_out["close_result"]["ok"] is False
+
+
 def test_allow_target_fallback_disables_default_strict_behavior():
     app = _new_app()
     app.server_url = "http://testserver:9009"

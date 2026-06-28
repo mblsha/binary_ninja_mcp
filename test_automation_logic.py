@@ -335,6 +335,50 @@ class TestCloseTabSelection(unittest.TestCase):
             close_tabs._looks_like_macos_save_sheet("Software Update Available OK Cancel")
         )
 
+    def test_macos_sheet_scrape_is_scoped_to_current_process(self):
+        fake_proc = type(
+            "FakeProc",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "Analysis database has been modified Save Don't Save Cancel\n",
+            },
+        )()
+
+        with (
+            patch.object(close_tabs.platform, "system", return_value="Darwin"),
+            patch.object(close_tabs.subprocess, "run", return_value=fake_proc) as run_mock,
+        ):
+            texts = close_tabs._macos_save_sheet_texts(process_id=4242)
+
+        self.assertEqual(
+            texts,
+            ["Analysis database has been modified Save Don't Save Cancel"],
+        )
+        script = run_mock.call_args.args[0][2]
+        self.assertIn("set targetPid to 4242", script)
+        self.assertIn("every process whose unix id is targetPid", script)
+        self.assertNotIn("procNames", script)
+        self.assertNotIn("process (procName as text)", script)
+
+    def test_macos_decision_shortcuts_for_save_dont_save_cancel_are_pid_scoped(self):
+        fake_proc = type("FakeProc", (), {"returncode": 0, "stdout": "sent\n"})()
+
+        with (
+            patch.object(close_tabs, "_current_process_id", return_value=4242),
+            patch.object(close_tabs, "_macos_save_sheet_count", return_value=1),
+            patch.object(close_tabs.subprocess, "run", return_value=fake_proc) as run_mock,
+        ):
+            self.assertTrue(close_tabs._click_macos_save_sheet("save"))
+            self.assertTrue(close_tabs._click_macos_save_sheet("dont-save"))
+            self.assertTrue(close_tabs._click_macos_save_sheet("cancel"))
+
+        scripts = [call.args[0][2] for call in run_mock.call_args_list]
+        self.assertTrue(all("set targetPid to 4242" in script for script in scripts))
+        self.assertIn("key code 36", scripts[0])
+        self.assertIn('keystroke "d" using command down', scripts[1])
+        self.assertIn("key code 53", scripts[2])
+
     def test_qt_save_dialog_detection_requires_modified_prompt_text(self):
         app = _FakeApplication()
         app.dialogs.append(_FakeSaveDialog(lambda: None, title="Software Update Available"))
