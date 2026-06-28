@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import platform
 import os
+import platform
 import subprocess
 import threading
 import time
@@ -19,6 +19,13 @@ try:
     import binaryninja as bn
 except Exception:
     bn = None
+
+
+MACOS_MANUAL_SAVE_SHEET_ERROR = (
+    "Manual resolution required: Binary Ninja is showing a macOS save confirmation, "
+    "but binja-cli could not safely read its buttons. Select Save, Don't Save, or "
+    "Cancel in Binary Ninja, then retry the command."
+)
 
 
 def _coerce_text(value: Any) -> Optional[str]:
@@ -307,9 +314,22 @@ def _click_save_dialog(app: Any, decision: str) -> bool:
     return False
 
 
-def _looks_like_macos_save_sheet(text: str) -> bool:
+def _looks_like_macos_save_prompt(text: str) -> bool:
     lowered = str(text or "").lower()
     if "save" not in lowered:
+        return False
+    return (
+        "modified" in lowered
+        or "changed" in lowered
+        or "do you want to save" in lowered
+        or "save it before closing" in lowered
+        or "save changes" in lowered
+    )
+
+
+def _looks_like_macos_save_sheet(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if not _looks_like_macos_save_prompt(lowered):
         return False
     has_discard = (
         "don't save" in lowered
@@ -319,14 +339,11 @@ def _looks_like_macos_save_sheet(text: str) -> bool:
         or "close without save" in lowered
     )
     has_cancel = "cancel" in lowered
-    has_modified_context = (
-        "modified" in lowered
-        or "changed" in lowered
-        or "do you want to save" in lowered
-        or "save it before closing" in lowered
-        or "save changes" in lowered
-    )
-    return (has_discard or has_cancel) and has_modified_context
+    return has_discard or has_cancel
+
+
+def _looks_like_macos_manual_save_sheet(text: str) -> bool:
+    return _looks_like_macos_save_prompt(text) and not _looks_like_macos_save_sheet(text)
 
 
 def _current_process_id() -> int:
@@ -393,6 +410,23 @@ def _macos_save_sheet_count(process_id: Optional[int] = None) -> int:
         1
         for text in _macos_save_sheet_texts(process_id=process_id)
         if _looks_like_macos_save_sheet(text)
+    )
+
+
+def _macos_manual_save_sheet_count(process_id: Optional[int] = None) -> int:
+    return sum(
+        1
+        for text in _macos_save_sheet_texts(process_id=process_id)
+        if _looks_like_macos_manual_save_sheet(text)
+    )
+
+
+def _macos_any_save_sheet_count(process_id: Optional[int] = None) -> int:
+    texts = _macos_save_sheet_texts(process_id=process_id)
+    return sum(
+        1
+        for text in texts
+        if _looks_like_macos_save_sheet(text) or _looks_like_macos_manual_save_sheet(text)
     )
 
 
@@ -620,7 +654,7 @@ def close_tabs_workflow(
                     quiet_cycles = 0
                     while time.time() < deadline:
                         app.processEvents()
-                        if _collect_save_dialogs(app) or _macos_save_sheet_count() > 0:
+                        if _collect_save_dialogs(app) or _macos_any_save_sheet_count() > 0:
                             quiet_cycles = 0
                         else:
                             quiet_cycles += 1
@@ -631,7 +665,7 @@ def close_tabs_workflow(
                 deadline = time.time() + (wait_ms / 1000.0)
                 while time.time() < deadline:
                     app.processEvents()
-                    if not _collect_save_dialogs(app) and _macos_save_sheet_count() <= 0:
+                    if not _collect_save_dialogs(app) and _macos_any_save_sheet_count() <= 0:
                         break
                     time.sleep(0.03)
             finally:
@@ -647,8 +681,14 @@ def close_tabs_workflow(
             {k: v for k, v in dialog.items() if k != "_widget"} for dialog in dialogs_after
         ]
         macos_sheets_after = _macos_save_sheet_count()
+        macos_manual_sheets_after = _macos_manual_save_sheet_count()
         result["state"]["macos_sheets_after_action"] = macos_sheets_after
-        result["state"]["stuck_confirmation"] = bool(dialogs_after) or macos_sheets_after > 0
+        result["state"]["macos_manual_sheets_after_action"] = macos_manual_sheets_after
+        result["state"]["stuck_confirmation"] = (
+            bool(dialogs_after) or macos_sheets_after > 0 or macos_manual_sheets_after > 0
+        )
+        if macos_manual_sheets_after > 0 and MACOS_MANUAL_SAVE_SHEET_ERROR not in result["errors"]:
+            result["errors"].append(MACOS_MANUAL_SAVE_SHEET_ERROR)
         if result["state"]["stuck_confirmation"]:
             result["ok"] = False
         if result["errors"]:
