@@ -150,6 +150,18 @@ class _FakeButton:
             self.on_click()
 
 
+class _FakeEnum:
+    def __init__(self, name):
+        self.name = name
+
+    def __str__(self):
+        return f"StandardButton.{self.name}"
+
+
+class _FakeQDialogButtonBox:
+    pass
+
+
 class _FakeSaveDialog:
     def __init__(self, finish_close, *, title="Analysis database has been modified"):
         self.visible = True
@@ -181,6 +193,35 @@ class _FakeSaveDialog:
         if cls is _FakeButton:
             return self.buttons
         return []
+
+
+class _FakeMessageBox(_FakeSaveDialog):
+    def __init__(
+        self,
+        finish_close,
+        *,
+        title="Analysis database has been modified. Do you want to save changes?",
+        button_labels=None,
+    ):
+        super().__init__(finish_close, title=title)
+        labels = button_labels or {
+            "Save": "Save",
+            "Discard": "Don't Save",
+            "Cancel": "Cancel",
+        }
+        self.buttons = [
+            _FakeButton(labels["Save"], lambda: self._save(finish_close)),
+            _FakeButton(labels["Discard"], lambda: self._dont_save(finish_close)),
+            _FakeButton(labels["Cancel"], self._cancel),
+        ]
+        self._standards_by_button = {
+            self.buttons[0]: _FakeEnum("Save"),
+            self.buttons[1]: _FakeEnum("Discard"),
+            self.buttons[2]: _FakeEnum("Cancel"),
+        }
+
+    def standardButton(self, button):
+        return self._standards_by_button.get(button, _FakeEnum("NoButton"))
 
 
 class _FakeApplication:
@@ -271,6 +312,8 @@ def _fake_ui_modules(contexts):
     qtcore.QTimer = _FakeQTimer
     qtwidgets.QApplication = _FakeApplication
     qtwidgets.QPushButton = _FakeButton
+    qtwidgets.QDialogButtonBox = _FakeQDialogButtonBox
+    qtwidgets.QMessageBox = _FakeMessageBox
     binaryninjaui.UIContext = _FakeUIContext
     return {
         "PySide6": pyside,
@@ -320,11 +363,32 @@ class TestCloseTabSelection(unittest.TestCase):
 
     def test_save_dialog_detection_requires_save_prompt_text(self):
         self.assertTrue(
-            close_tabs._looks_like_save_dialog(
-                "Analysis database has been modified Save Don't Save Cancel"
+            close_tabs._looks_like_save_prompt(
+                "Analysis database has been modified. Do you want to save it before closing?"
             )
         )
-        self.assertFalse(close_tabs._looks_like_save_dialog("Software Update Available OK Cancel"))
+        self.assertFalse(close_tabs._looks_like_save_prompt("Software Update Available OK Cancel"))
+
+    def test_qmessagebox_standard_button_enum_is_used_before_text(self):
+        app = _FakeApplication()
+        dialog = _FakeMessageBox(
+            lambda: None,
+            button_labels={
+                "Save": "Alpha",
+                "Discard": "Beta",
+                "Cancel": "Gamma",
+            },
+        )
+        app.dialogs.append(dialog)
+
+        with patch.dict(sys.modules, _fake_ui_modules([])):
+            dialogs = close_tabs._collect_save_dialogs(app)
+            clicked = close_tabs._click_save_dialog(app, "dont-save")
+
+        self.assertEqual(dialogs[0]["buttons"][1]["standard_buttons"], ["Discard"])
+        self.assertTrue(clicked)
+        self.assertTrue(dialog.buttons[1].clicked)
+        self.assertFalse(dialog.visible)
 
     def test_qt_save_dialog_detection_requires_modified_prompt_text(self):
         app = _FakeApplication()
