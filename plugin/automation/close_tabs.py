@@ -233,24 +233,54 @@ def _looks_like_save_prompt(text: str) -> bool:
     )
 
 
-def _looks_like_save_dialog(text: str) -> bool:
-    lowered = str(text or "").lower()
-    if not _looks_like_save_prompt(lowered):
-        return False
-    has_discard = (
-        "don't save" in lowered
-        or "dont save" in lowered
-        or "discard" in lowered
-        or "close without saving" in lowered
-        or "close without save" in lowered
-    )
-    has_cancel = "cancel" in lowered
-    return has_discard or has_cancel
+_DECISION_STANDARD_BUTTONS = {
+    "save": {"Save"},
+    "dont-save": {"Discard", "No", "NoToAll"},
+    "cancel": {"Cancel"},
+}
+
+
+def _qt_enum_name(value: Any) -> str:
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name
+    text = str(value or "")
+    if "." in text:
+        return text.rsplit(".", 1)[-1]
+    return text
+
+
+def _decision_standard_button_names(decision: str) -> set[str]:
+    return set(_DECISION_STANDARD_BUTTONS.get(normalize_decision(decision), set()))
+
+
+def _button_standard_names(
+    widget: Any,
+    button: Any,
+    qmessagebox_cls: Any,
+    qdialog_button_box_cls: Any,
+) -> set[str]:
+    names: set[str] = set()
+    try:
+        if qmessagebox_cls is not None and isinstance(widget, qmessagebox_cls):
+            names.add(_qt_enum_name(widget.standardButton(button)))
+    except Exception:
+        pass
+    try:
+        boxes = widget.findChildren(qdialog_button_box_cls) if qdialog_button_box_cls else []
+    except Exception:
+        boxes = []
+    for box in boxes:
+        try:
+            names.add(_qt_enum_name(box.standardButton(button)))
+        except Exception:
+            pass
+    return {name for name in names if name and name != "NoButton"}
 
 
 def _collect_save_dialogs(app: Any) -> list[dict[str, Any]]:
     try:
-        from PySide6.QtWidgets import QPushButton
+        from PySide6.QtWidgets import QDialogButtonBox, QMessageBox, QPushButton
     except Exception:
         return []
     try:
@@ -275,12 +305,27 @@ def _collect_save_dialogs(app: Any) -> list[dict[str, Any]]:
                 if not button.isVisible():
                     continue
                 text = str(button.text() or "")
-                if text.strip():
-                    button_records.append({"text": text, "enabled": bool(button.isEnabled())})
+                standard_names = _button_standard_names(
+                    widget,
+                    button,
+                    QMessageBox,
+                    QDialogButtonBox,
+                )
+                if text.strip() or standard_names:
+                    button_records.append(
+                        {
+                            "text": text,
+                            "enabled": bool(button.isEnabled()),
+                            "standard_buttons": sorted(standard_names),
+                        }
+                    )
             except Exception:
                 continue
 
         labels = [item["text"] for item in button_records]
+        standard_names = {
+            name for item in button_records for name in item.get("standard_buttons", [])
+        }
         prompt_text_parts = [str(widget.windowTitle() or "")]
         if QLabel is not None:
             try:
@@ -295,11 +340,14 @@ def _collect_save_dialogs(app: Any) -> list[dict[str, Any]]:
                 pass
         prompt_text_parts.extend(labels)
         prompt_text = " ".join(prompt_text_parts)
-        if _looks_like_save_dialog(prompt_text) and (
-            choose_decision_label(labels, "save")
-            or choose_decision_label(labels, "dont-save")
-            or choose_decision_label(labels, "cancel")
-        ):
+        has_standard_action = any(
+            standard_names.intersection(_decision_standard_button_names(decision))
+            for decision in ("save", "dont-save", "cancel")
+        )
+        has_text_action = any(
+            choose_decision_label(labels, decision) for decision in ("save", "dont-save", "cancel")
+        )
+        if _looks_like_save_prompt(prompt_text) and (has_standard_action or has_text_action):
             dialogs.append(
                 {
                     "title": str(widget.windowTitle() or ""),
@@ -313,7 +361,7 @@ def _collect_save_dialogs(app: Any) -> list[dict[str, Any]]:
 
 def _click_save_dialog(app: Any, decision: str) -> bool:
     try:
-        from PySide6.QtWidgets import QPushButton
+        from PySide6.QtWidgets import QDialogButtonBox, QMessageBox, QPushButton
     except Exception:
         return False
 
@@ -326,6 +374,23 @@ def _click_save_dialog(app: Any, decision: str) -> bool:
         buttons = dialog["_widget"].findChildren(QPushButton)
     except Exception:
         return False
+    wanted_standard_names = _decision_standard_button_names(decision)
+    for button in buttons:
+        try:
+            if not button.isVisible() or not button.isEnabled():
+                continue
+            standard_names = _button_standard_names(
+                dialog["_widget"],
+                button,
+                QMessageBox,
+                QDialogButtonBox,
+            )
+            if standard_names.intersection(wanted_standard_names):
+                button.click()
+                return True
+        except Exception:
+            continue
+
     label = choose_decision_label([str(button.text() or "") for button in buttons], decision)
     if not label:
         return False
