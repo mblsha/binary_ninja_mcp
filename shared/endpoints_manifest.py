@@ -116,6 +116,7 @@ ENDPOINT_SPECS: tuple[EndpointSpec, ...] = (
     EndpointSpec("POST", "/logs/clear", False, minimal_json={}),
     EndpointSpec("POST", "/console/clear", False, minimal_json={}),
     EndpointSpec("POST", "/console/execute", False, minimal_json={"command": "1 + 1"}),
+    EndpointSpec("POST", "/annotations/export", True),
     EndpointSpec(
         "POST",
         "/ui/statusbar",

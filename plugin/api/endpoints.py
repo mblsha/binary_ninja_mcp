@@ -1,5 +1,6 @@
 from typing import Dict, Any, List, Optional
 import binaryninja as bn
+from ..core.annotation_archive import export_user_annotations
 from ..core.binary_operations import BinaryOperations
 
 
@@ -64,6 +65,34 @@ class BinaryNinjaEndpoints:
                     }
                 )
         return exports[offset : offset + limit]
+
+    def export_annotations(
+        self,
+        output_path: str,
+        *,
+        type_library_path: Optional[str] = None,
+        overwrite: bool = False,
+        include_unannotated_function_types: bool = False,
+        source_id: Optional[str] = None,
+        source_filename: Optional[str] = None,
+        source_size: Optional[int] = None,
+        source_mtime_ns: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Serialize portable user annotations and exact native types."""
+
+        if not self.binary_ops.current_view:
+            raise RuntimeError("No binary loaded")
+        return export_user_annotations(
+            self.binary_ops.current_view,
+            output_path,
+            type_library_path=type_library_path,
+            overwrite=overwrite,
+            include_unannotated_function_types=include_unannotated_function_types,
+            source_id=source_id,
+            source_filename=source_filename,
+            source_size=source_size,
+            source_mtime_ns=source_mtime_ns,
+        )
 
     def get_namespaces(self, offset: int = 0, limit: int = 100) -> List[str]:
         """Get list of C++ namespaces"""

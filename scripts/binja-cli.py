@@ -3021,6 +3021,100 @@ class Exports(cli.Application):
                 print("No exports found")
 
 
+@BinaryNinjaCLI.subcommand("annotations")
+class Annotations(cli.Application):
+    """Export portable user annotations and native type information"""
+
+
+@Annotations.subcommand("export")
+class AnnotationsExport(cli.Application):
+    """Write a portable JSON annotation archive and matching BNTL
+
+    The output path is interpreted by the Binary Ninja process and must be
+    absolute. The matching type-library path defaults to replacing the final
+    `.json` suffix with `.types.bntl`.
+    """
+
+    type_library_path = cli.SwitchAttr(
+        ["--type-library"],
+        str,
+        default=None,
+        help="Absolute path for the native .bntl companion",
+    )
+    source_id = cli.SwitchAttr(
+        ["--source-id"],
+        str,
+        default=None,
+        help="Stable source identity such as git-sha1:<oid> or sha256:<digest>",
+    )
+    source_filename = cli.SwitchAttr(
+        ["--source-filename"],
+        str,
+        default=None,
+        help="Canonical source filename to record instead of the loaded path",
+    )
+    source_size = cli.SwitchAttr(
+        ["--source-size"],
+        int,
+        default=None,
+        help="Canonical source size to record",
+    )
+    source_mtime_ns = cli.SwitchAttr(
+        ["--source-mtime-ns"],
+        int,
+        default=None,
+        help="Canonical source modification time in nanoseconds",
+    )
+    force = cli.Flag(
+        ["--force"],
+        help="Replace existing JSON/BNTL outputs",
+    )
+    include_unannotated_function_types = cli.Flag(
+        ["--include-unannotated-function-types"],
+        help=(
+            "Include every function type Binary Ninja marks explicit/user, even without "
+            "an adjacent user name, variable, or comment"
+        ),
+    )
+
+    def main(self, output_path: str):
+        root = self.parent.parent
+        payload = {
+            "output_path": output_path,
+            "overwrite": bool(self.force),
+            "include_unannotated_function_types": bool(self.include_unannotated_function_types),
+        }
+        optional_values = {
+            "type_library_path": self.type_library_path,
+            "source_id": self.source_id,
+            "source_filename": self.source_filename,
+            "source_size": self.source_size,
+            "source_mtime_ns": self.source_mtime_ns,
+        }
+        payload.update(
+            {name: value for name, value in optional_values.items() if value is not None}
+        )
+
+        data = root._request("POST", "annotations/export", data=payload)
+        if root.json_output:
+            root._output(data)
+            return
+
+        json_info = data.get("json", {})
+        type_info = data.get("type_library", {})
+        print(colors.green | "Exported portable Binary Ninja annotations")
+        print(f"  JSON: {json_info.get('path', output_path)}")
+        print(f"  BNTL: {type_info.get('path', '<unknown>')}")
+        counts = data.get("counts", {})
+        nonzero_counts = {name: value for name, value in counts.items() if value}
+        if nonzero_counts:
+            print("  Counts:")
+            for name, value in sorted(nonzero_counts.items()):
+                print(f"    {name}: {value}")
+        else:
+            print("  Counts: no user annotations")
+
+
 @BinaryNinjaCLI.subcommand("python")
 class Python(cli.Application):
     """Execute Python code in Binary Ninja context
