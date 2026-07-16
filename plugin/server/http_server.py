@@ -1467,6 +1467,66 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     self._send_json_response({"error": str(e)}, 500)
 
+            elif path == "/annotations/export":
+                output_path = params.get("output_path") or params.get("path")
+                if not output_path:
+                    self._send_json_response(
+                        {
+                            "error": "Missing annotation archive output path",
+                            "help": "Provide an absolute output_path ending in .json.",
+                        },
+                        400,
+                    )
+                    return
+
+                def optional_int(name: str) -> Optional[int]:
+                    value = params.get(name)
+                    if value is None or value == "":
+                        return None
+                    return int(value, 0) if isinstance(value, str) else int(value)
+
+                try:
+                    result = self.endpoints.export_annotations(
+                        str(output_path),
+                        type_library_path=(
+                            str(params["type_library_path"])
+                            if params.get("type_library_path")
+                            else None
+                        ),
+                        overwrite=self._parse_bool(params.get("overwrite"), False),
+                        include_unannotated_function_types=self._parse_bool(
+                            params.get("include_unannotated_function_types"), False
+                        ),
+                        source_id=(str(params["source_id"]) if params.get("source_id") else None),
+                        source_filename=(
+                            str(params["source_filename"])
+                            if params.get("source_filename")
+                            else None
+                        ),
+                        source_size=optional_int("source_size"),
+                        source_mtime_ns=optional_int("source_mtime_ns"),
+                    )
+                    result = {"success": True, **result}
+                    result.update(self._view_context_fields(self.binary_ops.current_view))
+                    self._send_json_response(result)
+                except FileExistsError as exc:
+                    self._send_json_response(
+                        {
+                            "error": str(exc),
+                            "error_code": "ANNOTATION_OUTPUT_EXISTS",
+                            "help": "Choose new output paths or explicitly request overwrite.",
+                        },
+                        409,
+                    )
+                except ValueError as exc:
+                    self._send_json_response({"error": str(exc)}, 400)
+                except OSError as exc:
+                    bn.log_error(f"Annotation export file error: {exc}")
+                    self._send_json_response({"error": str(exc)}, 500)
+                except Exception as exc:
+                    bn.log_error(f"Annotation export failed: {exc}")
+                    self._send_json_response({"error": str(exc)}, 500)
+
             elif path == "/rename/function" or path == "/renameFunction":
                 old_name = params.get("oldName") or params.get("old_name")
                 new_name = params.get("newName") or params.get("new_name")

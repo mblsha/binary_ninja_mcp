@@ -101,6 +101,52 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 ./cli.py exports
 ```
 
+### Portable Annotation Archives
+
+Use `annotations export` to serialize portable user annotation state from one
+explicitly targeted BinaryView. It writes a readable JSON archive and a native
+Binary Ninja type-library companion:
+
+```bash
+binja-cli \
+  --view-id '<global-view-id>' \
+  --filename '/absolute/path/to/source.bndb' \
+  --request-timeout 900 \
+  annotations export '/absolute/path/to/source.annotations.json' \
+  --source-id 'git-sha1:<blob-oid>'
+```
+
+The default outputs are:
+
+```text
+source.annotations.json
+source.annotations.types.bntl
+```
+
+The JSON records user symbols, view/function/instruction comments, named user
+types, explicit annotated function prototypes, user variables, user-defined
+data variables, data/address/function-scoped tags, source geometry, absolute
+addresses, and RVAs. The BNTL stores exact native type objects referenced by
+the JSON. Keep both files for a full-fidelity restore.
+
+Existing outputs are rejected unless `--force` is supplied. Use
+`--type-library /absolute/path/to/output.bntl` to override the companion path.
+Use `--include-unannotated-function-types` only when every function type marked
+explicit/user by Binary Ninja must be retained; some saved databases mark large
+numbers of analyzer-derived prototypes this way, substantially increasing the
+archive.
+
+The archive deliberately excludes analysis caches, undo history, binary
+patches, instruction highlights, and user segment/section changes. Export is
+read-only with respect to the loaded BinaryView and never saves the BNDB.
+The target BinaryView must have an architecture; architectureless Raw views
+are rejected because Binary Ninja type libraries require an architecture.
+
+The equivalent local HTTP operation is `POST /annotations/export` with an
+absolute `output_path`. Optional JSON fields are `type_library_path`,
+`overwrite`, `include_unannotated_function_types`, `source_id`,
+`source_filename`, `source_size`, and `source_mtime_ns`.
+
 ### Global Options
 
 ```bash
