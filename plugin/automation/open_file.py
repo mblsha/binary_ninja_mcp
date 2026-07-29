@@ -70,18 +70,41 @@ def _looks_like_existing_database_dialog(widget) -> bool:
         title_norm = ""
 
     fragments = [title_norm]
+    for getter_name in ("text", "informativeText", "detailedText"):
+        getter = getattr(widget, getter_name, None)
+        if not callable(getter):
+            continue
+        try:
+            text = normalize_label(getter())
+        except Exception:
+            continue
+        if text:
+            fragments.append(text)
+
+    # PySide6 does not accept Python's built-in ``object`` as the type passed
+    # to QObject.findChildren(). Read the concrete label/button classes
+    # instead so a title-less QMessageBox is still visible to automation.
     try:
-        for child in widget.findChildren(object):
-            if not hasattr(child, "text"):
+        from PySide6.QtWidgets import QAbstractButton, QLabel
+
+        child_types = (QLabel, QAbstractButton)
+    except Exception:
+        child_types = ()
+    for child_type in child_types:
+        try:
+            children = widget.findChildren(child_type)
+        except Exception:
+            continue
+        for child in children:
+            getter = getattr(child, "text", None)
+            if not callable(getter):
                 continue
             try:
-                text = normalize_label(child.text())
+                text = normalize_label(getter())
             except Exception:
                 continue
             if text:
                 fragments.append(text)
-    except Exception:
-        pass
 
     combined = " ".join(part for part in fragments if part)
     if "existing database" not in combined:
@@ -405,6 +428,7 @@ def open_file_workflow(
     filepath: str = "",
     platform: str = "",
     view_type: str = "",
+    existing_database: str = "",
     click_open: bool = True,
     inspect_only: bool = False,
     **_unused: Any,
@@ -478,6 +502,23 @@ def open_file_workflow(
     target_file = result["input"]["filepath"]
     target_platform = result["input"]["platform"]
     target_view_type = result["input"]["view_type"]
+    existing_database_choice = normalize_label(existing_database)
+    if existing_database_choice not in {"", "yes", "no", "cancel"}:
+        result["ok"] = False
+        result["errors"].append(
+            "existing_database must be one of: yes, no, cancel"
+        )
+        return result
+    result["input"]["existing_database"] = existing_database_choice
+    result["existing_database_dialog"] = {
+        "present": False,
+        "title": None,
+        "text": None,
+        "options": [],
+        "choice": existing_database_choice or None,
+        "resolved": False,
+        "dismissed_for_required_input": False,
+    }
 
     if bn is None:
         result["ok"] = False
@@ -515,7 +556,25 @@ def open_file_workflow(
 
         _add_action_once(result, detected_action)
 
-        no_button = None
+        details = result["existing_database_dialog"]
+        details["present"] = True
+        try:
+            details["title"] = str(dialog.windowTitle() or "")
+        except Exception:
+            details["title"] = ""
+        for getter_name in ("text", "informativeText"):
+            getter = getattr(dialog, getter_name, None)
+            if not callable(getter):
+                continue
+            try:
+                dialog_text = str(getter() or "").strip()
+            except Exception:
+                continue
+            if dialog_text:
+                details["text"] = dialog_text
+                break
+
+        buttons_by_label = {}
         try:
             buttons = dialog.findChildren(QPushButton)
         except Exception:
@@ -527,43 +586,91 @@ def open_file_workflow(
                 label = normalize_label(button.text())
             except Exception:
                 continue
-            if label == "no":
-                no_button = button
-                break
+            if label in {"yes", "no", "cancel"}:
+                buttons_by_label[label] = button
+        details["options"] = [
+            option for option in ("yes", "no", "cancel") if option in buttons_by_label
+        ]
 
-        if no_button is None:
-            result["warnings"].append(
-                "existing database dialog detected but 'No' button was not found"
+        if not existing_database_choice:
+            result["ok"] = False
+            result["requires_input"] = True
+            result["required_input"] = {
+                "name": "existing_database",
+                "question": details["text"] or "Open existing database?",
+                "options": details["options"] or ["yes", "no", "cancel"],
+            }
+            _add_action_once(result, "existing_database_decision_required")
+            warning = (
+                "existing database decision required; rerun open with "
+                "--existing-database yes, no, or cancel"
+            )
+            if warning not in result["warnings"]:
+                result["warnings"].append(warning)
+
+            # A prompt created inside UIContext.openFilename() runs a nested
+            # modal loop. Neutral dismissal is required so the HTTP request can
+            # return and surface the decision to the caller.
+            if not inspect_only:
+                cancel_button = buttons_by_label.get("cancel")
+                if cancel_button is None:
+                    result["errors"].append(
+                        "existing database dialog cannot be dismissed safely: "
+                        "'Cancel' button was not found"
+                    )
+                    return True
+                try:
+                    cancel_button.click()
+                    details["dismissed_for_required_input"] = True
+                    _add_action_once(
+                        result,
+                        "dismissed_existing_database_dialog_for_required_input",
+                    )
+                    _pump_events(app)
+                except Exception as exc:
+                    result["errors"].append(
+                        f"failed to dismiss existing database dialog safely: {exc}"
+                    )
+            return True
+
+        selected_button = buttons_by_label.get(existing_database_choice)
+        if selected_button is None:
+            result["errors"].append(
+                "existing database dialog does not offer the requested "
+                f"'{existing_database_choice}' choice"
             )
             return True
 
-        if inspect_only or (not click_open):
-            result["actions"].append("would_click_existing_database_no")
+        if inspect_only:
+            _add_action_once(
+                result,
+                f"would_answer_existing_database_{existing_database_choice}",
+            )
             return True
 
-        if not no_button.isEnabled():
-            result["warnings"].append("existing database dialog 'No' button is disabled")
+        if not selected_button.isEnabled():
+            result["errors"].append(
+                f"existing database dialog '{existing_database_choice}' button is disabled"
+            )
             return True
 
         try:
-            no_button.click()
-            result["actions"].append("clicked_existing_database_no")
+            selected_button.click()
+            details["resolved"] = True
+            _add_action_once(
+                result,
+                f"answered_existing_database_{existing_database_choice}",
+            )
+            if existing_database_choice == "cancel":
+                result["state"]["cancelled"] = True
         except Exception as exc:
-            result["warnings"].append(f"failed to click existing database dialog 'No': {exc}")
+            result["errors"].append(
+                "failed to answer existing database dialog "
+                f"'{existing_database_choice}': {exc}"
+            )
             return True
 
         _pump_events(app)
-
-        try:
-            still_visible = bool(dialog.isVisible())
-        except Exception:
-            still_visible = False
-        if still_visible and hasattr(dialog, "reject"):
-            try:
-                dialog.reject()
-                result["actions"].append("rejected_existing_database_dialog")
-            except Exception as exc:
-                result["warnings"].append(f"existing database dialog reject() failed: {exc}")
         return True
 
     def handle_open_with_options_dialog(dialog, detected_action: str, app) -> bool:
@@ -784,7 +891,7 @@ def open_file_workflow(
                     handle_existing_database_dialog(existing_dialog, existing_action, app)
                     handled = True
 
-            if options_action:
+            if options_action and not result.get("requires_input"):
                 options_dialog = _find_options_dialog(app)
                 if options_dialog is not None:
                     handle_open_with_options_dialog(options_dialog, options_action, app)
@@ -793,6 +900,8 @@ def open_file_workflow(
             return handled
 
         resolve_modal_dialogs(existing_action="detected_existing_database_dialog")
+        if result.get("requires_input") or result["state"].get("cancelled"):
+            return None
 
         dialog = _find_options_dialog(app)
         loaded_bv = None
@@ -832,6 +941,8 @@ def open_file_workflow(
                         target_file,
                         on_poll=_poll_existing_database_prompt,
                     )
+                    if result.get("requires_input") or result["state"].get("cancelled"):
+                        return None
                     if ui_open.get("ok"):
                         result["actions"].append("ui_context_open_filename")
                         # Wait briefly for UI context to materialize a tab/view for the target.
@@ -876,6 +987,8 @@ def open_file_workflow(
                             existing_action="resolved_existing_database_dialog_post_open",
                             options_action="detected_open_with_options_dialog_after_open",
                         )
+                        if result.get("requires_input") or result["state"].get("cancelled"):
+                            return None
                         loaded_now = _get_loaded_filename()
                         if loaded_now:
                             try:
@@ -894,6 +1007,8 @@ def open_file_workflow(
                     existing_action="resolved_existing_database_dialog_final_pass",
                     options_action="resolved_open_with_options_dialog_final_pass",
                 )
+                if result.get("requires_input") or result["state"].get("cancelled"):
+                    return None
                 if not handled:
                     break
                 _pump_events(app, cycles=12)

@@ -121,6 +121,7 @@ def test_open_help_does_not_expose_no_ui_switch():
     text = (result.stdout or "") + (result.stderr or "")
     assert "--no-ui" not in text
     assert "UI-only open workflow" in text
+    assert "--existing-database" in text
 
 
 def test_open_rejects_no_ui_switch():
@@ -133,6 +134,79 @@ def test_open_rejects_no_ui_switch():
     assert result.returncode != 0
     text = (result.stdout or "") + (result.stderr or "")
     assert "Unknown switch --no-ui" in text
+
+
+def test_open_requires_explicit_existing_database_decision():
+    app = _new_app()
+    app.server_url = "http://testserver:9009"
+    open_cmd = binja_cli.Open("open")
+    open_cmd.parent = app
+    open_cmd.platform = None
+    open_cmd.view_type = None
+    open_cmd.existing_database = None
+    open_cmd.no_click = False
+    open_cmd.inspect_only = False
+    open_cmd.wait_open_target = 0.5
+    open_cmd.wait_analysis = False
+    open_cmd.analysis_timeout = 120.0
+
+    target = "/tmp/target.bin"
+    payload = _ui_open_contract(target)
+    payload["ok"] = False
+    payload["result"] = {
+        "ok": False,
+        "requires_input": True,
+        "required_input": {
+            "name": "existing_database",
+            "question": "Open existing database?",
+            "options": ["yes", "no", "cancel"],
+        },
+        "actions": ["existing_database_decision_required"],
+        "warnings": [],
+        "errors": [],
+        "state": {"loaded_filename": None},
+    }
+
+    with (
+        patch.object(app, "_ensure_server_for_open", return_value={"ok": True}),
+        patch.object(app, "_request", return_value=payload),
+        patch.object(app, "_wait_for_open_target_in_views") as wait_mock,
+        patch.object(app, "_output") as output_mock,
+    ):
+        rc = open_cmd.main(target)
+
+    assert rc == 2
+    wait_mock.assert_not_called()
+    out = output_mock.call_args.args[0]
+    assert out["error"] == "existing database decision required"
+    assert out["required_input"]["options"] == ["yes", "no", "cancel"]
+
+
+def test_open_sends_explicit_existing_database_decision():
+    app = _new_app()
+    app.server_url = "http://testserver:9009"
+    open_cmd = binja_cli.Open("open")
+    open_cmd.parent = app
+    open_cmd.platform = None
+    open_cmd.view_type = None
+    open_cmd.existing_database = "no"
+    open_cmd.no_click = False
+    open_cmd.inspect_only = False
+    open_cmd.wait_open_target = 0.0
+    open_cmd.wait_analysis = False
+    open_cmd.analysis_timeout = 120.0
+
+    target = "/tmp/target.bin"
+    with (
+        patch.object(app, "_ensure_server_for_open", return_value={"ok": True}),
+        patch.object(app, "_request", return_value=_ui_open_contract(target)) as request_mock,
+        patch.object(app, "_output"),
+    ):
+        rc = open_cmd.main(target)
+
+    assert rc is None
+    _args, kwargs = request_mock.call_args
+    assert kwargs["data"]["existing_database"] == "no"
 
 
 def test_wait_for_analysis_on_target_polls_views_until_idle():

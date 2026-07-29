@@ -1958,6 +1958,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     filepath=str(params.get("filepath") or ""),
                     platform=str(params.get("platform") or ""),
                     view_type=str(params.get("view_type") or ""),
+                    existing_database=str(params.get("existing_database") or ""),
                     click_open=self._parse_bool(params.get("click_open"), True),
                     inspect_only=self._parse_bool(params.get("inspect_only"), False),
                     timeout=params.get("timeout") or params.get("timeout_s"),

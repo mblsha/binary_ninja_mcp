@@ -27,7 +27,7 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 # Check server status
 ./cli.py status
 
-# Open a file (auto-resolve "Open with Options" dialog)
+# Open a file (surface database choice; auto-resolve "Open with Options")
 ./cli.py open /path/to/binary
 ./cli.py open /path/to/binary --view-type Mapped --platform x86_16
 
@@ -195,6 +195,11 @@ absolute `output_path`. Optional JSON fields are `type_library_path`,
 Use `open` to make file-opening automation reproducible from the CLI. It inspects
 current UI state and does the right thing:
 
+- If an **Open existing database?** dialog is visible:
+  - the command reports the question and available choices instead of silently
+    choosing for you;
+  - rerun with `--existing-database yes`, `--existing-database no`, or
+    `--existing-database cancel` to answer it explicitly.
 - If an **Open with Options** dialog is visible:
   - optional `--view-type` and `--platform` are applied when matching controls are found;
   - `Open` is clicked automatically (unless `--no-click` or `--inspect-only` is set).
@@ -213,6 +218,12 @@ Examples:
 ```bash
 # Typical UI-driven open with explicit platform/view
 ./cli.py open /path/to/town_mcga.bin --view-type Mapped --platform x86_16
+
+# Open the saved database when Binary Ninja finds one beside the input
+./cli.py open /path/to/town_mcga.bin --existing-database yes
+
+# Ignore the saved database and analyze the raw input
+./cli.py open /path/to/town_mcga.bin --existing-database no
 
 # Confirm target registration in /views
 ./cli.py open /path/to/town_mcga.bin --wait-open-target 8
