@@ -37,6 +37,15 @@ class BinaryNinjaPlatformAdapter(Protocol):
 
     def process_name_tokens(self) -> tuple[str, ...]: ...
 
+    def build_launch_command(
+        self,
+        *,
+        binary_path: str,
+        filepath: str = "",
+        log_path: str = "",
+        env: Mapping[str, str] | None = None,
+    ) -> list[str]: ...
+
 
 class _BaseAdapter:
     platform_key = "generic"
@@ -55,6 +64,20 @@ class _BaseAdapter:
 
     def prepare_gui_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
         return dict(source_env)
+
+    def build_launch_command(
+        self,
+        *,
+        binary_path: str,
+        filepath: str = "",
+        log_path: str = "",
+        env: Mapping[str, str] | None = None,
+    ) -> list[str]:
+        del log_path, env
+        args = [binary_path]
+        if filepath:
+            args.extend(["-e", filepath])
+        return args
 
     def resolve_binary_path(
         self,
@@ -302,6 +325,47 @@ class MacOSAdapter(_BaseAdapter):
         if qpa_platform:
             env["QT_QPA_PLATFORM"] = qpa_platform
         return env
+
+    @staticmethod
+    def _app_bundle_for_binary(binary_path: str) -> str | None:
+        path = Path(binary_path).expanduser()
+        for candidate in (path, *path.parents):
+            if candidate.name.lower().endswith(".app"):
+                return str(candidate)
+        return None
+
+    def build_launch_command(
+        self,
+        *,
+        binary_path: str,
+        filepath: str = "",
+        log_path: str = "",
+        env: Mapping[str, str] | None = None,
+    ) -> list[str]:
+        app_bundle = self._app_bundle_for_binary(binary_path)
+        if app_bundle is None:
+            return super().build_launch_command(
+                binary_path=binary_path,
+                filepath=filepath,
+                log_path=log_path,
+                env=env,
+            )
+
+        # Launching the inner Mach-O directly causes macOS RunningBoard to
+        # classify Binary Ninja as an anonymous process. LaunchServices gives
+        # it the signed app identity needed for App Management's same-team
+        # self-update authorization.
+        args = ["/usr/bin/open", "-n"]
+        if log_path:
+            args.extend(["-o", log_path, "--stderr", log_path])
+        if env:
+            qpa_platform = str(env.get("QT_QPA_PLATFORM", "")).strip()
+            if qpa_platform:
+                args.extend(["--env", f"QT_QPA_PLATFORM={qpa_platform}"])
+        args.append(app_bundle)
+        if filepath:
+            args.extend(["--args", "-e", filepath])
+        return args
 
 
 def get_platform_adapter(platform_name: str | None = None) -> BinaryNinjaPlatformAdapter:

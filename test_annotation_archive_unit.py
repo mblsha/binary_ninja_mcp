@@ -101,23 +101,32 @@ class _FakeTag:
 
 
 class _FakeVariable:
-    def __init__(self):
+    def __init__(self, type_declaration: str = "uint32_t"):
         self.index = 0
         self.name = "renamed_value"
         self.source_type = _NamedValue("RegisterVariableSourceType")
         self.storage = 7
-        self.type = _FakeType("uint32_t")
+        self.type = _FakeType(type_declaration)
 
 
 class _FakeFunction:
-    def __init__(self, start: int, *, annotated: bool):
+    def __init__(
+        self,
+        start: int,
+        *,
+        annotated: bool,
+        architecture: str | None = "x86_64",
+        platform: str | None = "linux-x86_64",
+        type_declaration: str = "int32_t",
+    ):
         self.start = start
-        self.arch = _NamedValue("x86_64")
+        self.arch = _NamedValue(architecture) if architecture is not None else None
+        self.platform = _NamedValue(platform) if platform is not None else None
         self.name = "annotated_function" if annotated else "sub_1200"
         self.comments = {start + 2: "instruction comment"} if annotated else {}
         self.comment = "function comment" if annotated else ""
-        self.vars = [_FakeVariable()] if annotated else []
-        self.type = _FakeType("int32_t")
+        self.vars = [_FakeVariable(f"{type_declaration} *")] if annotated else []
+        self.type = _FakeType(type_declaration)
         self.has_explicitly_defined_type = True
         self.has_user_type = True
         self._address_tags = {start + 4: [_FakeTag("instruction tag")]} if annotated else {}
@@ -258,6 +267,63 @@ def test_unannotated_function_types_are_opt_in(tmp_path: Path):
     assert payload["options"]["include_unannotated_function_types"] is True
 
 
+def test_same_address_functions_keep_distinct_platform_native_types(tmp_path: Path):
+    module = _load_module()
+    source_path = tmp_path / "source.bin"
+    source_path.write_bytes(b"binary")
+    view = _FakeView(source_path)
+    view.functions = [
+        _FakeFunction(
+            0x1010,
+            annotated=True,
+            architecture=None,
+            platform=None,
+            type_declaration="char",
+        ),
+        _FakeFunction(
+            0x1010,
+            annotated=True,
+            architecture="armv7",
+            platform="linux-armv7",
+            type_declaration="int32_t",
+        ),
+        _FakeFunction(
+            0x1010,
+            annotated=True,
+            architecture="thumb2",
+            platform="linux-thumb2",
+            type_declaration="uint32_t",
+        ),
+    ]
+    output_path = tmp_path / "multi-platform.annotations.json"
+
+    module.export_user_annotations(view, output_path)
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    native_payload = json.loads(
+        output_path.with_suffix(".types.bntl").read_text(encoding="utf-8")
+    )
+    assert [
+        (row["platform"], row["architecture"])
+        for row in payload["functions"]
+    ] == [
+        (None, None),
+        ("linux-armv7", "armv7"),
+        ("linux-thumb2", "thumb2"),
+    ]
+    function_type_names = [
+        "::".join(row["explicit_native_type"]) for row in payload["functions"]
+    ]
+    variable_type_names = [
+        "::".join(row["user_variables"][0]["native_type"])
+        for row in payload["functions"]
+    ]
+    assert len(set(function_type_names)) == 3
+    assert len(set(variable_type_names)) == 3
+    native_object_names = [name for name, _declaration in native_payload["named_objects"]]
+    assert len(native_object_names) == len(set(native_object_names))
+
+
 def test_export_refuses_relative_paths_and_existing_outputs(tmp_path: Path):
     module = _load_module()
     source_path = tmp_path / "source.bin"
@@ -320,6 +386,41 @@ def test_overwrite_rolls_back_both_outputs_when_second_replace_fails(tmp_path: P
     assert output_path.read_bytes() == original_json
     assert type_path.read_bytes() == original_types
     assert not list(tmp_path.glob("*.backup"))
+
+
+def test_no_overwrite_commit_does_not_clobber_racing_output(tmp_path: Path):
+    module = _load_module()
+    temporary_library = tmp_path / ".types.tmp"
+    temporary_json = tmp_path / ".json.tmp"
+    final_library = tmp_path / "archive.types.bntl"
+    final_json = tmp_path / "archive.json"
+    temporary_library.write_text("new types", encoding="utf-8")
+    temporary_json.write_text("new json", encoding="utf-8")
+    real_link = module.os.link
+    injected_racer = False
+
+    def inject_json_racer(source, destination):
+        nonlocal injected_racer
+        destination_path = Path(destination)
+        if destination_path == final_json and not injected_racer:
+            injected_racer = True
+            final_json.write_text("racing writer", encoding="utf-8")
+        return real_link(source, destination)
+
+    with (
+        patch.object(module.os, "link", side_effect=inject_json_racer),
+        pytest.raises(FileExistsError),
+    ):
+        module._commit_output_pair(
+            (
+                (temporary_library, final_library),
+                (temporary_json, final_json),
+            ),
+            overwrite=False,
+        )
+
+    assert not final_library.exists()
+    assert final_json.read_text(encoding="utf-8") == "racing writer"
 
 
 def test_export_rejects_architectureless_views_before_writing(tmp_path: Path):

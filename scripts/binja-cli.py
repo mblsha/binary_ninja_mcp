@@ -1284,6 +1284,24 @@ class BinaryNinjaCLI(cli.Application):
                 killed += 1
         return killed
 
+    def _wait_for_new_binja_pid(
+        self,
+        *,
+        binary_path: str,
+        existing_pids: set[int],
+        timeout: float = 5.0,
+    ) -> int:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            candidates = set(
+                self._find_running_binja_pids(binary_path=binary_path, include_any=False)
+            )
+            new_pids = sorted(candidates - existing_pids)
+            if new_pids:
+                return new_pids[0]
+            time.sleep(0.1)
+        return 0
+
     def _launch_binary_ninja(self, filepath: str = "", force_restart: bool = False) -> dict:
         """Best-effort Binary Ninja launch for supported desktop platforms."""
         adapter = self._platform_adapter()
@@ -1307,7 +1325,7 @@ class BinaryNinjaCLI(cli.Application):
             }
 
         # Launch regular UI mode to keep plugin loading behavior consistent.
-        should_restart = force_restart or _bool_env("BINJA_FORCE_RESTART_ON_OPEN", True)
+        should_restart = force_restart or _bool_env("BINJA_FORCE_RESTART_ON_OPEN", False)
         if should_restart:
             include_any = _bool_env("BINJA_KILL_ANY_BINJA", False)
             killed = self._kill_existing_binja_processes(
@@ -1321,11 +1339,17 @@ class BinaryNinjaCLI(cli.Application):
                     file=sys.stderr,
                 )
 
-        args = [binary_path]
-        if filepath:
-            args.extend(["-e", filepath])
-
         log_path = os.environ.get("BINJA_LAUNCH_LOG_PATH", "/tmp/binja-cli-launch.log")
+        args = adapter.build_launch_command(
+            binary_path=binary_path,
+            filepath=filepath,
+            log_path=log_path,
+            env=env,
+        )
+        launched_via_service = bool(args and args[0] == "/usr/bin/open")
+        existing_pids = set(
+            self._find_running_binja_pids(binary_path=binary_path, include_any=False)
+        )
         try:
             prepare_log_file(log_path)
         except Exception:
@@ -1342,7 +1366,57 @@ class BinaryNinjaCLI(cli.Application):
         except Exception as exc:
             return {"ok": False, "error": f"failed to launch Binary Ninja: {exc}", "log": log_path}
 
-        return {"ok": True, "binary": binary_path, "log": log_path, "pid": int(proc.pid)}
+        if launched_via_service:
+            try:
+                launcher_returncode = proc.wait(timeout=10.0)
+            except subprocess.TimeoutExpired:
+                return {
+                    "ok": False,
+                    "error": "LaunchServices did not return after starting Binary Ninja",
+                    "binary": binary_path,
+                    "log": log_path,
+                    "launcher_pid": int(proc.pid),
+                }
+            if launcher_returncode != 0:
+                return {
+                    "ok": False,
+                    "error": f"LaunchServices failed with exit code {launcher_returncode}",
+                    "binary": binary_path,
+                    "log": log_path,
+                    "launcher_pid": int(proc.pid),
+                }
+            binary_pid = self._wait_for_new_binja_pid(
+                binary_path=binary_path,
+                existing_pids=existing_pids,
+            )
+            if binary_pid <= 0:
+                return {
+                    "ok": False,
+                    "error": (
+                        "LaunchServices returned successfully, but the Binary Ninja "
+                        "application process was not observed within 5 seconds"
+                    ),
+                    "binary": binary_path,
+                    "log": log_path,
+                    "launcher_pid": int(proc.pid),
+                    "launch_method": "launchservices",
+                }
+            return {
+                "ok": True,
+                "binary": binary_path,
+                "log": log_path,
+                "pid": binary_pid,
+                "launcher_pid": int(proc.pid),
+                "launch_method": "launchservices",
+            }
+
+        return {
+            "ok": True,
+            "binary": binary_path,
+            "log": log_path,
+            "pid": int(proc.pid),
+            "launch_method": "direct",
+        }
 
     def _terminate_launched_binary(self, pid: int) -> bool:
         return terminate_pid_tree(pid, grace_s=0.5)
