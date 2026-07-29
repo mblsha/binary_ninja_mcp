@@ -94,8 +94,35 @@ def _file_result(path: pathlib.Path, format_name: str) -> dict[str, Any]:
 
 def _commit_output_pair(
     replacements: tuple[tuple[pathlib.Path, pathlib.Path], ...],
+    *,
+    overwrite: bool,
 ) -> None:
     """Replace related outputs while preserving any previous pair on failure."""
+
+    if not overwrite:
+        installed: list[pathlib.Path] = []
+        try:
+            for temporary, final in replacements:
+                # The temporary is created beside the final output, so a hard
+                # link provides an atomic no-clobber install on each target
+                # filesystem. Unlike os.replace, this cannot overwrite a file
+                # that appeared after the caller's existence check.
+                os.link(temporary, final)
+                installed.append(final)
+        except BaseException as exc:
+            rollback_errors: list[str] = []
+            for final in reversed(installed):
+                try:
+                    final.unlink(missing_ok=True)
+                except OSError as rollback_exc:
+                    rollback_errors.append(f"remove {final}: {rollback_exc}")
+            if rollback_errors:
+                details = "; ".join(rollback_errors)
+                raise OSError(
+                    f"annotation output commit failed and rollback was incomplete: {details}"
+                ) from exc
+            raise
+        return
 
     backups: dict[pathlib.Path, pathlib.Path] = {}
     installed: list[pathlib.Path] = []
@@ -159,6 +186,32 @@ def _export_symbols(view: Any) -> list[dict[str, Any]]:
     )
 
 
+def _function_identity(function: Any, image_base: int) -> tuple[int, str | None, str | None]:
+    platform = getattr(function, "platform", None)
+    architecture = getattr(function, "arch", None)
+    return (
+        function.start - image_base,
+        str(platform.name) if platform is not None else None,
+        str(architecture.name) if architecture is not None else None,
+    )
+
+
+def _function_sort_key(function: Any, image_base: int) -> tuple[int, str, str]:
+    rva, platform_name, architecture_name = _function_identity(function, image_base)
+    return rva, platform_name or "", architecture_name or ""
+
+
+def _function_native_type_name(view: Any, function: Any, kind: str, *parts: str) -> Any:
+    rva, platform_name, architecture_name = _function_identity(function, view.start)
+    return _native_type_name(
+        kind,
+        f"{rva:x}",
+        f"platform={platform_name or ''}",
+        f"architecture={architecture_name or ''}",
+        *parts,
+    )
+
+
 def _export_function_rows(
     view: Any,
     native_types: list[tuple[Any, Any]],
@@ -167,7 +220,8 @@ def _export_function_rows(
     include_unannotated_function_types: bool,
 ) -> list[dict[str, Any]]:
     rows = []
-    for function in sorted(view.functions, key=lambda item: item.start):
+    for function in sorted(view.functions, key=lambda item: _function_sort_key(item, view.start)):
+        _rva, platform_name, architecture_name = _function_identity(function, view.start)
         comments = [
             {**_address_row(address, view.start), "text": text}
             for address, text in sorted(function.comments.items())
@@ -178,9 +232,10 @@ def _export_function_rows(
         for variable in function.vars:
             if not function.is_var_user_defined(variable):
                 continue
-            variable_type_name = _native_type_name(
+            variable_type_name = _function_native_type_name(
+                view,
+                function,
                 "variable",
-                f"{function.start - view.start:x}",
                 variable.source_type.name,
                 str(variable.index),
                 str(variable.storage),
@@ -211,7 +266,7 @@ def _export_function_rows(
             include_unannotated_function_types or has_adjacent_user_annotation
         )
         if should_export_function_type:
-            explicit_native_type = _native_type_name("function", f"{function.start - view.start:x}")
+            explicit_native_type = _function_native_type_name(view, function, "function")
             native_types.append((explicit_native_type, function.type))
             explicit_type = _type_declaration(function.type)
 
@@ -220,6 +275,7 @@ def _export_function_rows(
         rows.append(
             {
                 **_address_row(function.start, view.start),
+                "architecture": architecture_name,
                 "comments": comments,
                 "explicit_native_type": (
                     _qualified_name_parts(explicit_native_type) if explicit_native_type else None
@@ -227,6 +283,7 @@ def _export_function_rows(
                 "explicit_type_declaration": explicit_type,
                 "function_comment": function_comment,
                 "name_at_export": function.name,
+                "platform": platform_name,
                 "user_variables": variables,
             }
         )
@@ -268,6 +325,7 @@ def _tag_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
     return (
         _parse_int(row["address"]),
         row.get("scope", ""),
+        row.get("platform") or "",
         row.get("architecture") or "",
         _parse_int(function_address) if function_address is not None else -1,
         row["type"],
@@ -282,6 +340,7 @@ def _export_tags(view: Any) -> dict[str, Any]:
     ]
     function_tags = []
     for function in view.functions:
+        _rva, platform_name, _architecture_name = _function_identity(function, view.start)
         tag_locations = {}
         for architecture, address, _tag in function.tags:
             architecture_name = architecture.name if architecture is not None else None
@@ -295,6 +354,7 @@ def _export_tags(view: Any) -> dict[str, Any]:
                         "architecture": architecture_name or None,
                         "function_address": _hex_int(function.start),
                         "function_rva": _hex_int(function.start - view.start),
+                        "platform": platform_name,
                         "scope": "address",
                     }
                 )
@@ -306,6 +366,7 @@ def _export_tags(view: Any) -> dict[str, Any]:
                     "architecture": function.arch.name if function.arch is not None else None,
                     "data": tag.data,
                     "icon": tag.type.icon,
+                    "platform": platform_name,
                     "scope": "function",
                     "type": tag.type.name,
                 }
@@ -535,7 +596,8 @@ def export_user_annotations(
             (
                 (temporary_library, library_path),
                 (temporary_json, archive_path),
-            )
+            ),
+            overwrite=overwrite,
         )
     finally:
         temporary_library.unlink(missing_ok=True)
