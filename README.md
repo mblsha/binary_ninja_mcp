@@ -59,7 +59,10 @@ uv run python scripts/binja-cli.py python "len(list(bv.functions))"
 # View recent errors from Binary Ninja logs
 uv run python scripts/binja-cli.py logs --errors --count 50
 
-# Open a file and auto-resolve "Open with Options" (set view/platform when needed)
+# Open a file and answer a sibling-database prompt explicitly when it appears
+uv run python scripts/binja-cli.py open /path/to/binary --existing-database no
+
+# "Open with Options" view/platform selection remains automatic
 uv run python scripts/binja-cli.py open /path/to/binary --view-type Mapped --platform x86_16
 
 # Close Binary Ninja and auto-answer save confirmation dialogs

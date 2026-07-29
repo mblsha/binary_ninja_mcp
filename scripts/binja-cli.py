@@ -1919,10 +1919,12 @@ class StatusBar(cli.Application):
 
 @BinaryNinjaCLI.subcommand("open")
 class Open(cli.Application):
-    """Open a file and auto-resolve Binary Ninja's "Open with Options" dialog.
+    """Open a file and resolve Binary Ninja's file-opening dialogs.
 
     Behavior:
     - If MCP is not reachable, auto-launches Binary Ninja on supported platforms.
+    - If an "Open existing database?" dialog appears, surfaces it and requires
+      an explicit --existing-database yes/no/cancel answer.
     - If an "Open with Options" dialog is visible, optionally sets view type/platform and clicks "Open".
     - Uses UI-only open workflow for deterministic tab creation in Binary Ninja.
     - Always reports inspected state/actions in JSON-like output.
@@ -1938,6 +1940,15 @@ class Open(cli.Application):
         ["--view-type", "-t"],
         str,
         help="View type to select in the dialog (e.g. Mapped, Raw).",
+    )
+
+    existing_database = cli.SwitchAttr(
+        ["--existing-database"],
+        str,
+        help=(
+            "Answer Binary Ninja's 'Open existing database?' prompt with "
+            "yes, no, or cancel. The CLI never chooses implicitly."
+        ),
     )
 
     no_click = cli.Flag(
@@ -2139,6 +2150,17 @@ class Open(cli.Application):
         if not str(filepath or "").strip() and not self.inspect_only:
             return self._print_missing_filepath_help()
 
+        existing_database_choice = str(
+            getattr(self, "existing_database", "") or ""
+        ).strip().lower()
+        if existing_database_choice not in {"", "yes", "no", "cancel"}:
+            message = "--existing-database must be one of: yes, no, cancel"
+            if self.parent.json_output:
+                self.parent._output({"error": message})
+            else:
+                print(colors.red | f"Error: {message}", file=sys.stderr)
+            return 2
+
         if (
             str(filepath or "").strip()
             and not self.inspect_only
@@ -2175,6 +2197,7 @@ class Open(cli.Application):
             "filepath": filepath,
             "platform": self.platform or "",
             "view_type": self.view_type or "",
+            "existing_database": existing_database_choice,
             "click_open": not self.no_click,
             "inspect_only": self.inspect_only,
             "timeout_s": open_timeout_s,
@@ -2192,19 +2215,75 @@ class Open(cli.Application):
             return
         parsed = self.parent._validate_ui_contract(parsed, "/ui/open")
 
+        raw_result = parsed.get("result") if isinstance(parsed.get("result"), dict) else {}
+        if raw_result.get("requires_input"):
+            required_input = raw_result.get("required_input")
+            if not isinstance(required_input, dict):
+                required_input = {
+                    "name": "existing_database",
+                    "question": "Open existing database?",
+                    "options": ["yes", "no", "cancel"],
+                }
+            failure_payload = {
+                "error": "existing database decision required",
+                "required_input": required_input,
+                "open_result": parsed,
+            }
+            if self.parent.json_output:
+                self.parent._apply_post_command_error_report(
+                    "open",
+                    error_snapshot,
+                    output_payload=failure_payload,
+                )
+                self.parent._output(failure_payload)
+            else:
+                print(colors.yellow | "⚠ Existing database decision required")
+                print(f"  {required_input.get('question', 'Open existing database?')}")
+                print(
+                    "  Re-run with --existing-database yes, "
+                    "--existing-database no, or --existing-database cancel."
+                )
+                self.parent._apply_post_command_error_report(
+                    "open",
+                    error_snapshot,
+                )
+            return 2
+
+        raw_state = raw_result.get("state") if isinstance(raw_result.get("state"), dict) else {}
+        if raw_state.get("cancelled"):
+            if self.parent.json_output:
+                self.parent._output({"open_result": parsed, "cancelled": True})
+            else:
+                print(colors.green | "✓ Open cancelled")
+            return
+
+        confirmation_filepath = filepath
+        if filepath and existing_database_choice == "yes":
+            raw_path = Path(filepath)
+            database_candidates = [
+                Path(f"{raw_path}.bndb"),
+                raw_path.with_suffix(".bndb"),
+            ]
+            confirmation_filepath = str(
+                next(
+                    (candidate for candidate in database_candidates if candidate.exists()),
+                    database_candidates[0],
+                )
+            )
+
         wait_open_target_s = float(self.wait_open_target or 0.0)
         target_confirm = None
         matched_view = None
-        if filepath and (not self.inspect_only) and wait_open_target_s > 0.0:
+        if confirmation_filepath and (not self.inspect_only) and wait_open_target_s > 0.0:
             target_confirm = self.parent._wait_for_open_target_in_views(
-                filepath,
+                confirmation_filepath,
                 timeout=wait_open_target_s,
             )
 
             if not target_confirm.get("ok"):
                 failure_payload = {
                     "error": "open target confirmation failed",
-                    "requested_filename": filepath,
+                    "requested_filename": confirmation_filepath,
                     "observed_current_filename": target_confirm.get("observed_current_filename"),
                     "observed_current_view_id": target_confirm.get("observed_current_view_id"),
                     "views": target_confirm.get("views", []),
@@ -2219,7 +2298,7 @@ class Open(cli.Application):
                     self.parent._output(failure_payload)
                 else:
                     print(colors.red | "✗ Open target confirmation failed")
-                    print(f"  Requested: {filepath}")
+                    print(f"  Requested: {confirmation_filepath}")
                     observed = target_confirm.get("observed_current_filename")
                     if observed:
                         print(f"  Observed Current: {observed}")
@@ -2239,7 +2318,7 @@ class Open(cli.Application):
 
         self._set_effective_open_target(
             parsed,
-            requested_filepath=filepath,
+            requested_filepath=confirmation_filepath,
             matched_view=matched_view,
         )
 
@@ -2252,7 +2331,7 @@ class Open(cli.Application):
                 matched_view_id = matched_view.get("view_id")
 
             analysis_wait_result = self.parent._wait_for_analysis_on_target(
-                filename=matched_filename or filepath,
+                filename=matched_filename or confirmation_filepath,
                 view_id=matched_view_id,
                 timeout=float(self.analysis_timeout or 120.0),
             )
