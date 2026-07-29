@@ -237,9 +237,7 @@ def test_export_writes_json_and_native_type_companion(tmp_path: Path):
     assert payload["functions"][0]["rva"] == "0x10"
     assert payload["functions"][0]["user_variables"][0]["name"] == "renamed_value"
     assert {row["scope"] for row in payload["tags"]["address"]} == {"address", "data"}
-    instruction_tag = next(
-        row for row in payload["tags"]["address"] if row["scope"] == "address"
-    )
+    instruction_tag = next(row for row in payload["tags"]["address"] if row["scope"] == "address")
     assert instruction_tag["function_address"] == "0x1010"
     assert instruction_tag["architecture"] == "x86_64"
     assert payload["tags"]["function"][0]["scope"] == "function"
@@ -300,23 +298,15 @@ def test_same_address_functions_keep_distinct_platform_native_types(tmp_path: Pa
     module.export_user_annotations(view, output_path)
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
-    native_payload = json.loads(
-        output_path.with_suffix(".types.bntl").read_text(encoding="utf-8")
-    )
-    assert [
-        (row["platform"], row["architecture"])
-        for row in payload["functions"]
-    ] == [
+    native_payload = json.loads(output_path.with_suffix(".types.bntl").read_text(encoding="utf-8"))
+    assert [(row["platform"], row["architecture"]) for row in payload["functions"]] == [
         (None, None),
         ("linux-armv7", "armv7"),
         ("linux-thumb2", "thumb2"),
     ]
-    function_type_names = [
-        "::".join(row["explicit_native_type"]) for row in payload["functions"]
-    ]
+    function_type_names = ["::".join(row["explicit_native_type"]) for row in payload["functions"]]
     variable_type_names = [
-        "::".join(row["user_variables"][0]["native_type"])
-        for row in payload["functions"]
+        "::".join(row["user_variables"][0]["native_type"]) for row in payload["functions"]
     ]
     assert len(set(function_type_names)) == 3
     assert len(set(variable_type_names)) == 3
