@@ -119,6 +119,17 @@ ENDPOINT_SPECS: tuple[EndpointSpec, ...] = (
     EndpointSpec("POST", "/annotations/export", True),
     EndpointSpec(
         "POST",
+        "/function/signature",
+        True,
+        minimal_json={
+            "function": "__FUNCTION__",
+            "signature": "void mcp_signature_probe(void);",
+            "dry_run": True,
+        },
+    ),
+    EndpointSpec("POST", "/function/reanalyze", True),
+    EndpointSpec(
+        "POST",
         "/ui/statusbar",
         False,
         minimal_json={"all_windows": False, "include_hidden": False},

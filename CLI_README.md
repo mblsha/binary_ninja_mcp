@@ -50,6 +50,12 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 # Rename a function
 ./cli.py rename function old_name new_name
 
+# Safely change a function signature and wait for per-function reanalysis
+./cli.py signature 0x401000 --file declaration.c
+
+# Explicitly reanalyze one function
+./cli.py reanalyze 0x401000
+
 # Add a comment
 ./cli.py comment 0x401000 "Entry point"
 ./cli.py comment --function main "Main function"
@@ -90,6 +96,39 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 # Define types from C code
 ./cli.py type --define "struct Point { int x; int y; };"
 ```
+
+### Function Signatures and Reanalysis
+
+Use `signature` instead of raw Python type assignment. It parses a complete
+declaration, applies the function type, explicitly requests per-function
+reanalysis, waits for it to finish, and verifies the applied type by reading it
+back. `--dry-run` performs only the parse step.
+
+Qualified Binary Ninja names must be backtick-quoted as one identifier. Supply
+these declarations via a file or a single-quoted heredoc so the shell does not
+execute the backticks:
+
+```bash
+./cli.py --filename /absolute/path/to/database.bndb \
+  signature 0x6c562 --stdin <<'EOF'
+int32_t __convention("default")
+`EGiridaOTankFamily_6ba10::state_giridao_cannon_6c562`(
+    struct EGiridaOTankFamily_6ba10* this_ @ a6
+);
+EOF
+```
+
+Use `--apply-name` only when the declaration's parsed name should also replace
+the existing function name. If Binary Ninja still presents its function-level
+Reanalyze action after a manual change, run:
+
+```bash
+./cli.py --filename /absolute/path/to/database.bndb reanalyze 0x6c562
+```
+
+The corresponding HTTP operations are `POST /function/signature` and
+`POST /function/reanalyze`. Signature parser errors are returned as HTTP 400
+with `error_code: FUNCTION_SIGNATURE_PARSE_ERROR`.
 
 ### Import/Export Analysis
 

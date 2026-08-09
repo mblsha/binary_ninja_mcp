@@ -11,7 +11,7 @@ import threading
 from ..core.binary_operations import BinaryOperations
 from ..core.console_capture_adapter import ConsoleCaptureAdapter
 from ..core.config import Config
-from ..api.endpoints import BinaryNinjaEndpoints
+from ..api.endpoints import BinaryNinjaEndpoints, FunctionSignatureParseError
 from .api_contracts import (
     as_dict,
     as_list,
@@ -1203,7 +1203,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         }
                     )
             elif path == "/editFunctionSignature":
-                function_name = params.get("functionName")
+                function_name = (
+                    params.get("functionName") or params.get("function") or params.get("name")
+                )
                 if not function_name:
                     self._send_json_response({"error": "Missing function name parameter"}, 400)
                     return
@@ -1214,15 +1216,34 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     return
 
                 try:
-                    self._send_json_response(
-                        self.endpoints.edit_function_signature(function_name, signature)
+                    result = self.endpoints.edit_function_signature(
+                        str(function_name),
+                        str(signature),
+                        apply_name=self._parse_bool(params.get("apply_name"), False),
+                        reanalyze=self._parse_bool(params.get("reanalyze"), True),
+                        wait=self._parse_bool(params.get("wait"), True),
+                        verify=self._parse_bool(params.get("verify"), True),
+                        dry_run=self._parse_bool(params.get("dry_run"), False),
                     )
+                    result.update(self._view_context_fields(self.binary_ops.current_view))
+                    self._send_json_response(result, 200 if result.get("success") else 409)
+                except FunctionSignatureParseError as e:
+                    self._send_json_response(
+                        {
+                            "error": str(e),
+                            "error_code": "FUNCTION_SIGNATURE_PARSE_ERROR",
+                            "help": (
+                                "Wrap a qualified Binary Ninja identifier as "
+                                "`Class::method` in the declaration."
+                            ),
+                        },
+                        400,
+                    )
+                except ValueError as e:
+                    self._send_json_response({"error": str(e)}, 400)
                 except Exception as e:
                     bn.log_error(f"Error handling editFunctionSignature request: {e}")
-                    self._send_json_response(
-                        {"error": str(e)},
-                        500,
-                    )
+                    self._send_json_response({"error": str(e)}, 500)
             elif path == "/retypeVariable":
                 function_name = params.get("functionName")
                 if not function_name:
@@ -1525,6 +1546,80 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     self._send_json_response({"error": str(exc)}, 500)
                 except Exception as exc:
                     bn.log_error(f"Annotation export failed: {exc}")
+                    self._send_json_response({"error": str(exc)}, 500)
+
+            elif path == "/function/signature":
+                function_name = (
+                    params.get("function") or params.get("functionName") or params.get("name")
+                )
+                signature = params.get("signature")
+                if not function_name or not signature:
+                    self._send_json_response(
+                        {
+                            "error": "Missing function or signature parameter",
+                            "help": "Required parameters: function and signature",
+                            "received": params,
+                        },
+                        400,
+                    )
+                    return
+
+                try:
+                    result = self.endpoints.edit_function_signature(
+                        str(function_name),
+                        str(signature),
+                        apply_name=self._parse_bool(params.get("apply_name"), False),
+                        reanalyze=self._parse_bool(params.get("reanalyze"), True),
+                        wait=self._parse_bool(params.get("wait"), True),
+                        verify=self._parse_bool(params.get("verify"), True),
+                        dry_run=self._parse_bool(params.get("dry_run"), False),
+                    )
+                    result.update(self._view_context_fields(self.binary_ops.current_view))
+                    self._send_json_response(result, 200 if result.get("success") else 409)
+                except FunctionSignatureParseError as exc:
+                    self._send_json_response(
+                        {
+                            "error": str(exc),
+                            "error_code": "FUNCTION_SIGNATURE_PARSE_ERROR",
+                            "help": (
+                                "Wrap a qualified Binary Ninja identifier as "
+                                "`Class::method` in the declaration."
+                            ),
+                        },
+                        400,
+                    )
+                except ValueError as exc:
+                    self._send_json_response({"error": str(exc)}, 400)
+                except Exception as exc:
+                    bn.log_error(f"Function signature update failed: {exc}")
+                    self._send_json_response({"error": str(exc)}, 500)
+
+            elif path == "/function/reanalyze":
+                function_name = (
+                    params.get("function") or params.get("functionName") or params.get("name")
+                )
+                if not function_name:
+                    self._send_json_response(
+                        {
+                            "error": "Missing function parameter",
+                            "help": "Required parameter: function",
+                            "received": params,
+                        },
+                        400,
+                    )
+                    return
+
+                try:
+                    result = self.endpoints.reanalyze_function(
+                        str(function_name),
+                        wait=self._parse_bool(params.get("wait"), True),
+                    )
+                    result.update(self._view_context_fields(self.binary_ops.current_view))
+                    self._send_json_response(result, 200 if result.get("success") else 409)
+                except ValueError as exc:
+                    self._send_json_response({"error": str(exc)}, 400)
+                except Exception as exc:
+                    bn.log_error(f"Function reanalysis failed: {exc}")
                     self._send_json_response({"error": str(exc)}, 500)
 
             elif path == "/rename/function" or path == "/renameFunction":

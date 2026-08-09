@@ -76,6 +76,8 @@ uv run python scripts/binja-cli.py close --all --except-view-id <id> --decision 
 ## Common Tasks
 
 - Rename a function: `uv run python scripts/binja-cli.py rename function <old> <new>`
+- Safely set and verify a function signature: `uv run python scripts/binja-cli.py signature <function> --file <declaration.c>`
+- Explicitly reanalyze one function: `uv run python scripts/binja-cli.py reanalyze <function>`
 - Add a comment: `uv run python scripts/binja-cli.py comment <addr> "text"`
 - Work in Python: `uv run python scripts/binja-cli.py python -i` (interactive), or `... python -f script.py`
 - Open a binary robustly: `uv run python scripts/binja-cli.py open <path> [--view-type Mapped] [--platform x86_16]`
