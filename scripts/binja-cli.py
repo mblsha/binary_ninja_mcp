@@ -65,7 +65,7 @@ class BinaryNinjaCLI(cli.Application):
     """Binary Ninja MCP command-line interface"""
 
     PROGNAME = "binja-mcp"
-    VERSION = "0.2.7"
+    VERSION = "0.2.8"
     DESCRIPTION = "Command-line interface for Binary Ninja MCP server"
 
     server_url = cli.SwitchAttr(
@@ -2942,6 +2942,182 @@ class Assembly(cli.Application):
             )
             if should_fail:
                 return 1
+
+
+@BinaryNinjaCLI.subcommand("signature")
+class Signature(cli.Application):
+    """Safely set and verify a function signature.
+
+    Use stdin or --file for declarations containing a backtick-qualified name.
+    Backticks make the complete Class::method spelling one Binary Ninja
+    identifier; unquoted backticks are command substitution in most shells.
+
+    Examples:
+        binja-cli signature 0x6c562 --file declaration.c
+        binja-cli signature 0x6c562 --stdin < declaration.c
+        binja-cli signature 0x6c562 --dry-run --file declaration.c
+    """
+
+    file = cli.SwitchAttr(
+        ["--file", "-f"],
+        cli.ExistingFile,
+        help="Read the complete function declaration from a file",
+    )
+    stdin = cli.Flag(
+        ["--stdin"],
+        help="Read the complete function declaration from stdin",
+    )
+    apply_name = cli.Flag(
+        ["--apply-name"],
+        help="Also replace the function name with the declaration's parsed name",
+    )
+    dry_run = cli.Flag(
+        ["--dry-run"],
+        help="Parse and report the declaration without changing the BinaryView",
+    )
+    no_reanalyze = cli.Flag(
+        ["--no-reanalyze"],
+        help="Set the user type without explicitly reanalyzing the function",
+    )
+    no_wait = cli.Flag(
+        ["--no-wait"],
+        help="Queue reanalysis without waiting; also disables deterministic verification",
+    )
+    no_verify = cli.Flag(
+        ["--no-verify"],
+        help="Do not compare the applied type and name with their readback values",
+    )
+    analysis_timeout = cli.SwitchAttr(
+        ["--analysis-timeout"],
+        float,
+        default=1800.0,
+        help="HTTP timeout while Binary Ninja waits for analysis (default: 1800 seconds)",
+    )
+
+    def _read_signature(self, signature_parts: tuple[str, ...]) -> str | None:
+        use_stdin = self.stdin or (signature_parts and signature_parts[0] == "-")
+        sources = int(bool(self.file)) + int(bool(use_stdin)) + int(bool(signature_parts))
+        if use_stdin and signature_parts == ("-",):
+            sources -= 1
+        if sources > 1:
+            print(colors.red | "Choose only one signature source: arguments, --file, or stdin")
+            return None
+
+        try:
+            if self.file:
+                signature = self.file.read()
+            elif use_stdin:
+                signature = sys.stdin.read()
+            elif signature_parts:
+                signature = " ".join(signature_parts)
+            elif not sys.stdin.isatty():
+                signature = sys.stdin.read()
+            else:
+                print("Usage: binja-cli signature [options] FUNCTION DECLARATION")
+                print("       binja-cli signature FUNCTION --file declaration.c")
+                print("       binja-cli signature FUNCTION --stdin < declaration.c")
+                return None
+        except (OSError, UnicodeError) as exc:
+            print(colors.red | f"Error reading signature: {exc}")
+            return None
+
+        signature = str(signature).strip()
+        if not signature:
+            print(colors.red | "No function declaration received")
+            return None
+        return signature
+
+    def main(self, function_name: str, *signature_parts: str):
+        signature = self._read_signature(signature_parts)
+        if signature is None:
+            return 1
+
+        should_wait = not self.no_wait
+        should_verify = not self.no_verify and should_wait
+        payload = {
+            "function": function_name,
+            "signature": signature,
+            "apply_name": bool(self.apply_name),
+            "dry_run": bool(self.dry_run),
+            "reanalyze": not self.no_reanalyze,
+            "wait": should_wait,
+            "verify": should_verify,
+        }
+        timeout = self.parent.request_timeout
+        if should_wait and not self.dry_run:
+            timeout = max(timeout, float(self.analysis_timeout))
+
+        error_snapshot = self.parent._capture_error_snapshot()
+        data = self.parent._request(
+            "POST",
+            "function/signature",
+            data=payload,
+            timeout=timeout,
+        )
+        failed = not isinstance(data, dict) or bool(data.get("error")) or not data.get("success")
+
+        if self.parent.json_output:
+            error_failure = self.parent._apply_post_command_error_report(
+                "signature",
+                error_snapshot,
+                output_payload=data if isinstance(data, dict) else None,
+            )
+            self.parent._output(data)
+            return 1 if failed or error_failure else 0
+
+        if failed:
+            self.parent._output(data if isinstance(data, dict) else {"error": str(data)})
+        else:
+            state = "parsed" if data.get("dry_run") else "applied"
+            if data.get("verified"):
+                state += " and verified"
+            print(colors.green | f"Signature {state} for {function_name}")
+            if data.get("function_start"):
+                print(f"  Address: {data['function_start']}")
+            if data.get("before_name") != data.get("after_name"):
+                print(f"  Name: {data.get('before_name')} -> {data.get('after_name')}")
+            print(f"  Before: {data.get('before_type')}")
+            print(f"  After:  {data.get('after_type')}")
+            if self.no_wait and not self.no_verify:
+                print(colors.yellow | "  Verification skipped because --no-wait was requested")
+
+        error_failure = self.parent._apply_post_command_error_report("signature", error_snapshot)
+        return 1 if failed or error_failure else 0
+
+
+@BinaryNinjaCLI.subcommand("reanalyze")
+class Reanalyze(cli.Application):
+    """Explicitly reanalyze one function and optionally wait for completion."""
+
+    no_wait = cli.Flag(["--no-wait"], help="Queue reanalysis without waiting for completion")
+    analysis_timeout = cli.SwitchAttr(
+        ["--analysis-timeout"],
+        float,
+        default=1800.0,
+        help="HTTP timeout while Binary Ninja waits for analysis (default: 1800 seconds)",
+    )
+
+    def main(self, function_name: str):
+        should_wait = not self.no_wait
+        timeout = self.parent.request_timeout
+        if should_wait:
+            timeout = max(timeout, float(self.analysis_timeout))
+
+        error_snapshot = self.parent._capture_error_snapshot()
+        data = self.parent._request(
+            "POST",
+            "function/reanalyze",
+            data={"function": function_name, "wait": should_wait},
+            timeout=timeout,
+        )
+        failed = not isinstance(data, dict) or bool(data.get("error")) or not data.get("success")
+        error_failure = self.parent._apply_post_command_error_report(
+            "reanalyze",
+            error_snapshot,
+            output_payload=data if self.parent.json_output and isinstance(data, dict) else None,
+        )
+        self.parent._output(data if isinstance(data, dict) else {"error": str(data)})
+        return 1 if failed or error_failure else 0
 
 
 @BinaryNinjaCLI.subcommand("rename")

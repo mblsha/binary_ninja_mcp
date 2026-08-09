@@ -383,9 +383,17 @@ def _export_type_library(
     extra_types: list[tuple[Any, Any]],
 ) -> list[dict[str, Any]]:
     container_rows = list(view.user_type_container.types.items())
-    by_name = {str(name): (type_id, name, value) for type_id, (name, value) in container_rows}
-    ordered_names = [str(name) for name in view.dependency_sorted_types]
-    ordered_names.extend(sorted(set(by_name) - set(ordered_names)))
+    # Do not use BinaryView.dependency_sorted_types here. In addition to being
+    # unnecessary for TypeLibrary.add_named_type, that property enters
+    # BNGetAnalysisDependencySortedTypeList and can crash Binary Ninja when a
+    # database contains a malformed or cyclic user-type graph. The user type
+    # container already gives us every type we need; sort its qualified names
+    # for stable archives and let the type library retain named references.
+    by_name = {
+        str(name): (type_id, name, value)
+        for type_id, (name, value) in container_rows
+    }
+    ordered_names = sorted(by_name)
 
     rows = []
     named_types = []

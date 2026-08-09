@@ -4,6 +4,10 @@ from ..core.annotation_archive import export_user_annotations
 from ..core.binary_operations import BinaryOperations
 
 
+class FunctionSignatureParseError(ValueError):
+    """Raised when Binary Ninja rejects a complete function declaration."""
+
+
 class BinaryNinjaEndpoints:
     def __init__(self, binary_ops: BinaryOperations):
         self.binary_ops = binary_ops
@@ -291,33 +295,157 @@ class BinaryNinjaEndpoints:
         except Exception as e:
             raise ValueError(f"Failed to rename variable: {str(e)}")
 
-    def edit_function_signature(self, function_name: str, signature: str) -> Dict[str, str]:
-        """Rename a variable inside a function
+    @staticmethod
+    def _normalize_type_text(value: Any) -> str:
+        return " ".join(str(value).split())
 
-        Args:
-            function_name: Name of the function to edit the signature of
-            signature: new signature to apply
-
-        Returns:
-            Dictionary with status message
-
-        Raises:
-            RuntimeError: If no binary is loaded
-            ValueError: If the function is not found or variable cannot be renamed
-        """
+    def edit_function_signature(
+        self,
+        function_name: str,
+        signature: str,
+        *,
+        apply_name: bool = False,
+        reanalyze: bool = True,
+        wait: bool = True,
+        verify: bool = True,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Parse and safely apply a complete function declaration."""
         if not self.binary_ops.current_view:
             raise RuntimeError("No binary loaded")
 
-        # Find the function by name
+        view = self.binary_ops.current_view
         function = self.binary_ops.get_function_by_name_or_address(function_name)
         if not function:
             raise ValueError(f"Function '{function_name}' not found")
 
-        function.type = self.binary_ops.current_view.parse_type_string(signature)[0]
+        try:
+            parsed_type, parsed_name = view.parse_type_string(signature)
+        except Exception as exc:
+            raise FunctionSignatureParseError(
+                f"Binary Ninja could not parse the function declaration: {exc}"
+            ) from exc
+        parsed_name_text = str(parsed_name or "")
+        requested_type = str(parsed_type)
+        before_name = function.name
+        before_type = str(function.type)
+        analysis_skipped = bool(function.analysis_skipped)
+
+        result: Dict[str, Any] = {
+            "success": True,
+            "dry_run": bool(dry_run),
+            "function_start": hex(function.start),
+            "before_name": before_name,
+            "before_type": before_type,
+            "parsed_name": parsed_name_text,
+            "requested_type": requested_type,
+            "apply_name": bool(apply_name),
+            "reanalyze_requested": bool(reanalyze),
+            "wait_requested": bool(wait),
+            "verify_requested": bool(verify),
+            "analysis_skipped": analysis_skipped,
+        }
+        if dry_run:
+            result.update(
+                {
+                    "after_name": before_name,
+                    "after_type": before_type,
+                    "verified": None,
+                    "message": "Signature parsed successfully; no changes applied.",
+                }
+            )
+            return result
+
+        if reanalyze and analysis_skipped:
+            result.update(
+                {
+                    "success": False,
+                    "verified": False,
+                    "error": "Function analysis is skipped; signature was not changed.",
+                    "help": (
+                        "Clear the function's analysis-skipped state explicitly, then retry. "
+                        "The signature endpoint will not clear it automatically."
+                    ),
+                }
+            )
+            return result
+
+        function.type = parsed_type
+        if apply_name and parsed_name_text:
+            function.name = parsed_name_text
+
+        if reanalyze:
+            function.reanalyze(bn.FunctionUpdateType.UserFunctionUpdate)
+        if wait:
+            view.update_analysis_and_wait()
+
+        fresh = view.get_function_at(function.start, function.platform)
+        if fresh is None:
+            fresh = function
+        after_name = fresh.name
+        after_type = str(fresh.type)
+        type_matches = self._normalize_type_text(after_type) == self._normalize_type_text(
+            requested_type
+        )
+        name_matches = not apply_name or not parsed_name_text or after_name == parsed_name_text
+        verified = bool(type_matches and name_matches) if verify else None
+        success = bool(verified) if verify else True
+
+        result.update(
+            {
+                "success": success,
+                "after_name": after_name,
+                "after_type": after_type,
+                "type_matches": type_matches,
+                "name_matches": name_matches,
+                "verified": verified,
+                "message": (
+                    "Function signature applied and verified."
+                    if success and verify
+                    else "Function signature applied; verification was not requested."
+                    if success
+                    else "Function signature readback did not match the requested declaration."
+                ),
+            }
+        )
+        if not success:
+            result["error"] = result["message"]
+        return result
+
+    def reanalyze_function(
+        self,
+        function_name: str,
+        *,
+        wait: bool = True,
+    ) -> Dict[str, Any]:
+        """Explicitly reanalyze one function without changing its annotations."""
+        if not self.binary_ops.current_view:
+            raise RuntimeError("No binary loaded")
+
+        view = self.binary_ops.current_view
+        function = self.binary_ops.get_function_by_name_or_address(function_name)
+        if not function:
+            raise ValueError(f"Function '{function_name}' not found")
+        if function.analysis_skipped:
+            return {
+                "success": False,
+                "function": function.name,
+                "function_start": hex(function.start),
+                "analysis_skipped": True,
+                "error": "Function analysis is skipped; reanalysis was not queued.",
+                "help": "Clear the analysis-skipped state explicitly, then retry.",
+            }
 
         function.reanalyze(bn.FunctionUpdateType.UserFunctionUpdate)
-
-        try:
-            return {"status": "Successfully"}
-        except Exception as e:
-            raise ValueError(f"Failed to rename variable: {str(e)}")
+        if wait:
+            view.update_analysis_and_wait()
+        fresh = view.get_function_at(function.start, function.platform) or function
+        return {
+            "success": True,
+            "function": fresh.name,
+            "function_start": hex(fresh.start),
+            "function_type": str(fresh.type),
+            "analysis_skipped": bool(fresh.analysis_skipped),
+            "wait_requested": bool(wait),
+            "message": "Function reanalysis completed." if wait else "Function reanalysis queued.",
+        }

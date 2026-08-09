@@ -188,10 +188,13 @@ class _FakeView:
         self.user_type_container = types.SimpleNamespace(
             types={"type-id": (user_type_name, _FakeType("struct DemoType"))}
         )
-        self.dependency_sorted_types = [user_type_name]
         self._data_tags = [(0x1020, _FakeTag("data tag"))]
         self.tags = [tag for _address, tag in self._data_tags]
         self.address_comments = {0x1030: "view comment"}
+
+    @property
+    def dependency_sorted_types(self):
+        raise AssertionError("annotation export must not query dependency-sorted types")
 
     def get_symbols(self):
         return [_FakeSymbol()]
