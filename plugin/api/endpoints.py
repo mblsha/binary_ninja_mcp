@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Optional
 import binaryninja as bn
 from ..core.annotation_archive import export_user_annotations
 from ..core.binary_operations import BinaryOperations
+from ..core.mutations import MutationTransaction, MutationVerificationError
 
 
 class FunctionSignatureParseError(ValueError):
@@ -216,11 +217,21 @@ class BinaryNinjaEndpoints:
             # Parse the C code string to get type objects
             parse_result = self.binary_ops.current_view.parse_types_from_string(c_code)
 
-            # Define each type in the binary view
+            # Parse the complete declaration before opening an undo boundary.
             defined_types = {}
-            for name, type_obj in parse_result.types.items():
-                self.binary_ops.current_view.define_user_type(name, type_obj)
-                defined_types[str(name)] = str(type_obj)
+            view = self.binary_ops.current_view
+            with MutationTransaction(view):
+                for name, type_obj in parse_result.types.items():
+                    view.define_user_type(name, type_obj)
+                    defined_types[str(name)] = str(type_obj)
+                for name, type_obj in parse_result.types.items():
+                    actual = view.get_type_by_name(name)
+                    if actual is None or self._normalize_type_text(
+                        actual
+                    ) != self._normalize_type_text(type_obj):
+                        raise MutationVerificationError(
+                            f"Type definition readback did not match: {name}"
+                        )
 
             return defined_types
         except Exception as e:
@@ -248,6 +259,10 @@ class BinaryNinjaEndpoints:
         function = self.binary_ops.get_function_by_name_or_address(function_name)
         if not function:
             raise ValueError(f"Function '{function_name}' not found")
+        if function.analysis_skipped:
+            raise ValueError("Function analysis is skipped; variable rename was not attempted")
+        if not isinstance(new_name, str) or not new_name.strip():
+            raise ValueError("Variable name must be a non-empty string")
 
         # Try to rename the variable
         try:
@@ -256,7 +271,10 @@ class BinaryNinjaEndpoints:
             if not variable:
                 raise ValueError(f"Variable '{old_name}' not found in function '{function_name}'")
 
-            variable.name = new_name
+            with MutationTransaction(self.binary_ops.current_view):
+                variable.name = new_name
+                if variable.name != new_name:
+                    raise MutationVerificationError("Variable rename readback did not match")
             return {
                 "status": f"Successfully renamed variable '{old_name}' to '{new_name}' in function '{function_name}'"
             }
@@ -285,6 +303,9 @@ class BinaryNinjaEndpoints:
         function = self.binary_ops.get_function_by_name_or_address(function_name)
         if not function:
             raise ValueError(f"Function '{function_name}' not found")
+        if function.analysis_skipped:
+            raise ValueError("Function analysis is skipped; variable retype was not attempted")
+        parsed_type, _ = self.binary_ops.current_view.parse_type_string(type_str)
 
         # Try to rename the variable
         try:
@@ -293,12 +314,17 @@ class BinaryNinjaEndpoints:
             if not variable:
                 raise ValueError(f"Variable '{name}' not found in function '{function_name}'")
 
-            variable.type = type_str
+            with MutationTransaction(self.binary_ops.current_view):
+                variable.type = parsed_type
+                if self._normalize_type_text(variable.type) != self._normalize_type_text(
+                    parsed_type
+                ):
+                    raise MutationVerificationError("Variable type readback did not match")
             return {
                 "status": f"Successfully retyped variable '{name}' to '{type_str}' in function '{function_name}'"
             }
         except Exception as e:
-            raise ValueError(f"Failed to rename variable: {str(e)}")
+            raise ValueError(f"Failed to retype variable: {str(e)}")
 
     @staticmethod
     def _normalize_type_text(value: Any) -> str:
@@ -314,10 +340,18 @@ class BinaryNinjaEndpoints:
         wait: bool = True,
         verify: bool = True,
         dry_run: bool = False,
+        preview: bool = False,
     ) -> Dict[str, Any]:
         """Parse and safely apply a complete function declaration."""
         if not self.binary_ops.current_view:
             raise RuntimeError("No binary loaded")
+
+        if dry_run and preview:
+            raise ValueError("Choose dry_run (parse only) or preview (apply, verify, revert)")
+        if preview and (not wait or not verify):
+            raise ValueError("Preview requires wait=true and verify=true")
+        if verify and not wait and not dry_run:
+            raise ValueError("Verification requires wait=true; use verify=false for queued work")
 
         view = self.binary_ops.current_view
         function = self.binary_ops.get_function_by_name_or_address(function_name)
@@ -326,6 +360,8 @@ class BinaryNinjaEndpoints:
 
         try:
             parsed_type, parsed_name = view.parse_type_string(signature)
+            if parsed_type.type_class != bn.TypeClass.FunctionTypeClass:
+                raise ValueError("The declaration must describe a function, not a data type")
         except Exception as exc:
             raise FunctionSignatureParseError(
                 f"Binary Ninja could not parse the function declaration: {exc}"
@@ -349,6 +385,10 @@ class BinaryNinjaEndpoints:
             "wait_requested": bool(wait),
             "verify_requested": bool(verify),
             "analysis_skipped": analysis_skipped,
+            "preview": bool(preview),
+            "committed": False,
+            "rolled_back": False,
+            "state_unknown": False,
         }
         if dry_run:
             result.update(
@@ -375,46 +415,52 @@ class BinaryNinjaEndpoints:
             )
             return result
 
-        function.type = parsed_type
-        if apply_name and parsed_name_text:
-            function.name = parsed_name_text
+        transaction = MutationTransaction(view, preview=preview)
+        try:
+            with transaction:
+                function.type = parsed_type
+                if apply_name and parsed_name_text:
+                    function.name = parsed_name_text
 
-        if reanalyze:
-            function.reanalyze(bn.FunctionUpdateType.UserFunctionUpdate)
-        if wait:
-            view.update_analysis_and_wait()
+                if reanalyze:
+                    function.reanalyze(bn.FunctionUpdateType.UserFunctionUpdate)
+                if wait:
+                    view.update_analysis_and_wait()
 
-        fresh = view.get_function_at(function.start, function.platform)
-        if fresh is None:
-            fresh = function
-        after_name = fresh.name
-        after_type = str(fresh.type)
-        type_matches = self._normalize_type_text(after_type) == self._normalize_type_text(
-            requested_type
-        )
-        name_matches = not apply_name or not parsed_name_text or after_name == parsed_name_text
-        verified = bool(type_matches and name_matches) if verify else None
-        success = bool(verified) if verify else True
-
-        result.update(
-            {
-                "success": success,
-                "after_name": after_name,
-                "after_type": after_type,
-                "type_matches": type_matches,
-                "name_matches": name_matches,
-                "verified": verified,
-                "message": (
-                    "Function signature applied and verified."
-                    if success and verify
-                    else "Function signature applied; verification was not requested."
-                    if success
-                    else "Function signature readback did not match the requested declaration."
-                ),
-            }
-        )
-        if not success:
-            result["error"] = result["message"]
+                fresh = view.get_function_at(function.start, function.platform)
+                if fresh is None:
+                    raise MutationVerificationError("Function disappeared during signature update")
+                after_name = fresh.name
+                after_type = str(fresh.type)
+                type_matches = self._normalize_type_text(after_type) == self._normalize_type_text(
+                    requested_type
+                )
+                name_matches = (
+                    not apply_name or not parsed_name_text or after_name == parsed_name_text
+                )
+                verified = bool(type_matches and name_matches) if verify else None
+                result.update(
+                    after_name=after_name,
+                    after_type=after_type,
+                    type_matches=type_matches,
+                    name_matches=name_matches,
+                    verified=verified,
+                )
+                if verify and not verified:
+                    raise MutationVerificationError(
+                        "Function signature readback did not match the requested declaration."
+                    )
+            result["message"] = (
+                "Signature preview verified and reverted; no changes committed."
+                if preview
+                else "Function signature applied and verified."
+                if verify
+                else "Function signature applied; verification was not requested."
+            )
+        except Exception as exc:
+            result.update(success=False, error=str(exc), message=str(exc))
+            result.setdefault("verified", False)
+        result.update(transaction.as_dict())
         return result
 
     def reanalyze_function(

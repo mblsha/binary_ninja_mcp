@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import pytest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -153,6 +154,34 @@ def test_signature_returns_failure_for_unverified_response():
         _instance, return_code = binja_cli.BinaryNinjaCLI.run(argv, exit=False)
 
     assert return_code == 1
+
+
+@pytest.mark.parametrize("conflict", ["--dry-run", "--no-wait", "--no-verify"])
+def test_signature_preview_rejects_conflicting_options_without_request(conflict, capsys):
+    argv = ["binja-mcp", "signature", "0x1000", "--preview", conflict, "void f(void);"]
+    with patch.object(binja_cli.BinaryNinjaCLI, "_request") as request:
+        _instance, return_code = binja_cli.BinaryNinjaCLI.run(argv, exit=False)
+    assert return_code == 2
+    request.assert_not_called()
+    assert "cannot be combined" in capsys.readouterr().err
+
+
+def test_signature_preview_payload():
+    argv = [
+        "binja-mcp",
+        "--json",
+        "--no-auto-errors",
+        "signature",
+        "0x1000",
+        "--preview",
+        "void f(void);",
+    ]
+    with patch.object(
+        binja_cli.BinaryNinjaCLI, "_request", return_value=_signature_response()
+    ) as request:
+        _instance, return_code = binja_cli.BinaryNinjaCLI.run(argv, exit=False)
+    assert return_code == 0
+    assert request.call_args.kwargs["data"]["preview"] is True
 
 
 def test_reanalyze_waits_by_default():

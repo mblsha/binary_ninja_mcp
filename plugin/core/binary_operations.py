@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 from .config import BinaryNinjaConfig
 from .view_identity import make_logical_view_id, make_public_view_id
+from .mutations import MutationTransaction, MutationVerificationError, MutationRollbackError
 from binaryninja.enums import TypeClass, StructureVariant
 
 
@@ -411,7 +412,7 @@ class BinaryOperations:
         return segments[offset : offset + limit]
 
     def rename_function(self, old_name: str, new_name: str) -> bool:
-        """Rename a function using multiple fallback methods.
+        """Rename a function atomically and verify the resulting name.
 
         Args:
             old_name: Current function name or address
@@ -431,58 +432,26 @@ class BinaryOperations:
 
             bn.log_info(f"Found function to rename: {func.name} at {hex(func.start)}")
 
-            if not new_name or not isinstance(new_name, str):
+            if not isinstance(new_name, str) or not new_name.strip():
                 bn.log_error(f"Invalid new name: {new_name}")
                 return False
 
-            if not hasattr(func, "name") or not hasattr(func, "__setattr__"):
-                bn.log_error(f"Function {func.name} cannot be renamed (read-only)")
-                return False
-
-            try:
-                # Try direct name assignment first
-                old_name = func.name
+            with MutationTransaction(self._current_view):
                 func.name = new_name
-
-                if func.name == new_name:
-                    bn.log_info(f"Successfully renamed function from {old_name} to {new_name}")
-                    return True
-
-                # Try symbol-based renaming if direct assignment fails
-                if hasattr(func, "symbol") and func.symbol:
-                    try:
-                        new_symbol = bn.Symbol(
+                if func.name != new_name and getattr(func, "symbol", None):
+                    self._current_view.define_user_symbol(
+                        bn.Symbol(
                             func.symbol.type,
                             func.start,
                             new_name,
-                            namespace=func.symbol.namespace
-                            if hasattr(func.symbol, "namespace")
-                            else None,
+                            namespace=getattr(func.symbol, "namespace", None),
                         )
-                        self._current_view.define_user_symbol(new_symbol)
-                        bn.log_info("Successfully renamed function using symbol table")
-                        return True
-                    except Exception as e:
-                        bn.log_error(f"Symbol-based rename failed: {e}")
-
-                # Try function update method as last resort
-                if hasattr(self._current_view, "update_function"):
-                    try:
-                        func_copy = func
-                        func_copy.name = new_name
-                        self._current_view.update_function(func)
-                        bn.log_info("Successfully renamed function using update method")
-                        return True
-                    except Exception as e:
-                        bn.log_error(f"Function update rename failed: {e}")
-
-                bn.log_error(f"All rename methods failed - function name unchanged: {func.name}")
-                return False
-
-            except Exception as e:
-                bn.log_error(f"Error during rename operation: {e}")
-                return False
-
+                    )
+                if func.name != new_name:
+                    raise MutationVerificationError("Function rename readback did not match")
+            return True
+        except MutationRollbackError:
+            raise
         except Exception as e:
             bn.log_error(f"Error in rename_function: {e}")
             return False
@@ -569,11 +538,20 @@ class BinaryOperations:
             raise RuntimeError("No binary loaded")
 
         try:
-            if self._current_view.is_valid_offset(address):
+            if not isinstance(new_name, str) or not new_name.strip():
+                raise ValueError("Data name must be a non-empty string")
+            if not self._current_view.is_valid_offset(address):
+                return False
+            with MutationTransaction(self._current_view):
                 self._current_view.define_user_symbol(
                     bn.Symbol(bn.SymbolType.DataSymbol, address, new_name)
                 )
-                return True
+                symbol = self._current_view.get_symbol_at(address)
+                if symbol is None or symbol.name != new_name:
+                    raise MutationVerificationError("Data rename readback did not match")
+            return True
+        except MutationRollbackError:
+            raise
         except Exception as e:
             bn.log_error(f"Failed to rename data: {e}")
         return False
@@ -639,9 +617,16 @@ class BinaryOperations:
                 bn.log_error(f"Invalid address for comment: {hex(address)}")
                 return False
 
-            self._current_view.set_comment_at(address, comment)
+            if comment is not None and not isinstance(comment, str):
+                raise ValueError("Comment must be a string or null")
+            with MutationTransaction(self._current_view):
+                self._current_view.set_comment_at(address, comment or "")
+                if (self._current_view.get_comment_at(address) or "") != (comment or ""):
+                    raise MutationVerificationError("Comment readback did not match")
             bn.log_info(f"Set comment at {hex(address)}: {comment}")
             return True
+        except MutationRollbackError:
+            raise
         except Exception as e:
             bn.log_error(f"Failed to set comment: {e}")
             return False
@@ -665,9 +650,9 @@ class BinaryOperations:
                 bn.log_error(f"Function not found: {identifier}")
                 return False
 
-            self._current_view.set_comment_at(func.start, comment)
-            bn.log_info(f"Set comment for function {func.name} at {hex(func.start)}: {comment}")
-            return True
+            return self.set_comment(func.start, comment)
+        except MutationRollbackError:
+            raise
         except Exception as e:
             bn.log_error(f"Failed to set function comment: {e}")
             return False
@@ -721,32 +706,11 @@ class BinaryOperations:
 
     def delete_comment(self, address: int) -> bool:
         """Delete a comment at a specific address"""
-        if not self._current_view:
-            raise RuntimeError("No binary loaded")
-
-        try:
-            if self._current_view.is_valid_offset(address):
-                self._current_view.set_comment_at(address, None)
-                return True
-        except Exception as e:
-            bn.log_error(f"Failed to delete comment: {e}")
-        return False
+        return self.set_comment(address, "")
 
     def delete_function_comment(self, identifier: Union[str, int]) -> bool:
         """Delete a comment for a function"""
-        if not self._current_view:
-            raise RuntimeError("No binary loaded")
-
-        try:
-            func = self.get_function_by_name_or_address(identifier)
-            if not func:
-                return False
-
-            func.comment = None
-            return True
-        except Exception as e:
-            bn.log_error(f"Failed to delete function comment: {e}")
-        return False
+        return self.set_function_comment(identifier, "")
 
     def get_assembly_function(self, identifier: Union[str, int]) -> Optional[str]:
         """Get the assembly representation of a function with practical annotations.

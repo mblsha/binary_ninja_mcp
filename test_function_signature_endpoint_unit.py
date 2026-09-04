@@ -7,6 +7,7 @@ import sys
 import types
 from pathlib import Path
 from unittest.mock import patch
+import pytest
 
 
 MODULE_PATH = Path(__file__).resolve().parent / "plugin" / "api" / "endpoints.py"
@@ -15,11 +16,18 @@ MODULE_PATH = Path(__file__).resolve().parent / "plugin" / "api" / "endpoints.py
 def _load_module():
     binaryninja = types.ModuleType("binaryninja")
     binaryninja.FunctionUpdateType = types.SimpleNamespace(UserFunctionUpdate="user-update")
+    binaryninja.TypeClass = types.SimpleNamespace(FunctionTypeClass="function")
 
     archive = types.ModuleType("plugin.core.annotation_archive")
     archive.export_user_annotations = lambda *_args, **_kwargs: {}
     operations = types.ModuleType("plugin.core.binary_operations")
     operations.BinaryOperations = object
+
+    mutation_spec = importlib.util.spec_from_file_location(
+        "plugin.core.mutations", MODULE_PATH.parent.parent / "core/mutations.py"
+    )
+    mutations = importlib.util.module_from_spec(mutation_spec)
+    mutation_spec.loader.exec_module(mutations)
 
     spec = importlib.util.spec_from_file_location(
         "plugin.api.endpoints_signature_unit_target",
@@ -33,6 +41,7 @@ def _load_module():
             "binaryninja": binaryninja,
             "plugin.core.annotation_archive": archive,
             "plugin.core.binary_operations": operations,
+            "plugin.core.mutations": mutations,
         },
     ):
         spec.loader.exec_module(module)
@@ -45,6 +54,7 @@ endpoints_module = _load_module()
 class _FakeType:
     def __init__(self, text: str):
         self.text = text
+        self.type_class = "function"
 
     def __str__(self) -> str:
         return self.text
@@ -71,6 +81,22 @@ class _FakeView:
         self.parsed_signatures = []
         self.wait_count = 0
         self.get_function_at_calls = []
+        self.undo_events = []
+        self.before = None
+
+    def begin_undo_actions(self):
+        self.before = self.function.type, self.function.name
+        self.undo_events.append("begin")
+        return "signature-test"
+
+    def commit_undo_actions(self, state):
+        assert state == "signature-test"
+        self.undo_events.append("commit")
+
+    def revert_undo_actions(self, state):
+        assert state == "signature-test"
+        self.function.type, self.function.name = self.before
+        self.undo_events.append("revert")
 
     def parse_type_string(self, signature: str):
         self.parsed_signatures.append(signature)
@@ -113,6 +139,7 @@ def test_signature_dry_run_only_parses():
     assert function.type is before_type
     assert function.reanalysis_requests == []
     assert view.wait_count == 0
+    assert view.undo_events == []
 
 
 def test_signature_applies_reanalyzes_waits_and_verifies_readback():
@@ -128,6 +155,8 @@ def test_signature_applies_reanalyzes_waits_and_verifies_readback():
     assert function.reanalysis_requests == ["user-update"]
     assert view.wait_count == 1
     assert view.get_function_at_calls == [(function.start, function.platform)]
+    assert view.undo_events == ["begin", "commit"]
+    assert result["committed"] is True
 
 
 def test_signature_can_apply_backtick_parsed_name():
@@ -160,6 +189,7 @@ def test_signature_refuses_to_mutate_when_analysis_is_skipped():
 
 def test_signature_reports_readback_mismatch():
     endpoint, function, view, _requested_type = _new_endpoint()
+    before_type = function.type
 
     def replace_type_after_wait():
         view.wait_count += 1
@@ -171,6 +201,73 @@ def test_signature_reports_readback_mismatch():
     assert result["success"] is False
     assert result["verified"] is False
     assert result["type_matches"] is False
+    assert result["rolled_back"] is True
+    assert result["committed"] is False
+    assert function.type is before_type
+
+
+def test_signature_rolls_back_unexpected_analysis_exception():
+    endpoint, function, view, _requested_type = _new_endpoint()
+    before = function.type, function.name
+    view.parsed_name = "changed_name"
+
+    def fail_analysis():
+        raise RuntimeError("injected analysis failure")
+
+    view.update_analysis_and_wait = fail_analysis
+    result = endpoint.edit_function_signature(
+        "0x6c562", "void changed_name(void);", apply_name=True
+    )
+    assert result["success"] is False
+    assert result["rolled_back"] is True
+    assert "injected analysis failure" in result["error"]
+    assert (function.type, function.name) == before
+
+
+def test_signature_preview_verifies_then_restores_type_and_name():
+    endpoint, function, view, _requested_type = _new_endpoint()
+    before = function.type, function.name
+    view.parsed_name = "preview_name"
+    result = endpoint.edit_function_signature(
+        "0x6c562", "void preview_name(void);", apply_name=True, preview=True
+    )
+    assert result["success"] is True
+    assert result["verified"] is True
+    assert result["preview"] is True
+    assert result["committed"] is False
+    assert result["rolled_back"] is True
+    assert (function.type, function.name) == before
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"preview": True, "dry_run": True},
+        {"preview": True, "wait": False},
+        {"preview": True, "verify": False},
+        {"verify": True, "wait": False},
+    ],
+)
+def test_signature_rejects_incompatible_flags_before_parsing(kwargs):
+    endpoint, _function, view, _requested_type = _new_endpoint()
+    with pytest.raises(ValueError):
+        endpoint.edit_function_signature("0x6c562", "void test(void);", **kwargs)
+    assert view.parsed_signatures == []
+    assert view.undo_events == []
+
+
+def test_signature_rollback_failure_reports_unknown_state():
+    endpoint, _function, view, _requested_type = _new_endpoint()
+
+    def fail_rollback(_state):
+        raise RuntimeError("injected rollback failure")
+
+    view.revert_undo_actions = fail_rollback
+    result = endpoint.edit_function_signature("0x6c562", "void test(void);", preview=True)
+    assert result["success"] is False
+    assert result["state_unknown"] is True
+    assert result["rolled_back"] is False
+    assert "Rollback failed" in result["error"]
 
 
 def test_signature_wraps_binary_ninja_parser_diagnostics():
@@ -188,6 +285,16 @@ def test_signature_wraps_binary_ninja_parser_diagnostics():
         assert "out-of-line declaration" in str(exc)
     else:
         raise AssertionError("parser failure should propagate as FunctionSignatureParseError")
+
+
+def test_signature_rejects_non_function_types_before_mutation():
+    endpoint, _function, view, _requested_type = _new_endpoint()
+    view.requested_type.type_class = "integer"
+    with pytest.raises(
+        endpoints_module.FunctionSignatureParseError, match="must describe a function"
+    ):
+        endpoint.edit_function_signature("0x6c562", "int32_t data;")
+    assert view.undo_events == []
 
 
 def test_reanalyze_function_uses_explicit_user_update_and_waits():
