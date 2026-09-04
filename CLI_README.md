@@ -13,9 +13,13 @@ database save operation. Use `bv.save_auto_snapshot()` for an existing BNDB, or
 ## Installation
 
 ```bash
-# Create/sync local environment (creates `.venv/`)
-uv sync
+# Install the client executable; the Binary Ninja plugin is installed separately
+uv tool install .
 ```
+
+Run `binja-cli` from any directory. `binja-mcp` remains an executable alias.
+For source development, `uv sync` installs an editable client into `.venv`, and
+`uv run binja-cli` or `uv run python scripts/binja-cli.py` runs that implementation.
 
 ## Usage
 
@@ -25,76 +29,76 @@ The CLI provides a convenient way to interact with the Binary Ninja MCP server f
 
 ```bash
 # Check server status
-./cli.py status
+binja-cli status
 
 # Open a file (surface database choice; auto-resolve "Open with Options")
-./cli.py open /path/to/binary
-./cli.py open /path/to/binary --view-type Mapped --platform x86_16
+binja-cli open /path/to/binary
+binja-cli open /path/to/binary --view-type Mapped --platform x86_16
 
 # Close Binary Ninja and auto-answer save confirmation dialogs
-./cli.py quit
-./cli.py quit --decision auto --mark-dirty
+binja-cli quit
+binja-cli quit --decision auto --mark-dirty
 
 # List functions
-./cli.py functions
-./cli.py functions --limit 50
-./cli.py functions --search malloc
+binja-cli functions
+binja-cli functions --limit 50
+binja-cli functions --search malloc
 
 # Decompile a function
-./cli.py decompile main
-./cli.py decompile 0x401000
+binja-cli decompile main
+binja-cli decompile 0x401000
 
 # Get assembly for a function
-./cli.py assembly main
+binja-cli assembly main
 
 # Rename a function
-./cli.py rename function old_name new_name
+binja-cli rename function old_name new_name
 
 # Safely change a function signature and wait for per-function reanalysis
-./cli.py signature 0x401000 --file declaration.c
+binja-cli signature 0x401000 --file declaration.c
 
 # Explicitly reanalyze one function
-./cli.py reanalyze 0x401000
+binja-cli reanalyze 0x401000
 
 # Add a comment
-./cli.py comment 0x401000 "Entry point"
-./cli.py comment --function main "Main function"
+binja-cli comment 0x401000 "Entry point"
+binja-cli comment --function main "Main function"
 
 # Find references to a function
-./cli.py refs malloc
+binja-cli refs malloc
 ```
 
 ### Log Management
 
 ```bash
 # View recent logs
-./cli.py logs
-./cli.py logs --count 50
+binja-cli logs
+binja-cli logs --count 50
 
 # View only errors
-./cli.py logs --errors
+binja-cli logs --errors
 
 # View only warnings
-./cli.py logs --warnings
+binja-cli logs --warnings
 
 # Search logs
-./cli.py logs --search "error"
+binja-cli logs --search "error"
 
 # View log statistics
-./cli.py logs --stats
+binja-cli logs --stats
 
 # Clear logs
-./cli.py logs --clear
+binja-cli logs --clear
 ```
 
 ### Type Management
 
 ```bash
 # Get a user-defined type
-./cli.py type MyStruct
+binja-cli type MyStruct
 
 # Define types from C code
-./cli.py type --define "struct Point { int x; int y; };"
+binja-cli type --define "struct Point { int x; int y; };"
 ```
 
 ### Function Signatures and Reanalysis
@@ -109,7 +113,7 @@ these declarations via a file or a single-quoted heredoc so the shell does not
 execute the backticks:
 
 ```bash
-./cli.py --filename /absolute/path/to/database.bndb \
+binja-cli --filename /absolute/path/to/database.bndb \
   signature 0x6c562 --stdin <<'EOF'
 int32_t __convention("default")
 `EGiridaOTankFamily_6ba10::state_giridao_cannon_6c562`(
@@ -123,7 +127,7 @@ the existing function name. If Binary Ninja still presents its function-level
 Reanalyze action after a manual change, run:
 
 ```bash
-./cli.py --filename /absolute/path/to/database.bndb reanalyze 0x6c562
+binja-cli --filename /absolute/path/to/database.bndb reanalyze 0x6c562
 ```
 
 The corresponding HTTP operations are `POST /function/signature` and
@@ -134,10 +138,10 @@ with `error_code: FUNCTION_SIGNATURE_PARSE_ERROR`.
 
 ```bash
 # List imports
-./cli.py imports
+binja-cli imports
 
 # List exports
-./cli.py exports
+binja-cli exports
 ```
 
 ### Portable Annotation Archives
@@ -190,43 +194,43 @@ absolute `output_path`. Optional JSON fields are `type_library_path`,
 
 ```bash
 # Use a different server
-./cli.py --server http://localhost:8080 status
+binja-cli --server http://localhost:8080 status
 
 # Get raw JSON output
-./cli.py --json functions
+binja-cli --json functions
 
 # Verbose mode
-./cli.py --verbose decompile main
+binja-cli --verbose decompile main
 
 # Override HTTP action/read timeout or fast connection timeout
-./cli.py --request-timeout 180 --connect-timeout 5 decompile main
+binja-cli --request-timeout 180 --connect-timeout 5 decompile main
 
 # Target a specific already-open BinaryView when multiple binaries are open
-./cli.py --filename /path/to/primary.bin functions --limit 20
-./cli.py --filename secondary.bin decompile process_shared_request
+binja-cli --filename /path/to/primary.bin functions --limit 20
+binja-cli --filename secondary.bin decompile process_shared_request
 
 # Discover loaded views and pick an explicit view id
-./cli.py views
-./cli.py --json views | jq '.views[] | {view_id, basename, architecture, analysis_status}'
-./cli.py --view-id 202 --filename secondary.bin python "print(hex(here))"
+binja-cli views
+binja-cli --json views | jq '.views[] | {view_id, basename, architecture, analysis_status}'
+binja-cli --view-id 202 --filename secondary.bin python "print(hex(here))"
 
 # Targeting is strict by default when --filename/--view-id is used
-./cli.py --filename /path/to/primary.bin --strict-target decompile init_hardware
+binja-cli --filename /path/to/primary.bin --strict-target decompile init_hardware
 
 # Opt into legacy best-effort fallback behavior
-./cli.py --filename /path/to/primary.bin --allow-target-fallback decompile init_hardware
+binja-cli --filename /path/to/primary.bin --allow-target-fallback decompile init_hardware
 ```
 
 ### Help
 
 ```bash
 # General help
-./cli.py --help
+binja-cli --help
 
 # Command-specific help
-./cli.py functions --help
-./cli.py logs --help
-./cli.py open --help
+binja-cli functions --help
+binja-cli logs --help
+binja-cli open --help
 ```
 
 ### Open Dialog Automation
@@ -256,28 +260,28 @@ Examples:
 
 ```bash
 # Typical UI-driven open with explicit platform/view
-./cli.py open /path/to/town_mcga.bin --view-type Mapped --platform x86_16
+binja-cli open /path/to/town_mcga.bin --view-type Mapped --platform x86_16
 
 # Open the saved database when Binary Ninja finds one beside the input
-./cli.py open /path/to/town_mcga.bin --existing-database yes
+binja-cli open /path/to/town_mcga.bin --existing-database yes
 
 # Ignore the saved database and analyze the raw input
-./cli.py open /path/to/town_mcga.bin --existing-database no
+binja-cli open /path/to/town_mcga.bin --existing-database no
 
 # Confirm target registration in /views
-./cli.py open /path/to/town_mcga.bin --wait-open-target 8
+binja-cli open /path/to/town_mcga.bin --wait-open-target 8
 
 # Wait for analysis after target confirmation
-./cli.py open /path/to/town_mcga.bin --wait-analysis --analysis-timeout 180
+binja-cli open /path/to/town_mcga.bin --wait-analysis --analysis-timeout 180
 
 # Inspect state only (no click/load side effects)
-./cli.py open /path/to/town_mcga.bin --inspect-only
+binja-cli open /path/to/town_mcga.bin --inspect-only
 
 # Configure fields but don't click Open
-./cli.py open /path/to/town_mcga.bin --view-type Raw --platform x86 --no-click
+binja-cli open /path/to/town_mcga.bin --view-type Raw --platform x86 --no-click
 
 # JSON output for scripting
-./cli.py --json open /path/to/town_mcga.bin --platform x86_16
+binja-cli --json open /path/to/town_mcga.bin --platform x86_16
 ```
 
 ### Quit Dialog Automation
@@ -297,23 +301,23 @@ Examples:
 
 ```bash
 # Auto policy (recommended)
-./cli.py quit
+binja-cli quit
 
 # Force specific behavior
-./cli.py quit --decision dont-save
-./cli.py quit --decision save
+binja-cli quit --decision dont-save
+binja-cli quit --decision save
 
 # Test dialog handling by forcing dirty state first
-./cli.py quit --mark-dirty
+binja-cli quit --mark-dirty
 
 # Inspect policy/dialog state only
-./cli.py quit --inspect-only
+binja-cli quit --inspect-only
 
 # Ask app to exit after dialog handling (best-effort)
-./cli.py quit --quit-app --quit-delay-ms 500
+binja-cli quit --quit-app --quit-delay-ms 500
 
 # Script-friendly structured output
-./cli.py --json quit
+binja-cli --json quit
 ```
 
 ## Examples
@@ -322,47 +326,47 @@ Examples:
 
 ```bash
 # Check if a binary is loaded
-./cli.py status
+binja-cli status
 
 # Search for interesting functions
-./cli.py functions --search decrypt
-./cli.py functions --search auth
+binja-cli functions --search decrypt
+binja-cli functions --search auth
 
 # Decompile a function
-./cli.py decompile decrypt_data
+binja-cli decompile decrypt_data
 
 # Find who calls it
-./cli.py refs decrypt_data
+binja-cli refs decrypt_data
 
 # Add analysis notes
-./cli.py comment --function decrypt_data "XOR decryption with key at 0x404000"
+binja-cli comment --function decrypt_data "XOR decryption with key at 0x404000"
 ```
 
 ### Debugging Issues
 
 ```bash
 # Check recent errors
-./cli.py logs --errors
+binja-cli logs --errors
 
 # Search for specific issues
-./cli.py logs --search "failed to"
+binja-cli logs --search "failed to"
 
 # Get detailed log statistics
-./cli.py logs --stats
+binja-cli logs --stats
 ```
 
 ### Python Execution
 
 ```bash
 # Execute Python code - multiple input methods
-./cli.py python "print('Hello')"                    # Inline code
-./cli.py python script.py                           # From file (auto-detected)
-./cli.py python -f script.py                        # From file (explicit)
-echo "print('Hi')" | ./cli.py python                # From stdin (piped)
-./cli.py python --stdin < script.py                 # From stdin (redirect)
+binja-cli python "print('Hello')"                    # Inline code
+binja-cli python script.py                           # From file (auto-detected)
+binja-cli python -f script.py                        # From file (explicit)
+echo "print('Hi')" | binja-cli python                # From stdin (piped)
+binja-cli python --stdin < script.py                 # From stdin (redirect)
 
 # Complex strings without escaping (use files or stdin)
-cat << 'EOF' | ./cli.py python
+cat << 'EOF' | binja-cli python
 print('''No escaping needed:
 - Quotes: "double" and 'single'
 - Paths: C:\Windows\System32
@@ -371,13 +375,13 @@ print('''No escaping needed:
 EOF
 
 # Interactive Python console
-./cli.py python -i
+binja-cli python -i
 
 # Code completion
-./cli.py python -c "find_f"                         # Shows: find_funcs, find_functions
+binja-cli python -c "find_f"                         # Shows: find_funcs, find_functions
 
 # With JSON output for automation
-./cli.py --json python "{'count': len(list(bv.functions))}"
+binja-cli --json python "{'count': len(list(bv.functions))}"
 ```
 
 See [Python CLI Guide](docs/PYTHON_CLI_GUIDE.md) for detailed examples.
@@ -388,13 +392,13 @@ Binary Ninja tags are annotations attached to addresses (e.g., warnings, notes, 
 
 ```bash
 # Count total tags in the binary
-./cli.py python "
+binja-cli python "
 total = sum(len(f.tags) for f in bv.functions if hasattr(f, 'tags'))
 print(f'Total tags: {total}')
 "
 
 # Find tags with specific text (e.g., unimplemented instructions)
-./cli.py python "
+binja-cli python "
 unimplemented = []
 for func in bv.functions:
     if hasattr(func, 'tags'):
@@ -412,7 +416,7 @@ for addr, text, func_name in sorted(unimplemented)[:10]:
 "
 
 # Get tags at a specific address
-./cli.py python "
+binja-cli python "
 addr = 0xC04AE
 for func in bv.functions:
     if hasattr(func, 'tags'):
@@ -422,7 +426,7 @@ for func in bv.functions:
 "
 
 # Group tags by type
-./cli.py python "
+binja-cli python "
 tag_types = {}
 for func in bv.functions:
     if hasattr(func, 'tags'):
@@ -437,7 +441,7 @@ for tag_type, count in sorted(tag_types.items(), key=lambda x: x[1], reverse=Tru
 "
 
 # Save tags to a file
-./cli.py python "
+binja-cli python "
 import json
 tags_list = []
 for func in bv.functions:
@@ -464,13 +468,13 @@ print(f'Saved {len(tags_list)} tags to /tmp/tags.json')
 
 ```bash
 # Add a comment at an address (works for any address, not just functions)
-./cli.py python "bv.set_comment_at(0xC0074, 'Initializes IMR')"
+binja-cli python "bv.set_comment_at(0xC0074, 'Initializes IMR')"
 
 # Gotcha: comments can be function-local.
 # - `bv.get_comment_at(addr)` only returns “global” address comments.
 # - For comments inside a function, Binary Ninja commonly stores them on the function:
 #   `f.get_comment_at(addr)` (and `f.set_comment_at(addr, ...)`).
-./cli.py python "
+binja-cli python "
 addr = 0xC0074
 f = bv.get_functions_containing(addr)[0]
 print('func comment:', f.get_comment_at(addr))
@@ -480,7 +484,7 @@ print('global comment:', bv.get_comment_at(addr))
 # Note: for addresses that are not part of any function, Binary Ninja may not display
 # the comment in views/listings until the address has a defined item (e.g., a data var,
 # a symbol, or a user-created function) at that location.
-./cli.py python "
+binja-cli python "
 from binaryninja import Symbol, SymbolType, Type
 addr = 0x132
 bv.define_data_var(addr, Type.int(1, False))              # define a byte
@@ -489,7 +493,7 @@ bv.set_comment_at(addr, 'Keyboard short-repeat reload constant')
 "
 
 # Batch apply from JSON (format: {'0xC0074': 'comment', ...})
-./cli.py python "
+binja-cli python "
 import json
 data = json.load(open('/path/to/comments.json'))
 for addr_str, desc in data.items():
@@ -498,7 +502,7 @@ for addr_str, desc in data.items():
 "
 
 # Read comment at address
-./cli.py python "print(bv.get_comment_at(0xC0074))"
+binja-cli python "print(bv.get_comment_at(0xC0074))"
 ```
 
 - `bv.set_comment_at(addr, text)` - Set comment at any address
@@ -509,14 +513,14 @@ for addr_str, desc in data.items():
 ```bash
 # Rename multiple functions (using shell)
 for i in {1..10}; do
-    ./cli.py rename function "sub_${i}" "handler_${i}"
+    binja-cli rename function "sub_${i}" "handler_${i}"
 done
 
 # Export all function names
-./cli.py --json functions --limit 10000 | jq -r '.functions[]' > all_functions.txt
+binja-cli --json functions --limit 10000 | jq -r '.functions[]' > all_functions.txt
 
 # Use Python for complex analysis
-./cli.py python "
+binja-cli python "
 funcs = [f for f in bv.functions if 'crypt' in f.name.lower()]
 for f in funcs[:5]:
     print(f'{f.name} at {hex(f.start)}')
