@@ -4,6 +4,7 @@ Binary Ninja MCP CLI - Command-line interface for Binary Ninja MCP server
 Uses the plugin server HTTP API from a terminal interface
 """
 
+import errno
 import json
 import os
 import subprocess
@@ -2876,12 +2877,23 @@ class Functions(cli.Application):
 class Decompile(cli.Application):
     """Decompile a function"""
 
+    allow_analysis_skipped = cli.Flag(
+        ["--allow-analysis-skipped"],
+        help=(
+            "Explicitly clear an analysis-skipped function's skip state so it can "
+            "be decompiled. This is a persistent mutation."
+        ),
+    )
+
     def main(self, function_name: str):
         error_snapshot = self.parent._capture_error_snapshot()
         data = self.parent._request(
             "GET",
             "decompile",
-            {"name": function_name},
+            {
+                "name": function_name,
+                "allow_analysis_skipped": bool(self.allow_analysis_skipped),
+            },
             timeout=max(self.parent.request_timeout, 30.0),
         )
 
@@ -3543,7 +3555,15 @@ class Python(cli.Application):
                 from pathlib import Path
 
                 file_path = Path(args[0])
-                if file_path.exists() and file_path.is_file():
+                try:
+                    is_file = file_path.exists() and file_path.is_file()
+                except OSError as exc:
+                    if exc.errno != errno.ENAMETOOLONG:
+                        raise
+                    # A long inline program is not a plausible filesystem path.
+                    # macOS raises ENAMETOOLONG before ``exists`` can return false.
+                    is_file = False
+                if is_file:
                     # It's a file, read it
                     try:
                         code = file_path.read_text()

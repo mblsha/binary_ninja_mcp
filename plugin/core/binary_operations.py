@@ -502,6 +502,7 @@ class BinaryOperations:
             "name": func.name,
             "raw_name": func.raw_name if hasattr(func, "raw_name") else func.name,
             "address": hex(func.start),
+            "analysis_skipped": bool(func.analysis_skipped),
             "symbol": None,
         }
 
@@ -515,11 +516,19 @@ class BinaryOperations:
 
         return info
 
-    def decompile_function(self, identifier: Union[str, int]) -> Optional[str]:
+    def decompile_function(
+        self,
+        identifier: Union[str, int],
+        *,
+        allow_analysis_skipped: bool = False,
+    ) -> Optional[str]:
         """Decompile a function to its high-level representation.
 
         Args:
             identifier: Function name or address
+            allow_analysis_skipped: Explicitly clear an analysis-skip override
+                before requesting IL. Defaults to false because requesting IL
+                for a skipped function is a persistent mutation.
 
         Returns:
             Decompiled function code as string, or None if decompilation fails
@@ -531,9 +540,14 @@ class BinaryOperations:
         if not func:
             return None
 
-        # analyze func in case it was skipped
-        func.analysis_skipped = False
-        self._current_view.update_analysis_and_wait()
+        if func.analysis_skipped:
+            if not allow_analysis_skipped:
+                raise RuntimeError(
+                    "Function analysis is skipped; decompilation would clear the "
+                    "skip state. Re-run with an explicit analysis-skipped opt-in."
+                )
+            func.analysis_skipped = False
+            self._current_view.update_analysis_and_wait()
 
         try:
             # Try high-level IL first for best readability
