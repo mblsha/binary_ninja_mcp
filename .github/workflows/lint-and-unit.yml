@@ -22,6 +22,11 @@ jobs:
       - name: Run offline tests (exclude real-Binja)
         run: uv run --with pytest pytest -q -m "not binja"
 
+      - name: Build and smoke-test installed CLI
+        run: |
+          uv build
+          uv run python scripts/smoke_cli_wheel.py dist/*.whl
+
       - name: Ruff check
         run: uv tool run ruff@0.14.10 check --output-format=github .
 

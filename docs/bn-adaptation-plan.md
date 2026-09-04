@@ -45,7 +45,13 @@ real-GUI or cross-platform verification.
 - [ ] Selective multi-function bundles with one pinned target and stable envelope.
 - [ ] Compact function info, optional locals; scoped offline schema and doctor.
 - [ ] Explicit Python code/script sources and compatible `py` alias.
-- [ ] Installed `binja-cli` entry point and wheel/install smoke tests.
+- [x] Installed `binja-cli` entry point and wheel/install smoke tests. The
+  `binja-mcp` alias and source wrapper use the same `binja_cli.cli` module.
+  Verified a non-editable wheel in a fresh environment outside the checkout;
+  neither the plugin nor the Binary Ninja SDK is imported by the client.
+
+Packaging checkpoint: 201 offline tests passed (19 live tests deselected,
+8 subtests passed), wheel build and install smoke passed, Ruff lint passed.
 
 ## Pass 3: analysis breadth
 

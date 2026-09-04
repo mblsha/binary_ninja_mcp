@@ -24,11 +24,16 @@ On Linux/Windows, use the plugins directory paths listed below.
 
 Restart Binary Ninja after installing.
 
-### 2) Install CLI dependencies (uv)
+### 2) Install the CLI (uv)
 
 ```bash
-uv sync
+uv tool install .
 ```
+
+This installs `binja-cli` (and the compatible `binja-mcp` alias) without the
+Binary Ninja Python SDK. Plugin installation remains separate. For development,
+use `uv sync` and `uv run binja-cli`; the existing
+`uv run python scripts/binja-cli.py` source invocation also remains supported.
 
 ### 3) Start the server in Binary Ninja
 
