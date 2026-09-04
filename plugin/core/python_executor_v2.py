@@ -8,6 +8,7 @@ import ast
 import time
 import threading
 import queue
+import math
 from contextlib import redirect_stdout, redirect_stderr
 from collections import deque
 from datetime import datetime
@@ -325,6 +326,7 @@ Examples:
 
         result = {
             "success": False,
+            "serialization_version": 2,
             "stdout": "",
             "stderr": "",
             "return_value": None,
@@ -383,7 +385,9 @@ Examples:
                     result["success"] = True
 
                 except Exception as e:
-                    exception_queue.put(e)
+                    # Exception state is thread-local: capture it here, not in
+                    # the caller after the worker has finished.
+                    exception_queue.put((e, traceback.format_exc()))
 
                 finally:
                     self.locals_dict = {
@@ -418,11 +422,11 @@ Examples:
                 result = result_queue.get_nowait()
                 # Check if there was an exception
                 if not exception_queue.empty():
-                    e = exception_queue.get_nowait()
+                    e, execution_traceback = exception_queue.get_nowait()
                     result["error"] = {
                         "type": type(e).__name__,
                         "message": str(e),
-                        "traceback": traceback.format_exc(),
+                        "traceback": execution_traceback,
                     }
 
                     # Add helpful suggestions for common errors
@@ -433,7 +437,7 @@ Examples:
                             "Binary view is None. Make sure a binary is loaded."
                         )
 
-                    result["stderr"] += traceback.format_exc()
+                    result["stderr"] += execution_traceback
             except queue.Empty:
                 # This shouldn't happen, but handle it gracefully
                 result["error"] = {
@@ -450,11 +454,19 @@ Examples:
 
         return result
 
-    def _serialize_value(self, value: Any) -> Any:
-        """Convert Python objects to JSON-serializable format"""
-        # (Same implementation as before)
+    def _serialize_value(self, value: Any, _active=None, _path: str = "$") -> Any:
+        """Serialize complete values, retaining the existing type/items envelopes.
+
+        JSON-native containers are never silently sliced. Cycles are explicit
+        references to an ancestor path, and non-string dictionary keys use an
+        entries array so keys such as 1 and "1" cannot overwrite one another.
+        """
+        if _active is None:
+            _active = {}
         if value is None:
             return None
+        elif isinstance(value, float) and not math.isfinite(value):
+            return {"type": "float", "value": str(value)}
         elif isinstance(value, (bool, int, float, str)):
             return value
         elif isinstance(value, bytes):
@@ -463,16 +475,42 @@ Examples:
                 "hex": value.hex(),
                 "ascii": value.decode("ascii", errors="replace"),
             }
-        elif isinstance(value, (list, tuple)):
-            return {
-                "type": type(value).__name__,
-                "items": [self._serialize_value(item) for item in value[:100]],
-            }
-        elif isinstance(value, dict):
-            return {
-                "type": "dict",
-                "items": {str(k): self._serialize_value(v) for k, v in list(value.items())[:100]},
-            }
+        elif isinstance(value, (list, tuple, dict, set, frozenset)):
+            identity = id(value)
+            if identity in _active:
+                return {"type": "reference", "path": _active[identity], "circular": True}
+            _active[identity] = _path
+            try:
+                if isinstance(value, dict):
+                    if all(isinstance(key, str) for key in value):
+                        return {
+                            "type": "dict",
+                            "items": {
+                                key: self._serialize_value(item, _active, f"{_path}[{key!r}]")
+                                for key, item in value.items()
+                            },
+                        }
+                    return {
+                        "type": "dict",
+                        "entries": [
+                            {
+                                "key": self._serialize_value(key, _active, f"{_path}.keys[{i}]"),
+                                "value": self._serialize_value(
+                                    item, _active, f"{_path}.values[{i}]"
+                                ),
+                            }
+                            for i, (key, item) in enumerate(value.items())
+                        ],
+                    }
+                return {
+                    "type": type(value).__name__,
+                    "items": [
+                        self._serialize_value(item, _active, f"{_path}[{i}]")
+                        for i, item in enumerate(value)
+                    ],
+                }
+            finally:
+                del _active[identity]
 
         if bn:
             if isinstance(value, bn.Function):
@@ -493,7 +531,7 @@ Examples:
                 }
 
         try:
-            return {"type": type(value).__name__, "repr": str(value)[:500]}
+            return {"type": type(value).__name__, "repr": str(value)}
         except Exception:
             return {"type": type(value).__name__, "repr": "<serialization error>"}
 
