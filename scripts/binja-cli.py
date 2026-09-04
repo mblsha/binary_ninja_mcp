@@ -2151,9 +2151,7 @@ class Open(cli.Application):
         if not str(filepath or "").strip() and not self.inspect_only:
             return self._print_missing_filepath_help()
 
-        existing_database_choice = str(
-            getattr(self, "existing_database", "") or ""
-        ).strip().lower()
+        existing_database_choice = str(getattr(self, "existing_database", "") or "").strip().lower()
         if existing_database_choice not in {"", "yes", "no", "cancel"}:
             message = "--existing-database must be one of: yes, no, cancel"
             if self.parent.json_output:
@@ -2987,6 +2985,10 @@ class Signature(cli.Application):
         ["--dry-run"],
         help="Parse and report the declaration without changing the BinaryView",
     )
+    preview = cli.Flag(
+        ["--preview"],
+        help="Apply, analyze and verify the signature, then revert without committing",
+    )
     no_reanalyze = cli.Flag(
         ["--no-reanalyze"],
         help="Set the user type without explicitly reanalyzing the function",
@@ -3040,6 +3042,15 @@ class Signature(cli.Application):
         return signature
 
     def main(self, function_name: str, *signature_parts: str):
+        if self.preview and (self.dry_run or self.no_wait or self.no_verify):
+            print(
+                "--preview cannot be combined with --dry-run, --no-wait or --no-verify",
+                file=sys.stderr,
+            )
+            return 2
+        if not self.analysis_timeout > 0:
+            print("--analysis-timeout must be positive", file=sys.stderr)
+            return 2
         signature = self._read_signature(signature_parts)
         if signature is None:
             return 1
@@ -3055,6 +3066,8 @@ class Signature(cli.Application):
             "wait": should_wait,
             "verify": should_verify,
         }
+        if self.preview:
+            payload["preview"] = True
         timeout = self.parent.request_timeout
         if should_wait and not self.dry_run:
             timeout = max(timeout, float(self.analysis_timeout))
@@ -3080,7 +3093,13 @@ class Signature(cli.Application):
         if failed:
             self.parent._output(data if isinstance(data, dict) else {"error": str(data)})
         else:
-            state = "parsed" if data.get("dry_run") else "applied"
+            state = (
+                "parsed"
+                if data.get("dry_run")
+                else "previewed and reverted"
+                if data.get("preview")
+                else "applied"
+            )
             if data.get("verified"):
                 state += " and verified"
             print(colors.green | f"Signature {state} for {function_name}")

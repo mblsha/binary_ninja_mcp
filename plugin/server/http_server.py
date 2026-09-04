@@ -1229,6 +1229,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         wait=self._parse_bool(params.get("wait"), True),
                         verify=self._parse_bool(params.get("verify"), True),
                         dry_run=self._parse_bool(params.get("dry_run"), False),
+                        preview=self._parse_bool(params.get("preview"), False),
                     )
                     result.update(self._view_context_fields(self.binary_ops.current_view))
                     self._send_json_response(result, 200 if result.get("success") else 409)
@@ -1397,9 +1398,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             bn.log_error(f"Error handling GET request: {e}")
             self._send_json_response({"error": str(e)}, 500)
 
-    def _handle_decompile(
-        self, function_name: str, *, allow_analysis_skipped: bool = False
-    ):
+    def _handle_decompile(self, function_name: str, *, allow_analysis_skipped: bool = False):
         """Handle function decompilation requests.
 
         Args:
@@ -1599,6 +1598,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         wait=self._parse_bool(params.get("wait"), True),
                         verify=self._parse_bool(params.get("verify"), True),
                         dry_run=self._parse_bool(params.get("dry_run"), False),
+                        preview=self._parse_bool(params.get("preview"), False),
                     )
                     result.update(self._view_context_fields(self.binary_ops.current_view))
                     self._send_json_response(result, 200 if result.get("success") else 409)
