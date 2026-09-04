@@ -738,7 +738,12 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     )
                     return
 
-                self._handle_decompile(function_name)
+                self._handle_decompile(
+                    function_name,
+                    allow_analysis_skipped=self._parse_bool(
+                        params.get("allow_analysis_skipped"), False
+                    ),
+                )
 
             elif path == "/assembly":
                 function_name = params.get("name") or params.get("functionName")
@@ -1392,7 +1397,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             bn.log_error(f"Error handling GET request: {e}")
             self._send_json_response({"error": str(e)}, 500)
 
-    def _handle_decompile(self, function_name: str):
+    def _handle_decompile(
+        self, function_name: str, *, allow_analysis_skipped: bool = False
+    ):
         """Handle function decompilation requests.
 
         Args:
@@ -1417,7 +1424,26 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 return
 
             bn.log_info(f"Found function for decompilation: {func_info}")
-            decompiled = self.binary_ops.decompile_function(function_name)
+            if func_info.get("analysis_skipped") and not allow_analysis_skipped:
+                self._send_json_response(
+                    {
+                        "error": "Function analysis is skipped",
+                        "function": func_info,
+                        "analysis_skipped": True,
+                        "reason": (
+                            "Decompilation would clear the function's analysis-skip "
+                            "state. Re-run with allow_analysis_skipped=true only after "
+                            "explicitly deciding to mutate that state."
+                        ),
+                    },
+                    409,
+                )
+                return
+
+            decompiled = self.binary_ops.decompile_function(
+                function_name,
+                allow_analysis_skipped=allow_analysis_skipped,
+            )
 
             if decompiled is None:
                 self._send_json_response(

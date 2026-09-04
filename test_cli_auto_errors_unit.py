@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 from pathlib import Path
 from unittest.mock import patch
@@ -208,3 +209,44 @@ def test_python_execute_json_fails_on_new_errors_when_requested():
     assert isinstance(report, dict)
     assert report.get("command") == "python.execute"
     assert report.get("new_error_count") == 1
+
+
+def test_python_long_inline_code_survives_path_probe_enametoolong():
+    app = _new_app()
+    py_cmd = binja_cli.Python("python")
+    py_cmd.parent = app
+    py_cmd.file = None
+    py_cmd.interactive = False
+    py_cmd.stdin = False
+    py_cmd.complete = None
+    py_cmd.exec_timeout = 30.0
+
+    inline_code = "value = '" + ("x" * 512) + "'"
+    execute_result = {
+        "success": True,
+        "stdout": "",
+        "stderr": "",
+        "return_value": None,
+        "variables": {},
+    }
+    empty_snapshot = {
+        "count": 50,
+        "console_errors": [],
+        "log_errors": [],
+        "probe_warnings": [],
+    }
+
+    with (
+        patch.object(
+            Path,
+            "exists",
+            side_effect=OSError(errno.ENAMETOOLONG, "File name too long"),
+        ),
+        patch.object(app, "_request", return_value=execute_result) as request_mock,
+        patch.object(app, "_capture_error_snapshot", return_value=empty_snapshot),
+        patch.object(app, "_output"),
+    ):
+        rc = py_cmd.main(inline_code)
+
+    assert rc is None
+    assert request_mock.call_args.kwargs["data"]["command"] == inline_code

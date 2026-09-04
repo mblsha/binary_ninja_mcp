@@ -28,6 +28,20 @@ class _FakeBinaryView:
             self.view_id = legacy_view_id
 
 
+class _FakeAnalysisView:
+    def __init__(self):
+        self.update_calls = 0
+
+    def update_analysis_and_wait(self):
+        self.update_calls += 1
+
+
+class _FakeFunction:
+    def __init__(self, *, analysis_skipped: bool):
+        self.analysis_skipped = analysis_skipped
+        self.hlil = "fake hlil"
+
+
 class TestBinaryOperationsTargetIds(unittest.TestCase):
     def _import_modules(self):
         bn_module = types.ModuleType("binaryninja")
@@ -108,6 +122,34 @@ class TestBinaryOperationsTargetIds(unittest.TestCase):
         self.assertIsNone(ops.current_view)
         self.assertIsNone(ops.get_registered_view_by_id(stale_id))
         self.assertIs(ops.get_registered_view_by_id(live_id), live)
+
+    def test_decompile_refuses_to_clear_analysis_skip_by_default(self):
+        _, module = self._import_modules()
+        ops = module.BinaryOperations(config=object())
+        view = _FakeAnalysisView()
+        function = _FakeFunction(analysis_skipped=True)
+        ops._current_view = view
+        ops.get_function_by_name_or_address = lambda _identifier: function
+
+        with self.assertRaisesRegex(RuntimeError, "analysis is skipped"):
+            ops.decompile_function(0x1000)
+
+        self.assertTrue(function.analysis_skipped)
+        self.assertEqual(view.update_calls, 0)
+
+    def test_decompile_requires_explicit_opt_in_to_clear_analysis_skip(self):
+        _, module = self._import_modules()
+        ops = module.BinaryOperations(config=object())
+        view = _FakeAnalysisView()
+        function = _FakeFunction(analysis_skipped=True)
+        ops._current_view = view
+        ops.get_function_by_name_or_address = lambda _identifier: function
+
+        result = ops.decompile_function(0x1000, allow_analysis_skipped=True)
+
+        self.assertEqual(result, "fake hlil")
+        self.assertFalse(function.analysis_skipped)
+        self.assertEqual(view.update_calls, 1)
 
 
 if __name__ == "__main__":

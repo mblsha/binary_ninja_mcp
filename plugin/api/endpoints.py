@@ -175,10 +175,15 @@ class BinaryNinjaEndpoints:
         matches.sort(key=lambda x: x["name"])
         return matches[offset : offset + limit]
 
-    def decompile_function(self, identifier: str) -> Optional[str]:
+    def decompile_function(
+        self, identifier: str, *, allow_analysis_skipped: bool = False
+    ) -> Optional[str]:
         """Decompile a function by name or address"""
         try:
-            return self.binary_ops.decompile_function(identifier)
+            return self.binary_ops.decompile_function(
+                identifier,
+                allow_analysis_skipped=allow_analysis_skipped,
+            )
         except Exception as e:
             bn.log_error(f"Error decompiling function: {e}")
             return None
