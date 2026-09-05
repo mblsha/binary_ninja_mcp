@@ -11,6 +11,8 @@ from typing import Dict, Any, Optional
 import binaryninja as bn
 import threading
 from ..core.binary_operations import BinaryOperations
+from ..core.analysis_operations import AnalysisOperations
+from ..core.identifiers import AnalysisError, IdentifierResolver
 from ..core.console_capture_adapter import ConsoleCaptureAdapter
 from ..core.config import Config
 from ..api.endpoints import BinaryNinjaEndpoints, FunctionSignatureParseError
@@ -585,6 +587,60 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         )
         return binary_view, target_error
 
+    def _handle_analysis_request(self, path, params, view, *, method):
+        """Dispatch with the resolved view itself, never re-read current_view."""
+        context = self._view_context_fields(view)
+        try:
+            operations = AnalysisOperations(view)
+            if path == "/analysis/disasm" and method == "GET":
+                arch_name = params.get("arch")
+                try:
+                    arch = bn.Architecture[arch_name] if arch_name else None
+                except KeyError:
+                    raise ValueError(f"Unknown architecture: {arch_name}") from None
+                result = operations.disasm(
+                    params.get("identifier"),
+                    count=params.get("count"),
+                    end=params.get("end"),
+                    arch=arch,
+                )
+            elif path == "/analysis/function" and method == "GET":
+                raw_locals = params.get("locals", "false")
+                if str(raw_locals).lower() not in {"true", "false", "1", "0"}:
+                    raise ValueError("locals must be true or false")
+                result = operations.info(
+                    params.get("identifier"),
+                    include_locals=str(raw_locals).lower() in {"true", "1"},
+                )
+            elif path == "/analysis/bundle" and method == "POST":
+                result = operations.bundle(
+                    params.get("identifiers"),
+                    include=params.get("include"),
+                    time_budget=params.get("time_budget", 30.0),
+                )
+            else:
+                self._send_json_response(
+                    {"error": "Unknown analysis endpoint or method", **context}, 404
+                )
+                return
+            self._send_json_response({**result, **context})
+        except AnalysisError as exc:
+            status = (
+                404
+                if exc.code == "not_found"
+                else (
+                    409
+                    if exc.code
+                    in {"ambiguous_identifier", "ambiguous_function", "analysis_skipped"}
+                    else 400
+                )
+            )
+            self._send_json_response(
+                {"success": False, "error": str(exc), "details": exc.as_dict(), **context}, status
+            )
+        except ValueError as exc:
+            self._send_json_response({"success": False, "error": str(exc), **context}, 400)
+
     def do_GET(self):
         try:
             # Endpoints that don't require a binary to be loaded
@@ -596,7 +652,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             if any(path.startswith(prefix) for prefix in no_binary_required):
                 self._maybe_refresh_current_view(params, clear_if_missing=(path == "/status"))
             else:
-                _, target_error, _candidates, _metadata = self._resolve_request_view(
+                selected_view, target_error, _candidates, _metadata = self._resolve_request_view(
                     params,
                     require_explicit_target=True,
                 )
@@ -605,6 +661,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         target_error,
                         self._target_error_status_code(target_error),
                     )
+                    return
+
+                if path.startswith("/analysis/"):
+                    self._handle_analysis_request(path, params, selected_view, method="GET")
                     return
 
             # For most endpoints, check if binary is loaded
@@ -1488,7 +1548,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             if not self._validate_endpoint_version(path, params):
                 return
             if not any(path.startswith(prefix) for prefix in no_binary_required):
-                _, target_error, _candidates, _metadata = self._resolve_request_view(
+                selected_view, target_error, _candidates, _metadata = self._resolve_request_view(
                     params,
                     require_explicit_target=True,
                 )
@@ -1497,6 +1557,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         target_error,
                         self._target_error_status_code(target_error),
                     )
+                    return
+                if path.startswith("/analysis/"):
+                    self._handle_analysis_request(path, params, selected_view, method="POST")
                     return
             else:
                 self._maybe_refresh_current_view(params)
@@ -2178,18 +2241,26 @@ class MCPServer:
         port = int(self.config.server.port)
         modules = {
             "http_server": sys.modules.get(__name__),
+            "analysis_operations": sys.modules.get(AnalysisOperations.__module__),
+            "identifiers": sys.modules.get(IdentifierResolver.__module__),
             "binary_operations": sys.modules.get(BinaryOperations.__module__),
             "endpoints": sys.modules.get(BinaryNinjaEndpoints.__module__),
             "python_executor": sys.modules.get(get_console_capture.__module__),
             "build_info": sys.modules.get(snapshot_source.__module__),
             "api_versions": sys.modules.get(expected_api_version.__module__),
         }
+        analysis_globals = AnalysisOperations.__init__.__globals__
+        sections_function = analysis_globals.get("bundle_sections")
+        modules["analysis_contract"] = sys.modules.get(getattr(sections_function, "__module__", ""))
         mutation_type = getattr(modules["binary_operations"], "MutationTransaction", None)
         modules["mutations"] = sys.modules.get(getattr(mutation_type, "__module__", ""))
         snapshots = {
             name: getattr(module, "LOADED_SOURCE", None) for name, module in modules.items()
         }
         capabilities = {
+            "analysis_reads_version": getattr(
+                modules["analysis_operations"], "ANALYSIS_READS_VERSION", None
+            ),
             "builtin_mutations_version": getattr(
                 modules["binary_operations"], "BUILTIN_MUTATIONS_VERSION", None
             ),
@@ -2205,6 +2276,16 @@ class MCPServer:
         }
         runtime = source_diagnostics(snapshots)
         stale_bindings = []
+        if AnalysisOperations is not getattr(
+            modules["analysis_operations"], "AnalysisOperations", None
+        ):
+            stale_bindings.append("analysis_operations_class")
+        if IdentifierResolver is not getattr(modules["identifiers"], "IdentifierResolver", None):
+            stale_bindings.append("identifier_resolver_class")
+        if analysis_globals.get("IdentifierResolver") is not IdentifierResolver:
+            stale_bindings.append("analysis_identifier_resolver")
+        if sections_function is not getattr(modules["analysis_contract"], "bundle_sections", None):
+            stale_bindings.append("analysis_sections_function")
         if type(self) is not MCPServer:
             stale_bindings.append("server_instance")
         if type(self.binary_ops) is not getattr(

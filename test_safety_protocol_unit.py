@@ -134,6 +134,8 @@ def test_server_diagnostics_report_loaded_capabilities_and_stale_instances():
         module.get_console_capture.__globals__,
         module.snapshot_source.__globals__,
         module.expected_api_version.__globals__,
+        module.AnalysisOperations.__init__.__globals__,
+        module.IdentifierResolver.__init__.__globals__,
     ]
     mutation_type = module.BinaryOperations.__init__.__globals__["MutationTransaction"]
     namespaces.append(mutation_type.__init__.__globals__)

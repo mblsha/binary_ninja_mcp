@@ -2,6 +2,10 @@
 
 A command-line interface for interacting with the Binary Ninja MCP server.
 
+For linear `disasm`, compact `info`, and selective multi-function `bundle`, see
+[analysis reads](docs/analysis-reads.md). Common JSON/NDJSON, file output, filtering
+and spill options are documented in [CLI output](docs/cli-output.md).
+
 ## IMPORTANT: Don’t call `bv.save(...)` from the CLI
 
 Never call `bv.save(...)` from the CLI unless you have explicit user permission.

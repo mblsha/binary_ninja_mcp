@@ -69,6 +69,16 @@ def main():
         schema = json.loads((root / "schema.json").read_text())
         assert schema["scope"] == ["python"]
         assert json.loads(result.stdout)["artifact_path"] == str(root / "schema.json")
+        for command in ("disasm", "info", "bundle"):
+            scoped = subprocess.run(
+                [str(python), "-m", "binja_cli", "schema", command],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assert json.loads(scoped.stdout)["scope"] == [command]
         print("Wheel smoke passed: both entry points run outside the checkout without the BN SDK")
 
 
