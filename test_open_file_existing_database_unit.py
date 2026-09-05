@@ -29,9 +29,7 @@ assert open_spec is not None and open_spec.loader is not None
 open_module = importlib.util.module_from_spec(open_spec)
 sys.modules[open_spec.name] = open_module
 open_spec.loader.exec_module(open_module)
-_looks_like_existing_database_dialog = (
-    open_module._looks_like_existing_database_dialog
-)
+_looks_like_existing_database_dialog = open_module._looks_like_existing_database_dialog
 
 
 class QMessageBox:

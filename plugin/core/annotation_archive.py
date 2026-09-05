@@ -389,10 +389,7 @@ def _export_type_library(
     # database contains a malformed or cyclic user-type graph. The user type
     # container already gives us every type we need; sort its qualified names
     # for stable archives and let the type library retain named references.
-    by_name = {
-        str(name): (type_id, name, value)
-        for type_id, (name, value) in container_rows
-    }
+    by_name = {str(name): (type_id, name, value) for type_id, (name, value) in container_rows}
     ordered_names = sorted(by_name)
 
     rows = []
