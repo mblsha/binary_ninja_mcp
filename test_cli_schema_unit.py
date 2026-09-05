@@ -74,6 +74,16 @@ def test_analysis_command_schema_includes_selection_and_budget_arguments():
     assert {"--count", "-n", "--end", "--arch"} <= names
 
 
+def test_primitive_schema_exposes_actual_il_and_read_type_choices():
+    il = command_schema(BinaryNinjaCLI, ["il"])["commands"][0]
+    level = next(arg for arg in il["arguments"] if "--level" in arg["names"])
+    assert level["choices"] == ["hlil", "mlil", "llil"]
+    assert "--view" in level["names"]
+    read = command_schema(BinaryNinjaCLI, ["read"])["commands"][0]
+    kind = next(arg for arg in read["arguments"] if "--type" in arg["names"])
+    assert {"bytes", "ptr", "cstr", "f64", "i64"} <= set(kind["choices"])
+
+
 def test_runtime_diagnostics_compare_import_snapshot_with_disk(tmp_path):
     path = tmp_path / "server.py"
     path.write_text("before")

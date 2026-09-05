@@ -81,7 +81,13 @@ locked; the running plugin has not been reloaded and no open database was change
 
 - [x] Ambiguity-aware identifiers and interior addresses/symbol offsets for new
   read interfaces; legacy mutation resolution deliberately remains unchanged.
-- [ ] IL levels/SSA, typed reads, incoming/outgoing and field references.
+- [x] IL levels/SSA, typed reads, incoming/outgoing and field references.
+  Primitive checkpoint: 366 offline tests passed (19 live tests deselected,
+  8 subtests passed). Decoder tests cover enum-correct endianness, pointer width,
+  signed values, float tagging, C-string bounds and short-read preservation;
+  IL tests cover all levels/SSA and pre-property skip guards. New HTTP routes,
+  CLI short flags/aliases, schemas and installed-wheel commands were verified.
+  Ruff lint, changed-file formatting, Unicode safety and diff checks pass.
 - [ ] Callsites and bounded text/constant searches with completeness metadata.
 - [ ] Stable local-variable IDs and structure-field edits using transactions.
 - [ ] Documentation and CLI ergonomics aligned with actual installed commands.

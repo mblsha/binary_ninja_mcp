@@ -119,11 +119,15 @@ class View:
         return [0x3000]
 
 
-@pytest.fixture
-def reads():
+def make_reads():
     module = _import_http_server()
     view = View()
     return module, module.AnalysisOperations(view), view
+
+
+@pytest.fixture
+def reads():
+    return make_reads()
 
 
 def test_disasm_count_needs_no_function_or_il(reads):

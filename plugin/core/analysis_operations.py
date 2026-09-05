@@ -5,6 +5,7 @@ IL can still trigger normal lazy analysis of a non-skipped function.
 """
 
 import time
+from contextlib import contextmanager
 
 from shared.analysis_contract import (
     MAX_BUNDLE_FUNCTIONS,
@@ -12,9 +13,12 @@ from shared.analysis_contract import (
     bundle_sections,
     instruction_count,
     analysis_time_budget,
+    IL_LEVELS,
+    strict_bool,
 )
 from shared.build_info import snapshot_source
 from .identifiers import AnalysisError, IdentifierResolver, function_identity, function_key
+from . import memory_reads, type_queries
 
 LOADED_SOURCE = snapshot_source(__file__)
 ANALYSIS_READS_VERSION = 1
@@ -30,6 +34,17 @@ class AnalysisOperations:
 
     def _budget_expired(self):
         return self._deadline is not None and time.monotonic() >= self._deadline
+
+    @contextmanager
+    def budget(self, seconds):
+        seconds = analysis_time_budget(seconds)
+        previous = self._deadline
+        deadline = time.monotonic() + seconds
+        self._deadline = min(previous, deadline) if previous is not None else deadline
+        try:
+            yield
+        finally:
+            self._deadline = previous
 
     def _check_budget(self):
         if self._budget_expired():
@@ -167,7 +182,7 @@ class AnalysisOperations:
         return result
 
     def il(self, func, *, level="hlil", ssa=False):
-        if level not in {"hlil", "mlil", "llil"}:
+        if level not in IL_LEVELS:
             raise AnalysisError("invalid_level", "IL level must be hlil, mlil or llil")
         self._require_analysis(func)
         il = getattr(func, level)
@@ -206,6 +221,37 @@ class AnalysisOperations:
             ),
         }
 
+    def function_il(self, identifier, *, level="hlil", ssa=False, time_budget=30.0):
+        if level not in IL_LEVELS:
+            raise AnalysisError("invalid_level", "IL level must be hlil, mlil or llil")
+        ssa = strict_bool(ssa, "ssa")
+        with self.budget(time_budget):
+            func = self.resolver.function(identifier)
+            self._check_budget()
+            result = self.il(func, level=level, ssa=ssa)
+            return {"success": result["complete"], "function": function_identity(func), **result}
+
+    def read(self, identifier, **options):
+        return memory_reads.read_memory(self.view, self.resolver, identifier, **options)
+
+    def references(self, identifier, *, direction="incoming", field=False, time_budget=30.0):
+        if direction not in {"incoming", "outgoing"} or (field and direction != "incoming"):
+            raise AnalysisError(
+                "invalid_direction",
+                "Field references are incoming; function references may be incoming or outgoing",
+            )
+        with self.budget(time_budget):
+            if field:
+                return type_queries.field_references(
+                    self.view, identifier, expired=self._budget_expired
+                )
+            if direction == "incoming":
+                result = self.xrefs(self.resolver.address(identifier))
+            else:
+                func = self.resolver.function(identifier)
+                result = {"function": function_identity(func), **self.refs_from(func)}
+            return {"success": result.get("complete", True), **result}
+
     def function_disasm(self, func):
         ranges = sorted({(int(r.start), int(r.end)) for r in func.address_ranges})
         if not ranges:
@@ -227,16 +273,34 @@ class AnalysisOperations:
         }
 
     def xrefs(self, address):
-        code = [
-            {
-                "source": hex(ref.address),
-                "function": function_identity(ref.function) if ref.function else None,
-                "architecture": str(ref.arch.name),
-            }
-            for ref in self.view.get_code_refs(address)
-        ]
-        data = [{"source": hex(source)} for source in self.view.get_data_refs(address)]
-        return {"address": hex(address), "direction": "incoming", "code": code, "data": data}
+        code = []
+        data = []
+        stopped = None
+        for ref in self.view.get_code_refs(address):
+            if self._budget_expired():
+                stopped = "time_budget"
+                break
+            code.append(
+                {
+                    "source": hex(ref.address),
+                    "function": function_identity(ref.function) if ref.function else None,
+                    "architecture": str(ref.arch.name) if ref.arch is not None else None,
+                }
+            )
+        if stopped is None:
+            for source in self.view.get_data_refs(address):
+                if self._budget_expired():
+                    stopped = "time_budget"
+                    break
+                data.append({"source": hex(source)})
+        return {
+            "address": hex(address),
+            "direction": "incoming",
+            "code": code,
+            "data": data,
+            "complete": stopped is None,
+            "stopped_reason": stopped,
+        }
 
     def refs_from(self, func):
         # Use existing basic-block instruction addresses, without lifting IL.
@@ -288,12 +352,8 @@ class AnalysisOperations:
             raise AnalysisError(
                 "invalid_identifiers", "Function identifiers must be nonempty names or addresses"
             )
-        previous_deadline = self._deadline
-        self._deadline = time.monotonic() + time_budget
-        try:
+        with self.budget(time_budget):
             return self._collect_bundle(identifiers, sections, time_budget)
-        finally:
-            self._deadline = previous_deadline
 
     def _collect_bundle(self, identifiers, sections, time_budget):
         results = []

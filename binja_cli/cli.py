@@ -26,6 +26,9 @@ from shared.analysis_contract import (
     bundle_sections,
     instruction_count,
     analysis_time_budget,
+    IL_LEVELS,
+    READ_TYPES,
+    read_arguments,
 )
 
 from shared.api_versions import (
@@ -3334,6 +3337,128 @@ class Bundle(_AnalysisCommand):
             timeout=max(self.parent.request_timeout, budget + 5.0),
         )
         return self._emit(data)
+
+
+class _BudgetedAnalysisCommand(_AnalysisCommand):
+    time_budget = cli.SwitchAttr(
+        ["--time-budget"],
+        float,
+        default=30.0,
+        help="Cooperative budget in seconds; cannot interrupt an SDK call",
+    )
+
+    def _read(self, endpoint, params):
+        try:
+            budget = analysis_time_budget(self.time_budget)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return None
+        return self.parent._request(
+            "GET",
+            endpoint,
+            {**params, "time_budget": budget},
+            timeout=max(self.parent.request_timeout, budget + 5.0),
+        )
+
+
+@BinaryNinjaCLI.subcommand("il")
+class IntermediateLanguage(_BudgetedAnalysisCommand):
+    """Read HLIL/MLIL/LLIL, optionally SSA, without clearing analysis-skip state."""
+
+    level = cli.SwitchAttr(
+        ["--level", "--view"],
+        cli.Set(*IL_LEVELS),
+        default="hlil",
+        help="Requested IL level (no fallback to another level)",
+    )
+    ssa = cli.Flag(["--ssa"], help="Read the selected IL's SSA form")
+
+    def main(self, identifier: str):
+        data = self._read(
+            "analysis/il", {"identifier": identifier, "level": self.level, "ssa": bool(self.ssa)}
+        )
+        if data is None:
+            return 2
+        text = data.get("text", "")
+        if data.get("stopped_reason"):
+            text += f"\nStopped: {data['stopped_reason']}"
+        return self._emit(data, text)
+
+
+@BinaryNinjaCLI.subcommand("read")
+class ReadMemory(_AnalysisCommand):
+    """Read typed memory. Count means elements, bytes, or a C-string byte bound.
+
+    Defaults: bytes=16, cstr=256, all scalar/pointer types=1.
+    Short reads keep complete elements and raw trailing bytes, and exit 1.
+    """
+
+    OUTPUT_FORMAT = "json"
+    value_type = cli.SwitchAttr(
+        ["--type", "-t"],
+        cli.Set(*READ_TYPES),
+        default="bytes",
+        help="Scalar, pointer, byte or C-string representation",
+    )
+    count = cli.SwitchAttr(
+        ["--count", "-n"], int, help="Number of elements; for cstr, maximum bytes to inspect"
+    )
+    endian = cli.SwitchAttr(
+        ["--endian"],
+        cli.Set("auto", "little", "big"),
+        default="auto",
+        help="Default uses the view's endianness",
+    )
+
+    def main(self, identifier: str):
+        try:
+            count = read_arguments(self.value_type, self.count, self.endian)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        data = self.parent._request(
+            "GET",
+            "analysis/read",
+            {
+                "identifier": identifier,
+                "type": self.value_type,
+                "count": count,
+                "endian": self.endian,
+            },
+        )
+        return self._emit(data)
+
+
+@BinaryNinjaCLI.subcommand("xrefs")
+class CrossReferences(_BudgetedAnalysisCommand):
+    """Incoming code/data references to an address/symbol, or Type.field with --field.
+
+    The existing refs FUNCTION command retains its legacy incoming-code output.
+    """
+
+    OUTPUT_FORMAT = "json"
+    field = cli.Flag(["--field"], help="Interpret the identifier as Type.field or Type.0xOFFSET")
+
+    def main(self, identifier: str):
+        if self.field and ("." not in identifier or not all(identifier.rsplit(".", 1))):
+            print("Error: Field selector must be Type.field or Type.0xOFFSET", file=sys.stderr)
+            return 2
+        data = self._read(
+            "analysis/refs",
+            {"identifier": identifier, "direction": "incoming", "field": bool(self.field)},
+        )
+        return 2 if data is None else self._emit(data)
+
+
+@BinaryNinjaCLI.subcommand("refs-from")
+class ReferencesFrom(_BudgetedAnalysisCommand):
+    """Outgoing code/data references from a function (including interior-address lookup)."""
+
+    OUTPUT_FORMAT = "json"
+
+    def main(self, identifier: str):
+        data = self._read("analysis/refs", {"identifier": identifier, "direction": "outgoing"})
+        return 2 if data is None else self._emit(data)
 
 
 @BinaryNinjaCLI.subcommand("signature")

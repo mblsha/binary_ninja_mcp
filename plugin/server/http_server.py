@@ -47,6 +47,7 @@ from shared.build_info import (
     snapshot_source,
     source_diagnostics,
 )
+from shared.analysis_contract import strict_bool
 
 LOADED_SOURCE = snapshot_source(__file__)
 
@@ -605,12 +606,30 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     arch=arch,
                 )
             elif path == "/analysis/function" and method == "GET":
-                raw_locals = params.get("locals", "false")
-                if str(raw_locals).lower() not in {"true", "false", "1", "0"}:
-                    raise ValueError("locals must be true or false")
                 result = operations.info(
                     params.get("identifier"),
-                    include_locals=str(raw_locals).lower() in {"true", "1"},
+                    include_locals=strict_bool(params.get("locals", False), "locals"),
+                )
+            elif path == "/analysis/il" and method == "GET":
+                result = operations.function_il(
+                    params.get("identifier"),
+                    level=params.get("level", "hlil"),
+                    ssa=params.get("ssa", False),
+                    time_budget=params.get("time_budget", 30.0),
+                )
+            elif path == "/analysis/read" and method == "GET":
+                result = operations.read(
+                    params.get("identifier"),
+                    value_type=params.get("type", "bytes"),
+                    count=params.get("count"),
+                    endian=params.get("endian", "auto"),
+                )
+            elif path == "/analysis/refs" and method == "GET":
+                result = operations.references(
+                    params.get("identifier"),
+                    direction=params.get("direction", "incoming"),
+                    field=strict_bool(params.get("field", False), "field"),
+                    time_budget=params.get("time_budget", 30.0),
                 )
             elif path == "/analysis/bundle" and method == "POST":
                 result = operations.bundle(
@@ -2250,6 +2269,8 @@ class MCPServer:
             "api_versions": sys.modules.get(expected_api_version.__module__),
         }
         analysis_globals = AnalysisOperations.__init__.__globals__
+        for name in ("memory_reads", "type_queries"):
+            modules[name] = analysis_globals.get(name)
         sections_function = analysis_globals.get("bundle_sections")
         modules["analysis_contract"] = sys.modules.get(getattr(sections_function, "__module__", ""))
         mutation_type = getattr(modules["binary_operations"], "MutationTransaction", None)
