@@ -206,6 +206,29 @@ def test_undo_exception_reports_unknown_state(edit):
     assert result["restoration_verified"] is None
 
 
+@pytest.mark.parametrize("user_defined", [False, True])
+def test_automatic_confidence_is_metadata_but_user_confidence_is_verified(edit, user_defined):
+    _, edits, view, func = edit
+    var = next(v for v in func._vars if v.identifier == 2)
+    var.type.confidence = 255
+    if user_defined:
+        func.users.add(2)
+    revert = view.revert_undo_actions
+
+    def changed_confidence(state):
+        revert(state)
+        next(v for v in func._vars if v.identifier == 2).type.confidence = 0
+
+    view.revert_undo_actions = changed_confidence
+    result = edits.local("f", "2", "rename", "temporary", preview=True)
+    assert result["success"] is not user_defined
+    assert result["restoration_verified"] is not user_defined
+    assert result["state_unknown"] is user_defined
+    if not user_defined:
+        assert result["analysis_metadata_changed"]
+        assert result["current"]["type"]["confidence"] == 0
+
+
 def test_function_variable_disappearance_is_reported_and_undone(edit):
     _, edits, view, func = edit
 

@@ -22,6 +22,22 @@ class Endianness(IntEnum):
     BigEndian = 1
 
 
+def test_sdk_endianness_property_failure_is_actionable_and_can_be_overridden(reads):
+    _, operations, view = reads
+
+    class BrokenEndianView(type(view)):
+        @property
+        def endianness(self):
+            raise ValueError("76 is not a valid Endianness")
+
+    view.__class__ = BrokenEndianView
+    with pytest.raises(Exception, match="supply --endian little or big"):
+        operations.read("0x1000", value_type="u16", count=1)
+    assert view.reads == []
+    result = operations.read("0x1000", value_type="u16", count=1, endian="little")
+    assert result["values"] == [{"address": "0x1000", "value": 2}]
+
+
 class Instruction:
     def __init__(self, index, text):
         self.instr_index = index

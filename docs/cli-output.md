@@ -90,6 +90,17 @@ preview flag and commit. Restarting only the HTTP listener does not reload
 Python modules. Preview uses an undo transaction and never saves a database;
 `signature --dry-run` remains parse-only.
 
+Signature previews require an existing user-defined signature. Native undo in
+the tested SDK restores an automatic signature's rendered type but leaves its
+user-type flag set; that case is therefore refused before mutation with
+`AUTOMATIC_SIGNATURE_PREVIEW_UNSAFE`. Use `--dry-run` to validate automatic
+signatures without mutation, or intentionally apply a signature normally.
+Supported previews verify restored name, type, user-type status and skip state.
+Unexpected rollback differences report `state_unknown: true`. Applied signature
+verification allows analyzer-inferred purity/return attributes only when the
+parsed declaration left them unspecified; explicitly supplied attributes still
+participate in verification.
+
 The client also verifies the selected server's loaded safety capability before
 mutation or decompilation. This catches partial reloads where the version
 registry is new but a handler or operations instance still runs old code.

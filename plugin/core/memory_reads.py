@@ -15,7 +15,13 @@ def byte_order(view, requested="auto"):
         return requested
     # BNEndianness is an IntEnum: LittleEndian=0, BigEndian=1. In particular,
     # str(IntEnum) may be "0"/"1", so searching its string for "Big" is wrong.
-    value = view.endianness
+    try:
+        value = view.endianness
+    except Exception as exc:
+        raise AnalysisError(
+            "unknown_endianness",
+            f"Cannot read the SDK's default endianness ({exc}); supply --endian little or big explicitly",
+        ) from exc
     if not isinstance(value, bool) and value in {0, 1}:
         return "big" if value == 1 else "little"
     raise AnalysisError("unknown_endianness", "View reports an unknown endianness; supply --endian")
