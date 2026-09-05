@@ -334,6 +334,24 @@ class BinaryNinjaEndpoints:
     def _normalize_type_text(value: Any) -> str:
         return " ".join(str(value).split())
 
+    @classmethod
+    def _signature_types_match(cls, requested, observed):
+        """Compare declarations without treating inferred purity/return as input.
+
+        BN may infer __pure or __noreturn after reanalysis. Only disregard that
+        attribute when its confidence in the parsed request is zero (unspecified).
+        Explicit attributes and every other rendered signature component remain
+        part of verification. Keep the untouched observed type in the response.
+        """
+        normalized = observed
+        for attribute in ("pure", "can_return"):
+            requested_value = getattr(requested, attribute, None)
+            if getattr(requested_value, "confidence", None) == 0:
+                if normalized is observed:
+                    normalized = observed.mutable_copy()
+                setattr(normalized, attribute, requested_value)
+        return cls._normalize_type_text(normalized) == cls._normalize_type_text(requested)
+
     def edit_function_signature(
         self,
         function_name: str,
@@ -375,6 +393,7 @@ class BinaryNinjaEndpoints:
         before_name = function.name
         before_type = str(function.type)
         analysis_skipped = bool(function.analysis_skipped)
+        before_user_type = bool(function.has_user_type)
 
         result: Dict[str, Any] = {
             "success": True,
@@ -382,6 +401,7 @@ class BinaryNinjaEndpoints:
             "function_start": hex(function.start),
             "before_name": before_name,
             "before_type": before_type,
+            "before_user_type": before_user_type,
             "parsed_name": parsed_name_text,
             "requested_type": requested_type,
             "apply_name": bool(apply_name),
@@ -393,6 +413,7 @@ class BinaryNinjaEndpoints:
             "committed": False,
             "rolled_back": False,
             "state_unknown": False,
+            "restoration_verified": None,
         }
         if dry_run:
             result.update(
@@ -402,6 +423,15 @@ class BinaryNinjaEndpoints:
                     "verified": None,
                     "message": "Signature parsed successfully; no changes applied.",
                 }
+            )
+            return result
+
+        if preview and not before_user_type:
+            result.update(
+                success=False,
+                verified=False,
+                error="Preview requires an existing user-defined signature; native undo may promote an automatic signature to a user type. Use --dry-run for parse-only validation.",
+                error_code="AUTOMATIC_SIGNATURE_PREVIEW_UNSAFE",
             )
             return result
 
@@ -436,9 +466,7 @@ class BinaryNinjaEndpoints:
                     raise MutationVerificationError("Function disappeared during signature update")
                 after_name = fresh.name
                 after_type = str(fresh.type)
-                type_matches = self._normalize_type_text(after_type) == self._normalize_type_text(
-                    requested_type
-                )
+                type_matches = self._signature_types_match(parsed_type, fresh.type)
                 name_matches = (
                     not apply_name or not parsed_name_text or after_name == parsed_name_text
                 )
@@ -464,6 +492,43 @@ class BinaryNinjaEndpoints:
         except Exception as exc:
             result.update(success=False, error=str(exc), message=str(exc))
             result.setdefault("verified", False)
+        if transaction.rolled_back:
+            try:
+                if wait:
+                    view.update_analysis_and_wait()
+                restored = view.get_function_at(function.start, function.platform)
+                if restored is None:
+                    raise MutationVerificationError(
+                        "Function disappeared while verifying signature undo"
+                    )
+                result.update(
+                    restored_name=restored.name,
+                    restored_type=str(restored.type),
+                    restored_user_type=bool(restored.has_user_type),
+                )
+                result["restoration_verified"] = (
+                    restored.name == before_name
+                    and self._normalize_type_text(restored.type)
+                    == self._normalize_type_text(before_type)
+                    and bool(restored.has_user_type) == before_user_type
+                    and bool(restored.analysis_skipped) == analysis_skipped
+                )
+                if not result["restoration_verified"]:
+                    raise MutationVerificationError(
+                        "Undo returned, but original signature annotations were not restored"
+                    )
+            except Exception as exc:
+                transaction.state_unknown = True
+                message = f"Signature restoration verification failed: {exc}"
+                if result.get("error"):
+                    message = f"{result['error']}; {message}"
+                result.update(
+                    success=False,
+                    verified=False,
+                    restoration_verified=False,
+                    error=message,
+                    message=message,
+                )
         result.update(transaction.as_dict())
         return result
 

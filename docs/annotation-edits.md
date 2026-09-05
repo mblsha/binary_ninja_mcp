@@ -77,6 +77,14 @@ means the undo API returned; only `restoration_verified: true` confirms observed
 restoration. Any rollback/readback failure is an error, never successful preview.
 Inspect live state if `state_unknown` is true. Do not retry blindly.
 
+Automatic-local type confidence may change when native analysis recomputes
+after undo. If ID, name, type, skip state and automatic/user status all match,
+this is reported as `analysis_metadata_changed: true` with the new confidence
+visible in `current`; it is not treated as an annotation mismatch. Confidence
+is still checked for existing user-defined variables. Widening a stack slot
+can merge/remove its canonical variable; that edit fails and verifies rollback
+instead of selecting a replacement variable.
+
 The default output is JSON; common `--format`, `--out`, filtering and artifact
 options work after nested arguments. `--overwrite` affects structure members;
 `--overwrite-output` independently permits replacing an output file. Editing
@@ -96,5 +104,8 @@ are not isolation guarantees against other writers.
 Offline SDK-shaped tests cover selectors, skip-property traps, validation,
 preview restoration, silent/exceptional undo failure, partial writes, union
 overlaps, metadata preservation, HTTP view pinning and nested CLI parsing.
-Real-GUI verification remains outstanding; these tests do not establish native
-undo or reanalysis behavior.
+The opt-in [native scratch verifier](../scripts/verify_bn_adaptations_live.py)
+also passed on macOS with Binary Ninja 6.1.10608-dev Personal, including user
+structure/union previews, automatic-type override restoration, local rename,
+parameter retype and safe rollback after a stack-variable identity change.
+This does not establish GUI behavior on every platform or SDK release.

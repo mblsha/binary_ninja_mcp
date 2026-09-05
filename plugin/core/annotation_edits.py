@@ -131,7 +131,7 @@ class AnnotationEdits:
             "variables": self.reads.locals(func),
         }
 
-    def _run(self, before, expected, snapshot, apply, *, preview):
+    def _run(self, before, expected, snapshot, apply, *, preview, restored_matches=None):
         transaction = MutationTransaction(self.view, preview=preview)
         result = {
             "before": before,
@@ -159,7 +159,13 @@ class AnnotationEdits:
             try:
                 self.view.update_analysis_and_wait()
                 result["current"] = snapshot()
-                result["restoration_verified"] = result["current"] == before
+                result["restoration_verified"] = (
+                    restored_matches(before, result["current"])
+                    if restored_matches is not None
+                    else result["current"] == before
+                )
+                if result["restoration_verified"] and result["current"] != before:
+                    result["analysis_metadata_changed"] = True
                 if not result["restoration_verified"]:
                     raise MutationVerificationError(
                         "Undo returned, but original state was not restored"
@@ -210,12 +216,23 @@ class AnnotationEdits:
             variables = self._variables(current)
             current.create_user_var(variables[variable_id], type_obj, name)
 
+        def restored_matches(original, current):
+            # An automatic variable's confidence is analysis metadata, not a
+            # user annotation. Native undo can restore the same automatic type
+            # at a different confidence. Never ignore confidence for user vars,
+            # nor any name, type, ID, skip-state or auto/user-status difference.
+            if not original["user_defined"] and not current["user_defined"]:
+                original = {**original, "type": {**original["type"], "confidence": None}}
+                current = {**current, "type": {**current["type"], "confidence": None}}
+            return original == current
+
         result = self._run(
             before,
             expected,
             lambda: self._local_snapshot(fresh_function(), variable_id),
             apply,
             preview=preview,
+            restored_matches=restored_matches,
         )
         return {**result, "function": function_identity(func), "action": action}
 

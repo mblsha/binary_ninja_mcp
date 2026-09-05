@@ -65,9 +65,19 @@ class _FakeFunction:
         self.start = 0x6C562
         self.platform = object()
         self.name = "EGiridaOTankFamily_6ba10::state_giridao_cannon_6c562"
-        self.type = _FakeType("int32_t(struct WrongType * this_ @ a6)")
+        self._type = _FakeType("int32_t(struct WrongType * this_ @ a6)")
+        self.has_user_type = False
         self.analysis_skipped = analysis_skipped
         self.reanalysis_requests = []
+
+    @property
+    def type(self):
+        return self._type
+
+    @type.setter
+    def type(self, value):
+        self._type = value
+        self.has_user_type = True
 
     def reanalyze(self, update_type):
         self.reanalysis_requests.append(update_type)
@@ -85,7 +95,7 @@ class _FakeView:
         self.before = None
 
     def begin_undo_actions(self):
-        self.before = self.function.type, self.function.name
+        self.before = self.function.type, self.function.name, self.function.has_user_type
         self.undo_events.append("begin")
         return "signature-test"
 
@@ -95,7 +105,7 @@ class _FakeView:
 
     def revert_undo_actions(self, state):
         assert state == "signature-test"
-        self.function.type, self.function.name = self.before
+        self.function.type, self.function.name, self.function.has_user_type = self.before
         self.undo_events.append("revert")
 
     def parse_type_string(self, signature: str):
@@ -119,13 +129,48 @@ class _FakeOperations:
         return self.function
 
 
-def _new_endpoint(*, analysis_skipped: bool = False):
+def _new_endpoint(*, analysis_skipped: bool = False, user_type: bool = True):
     requested_type = "int32_t(struct EGiridaOTankFamily_6ba10 * this_ @ a6)"
     function = _FakeFunction(analysis_skipped=analysis_skipped)
+    function.has_user_type = user_type
     view = _FakeView(function, requested_type)
     operations = _FakeOperations(function, view)
     endpoint = endpoints_module.BinaryNinjaEndpoints(operations)
     return endpoint, function, view, requested_type
+
+
+@pytest.mark.parametrize("attribute", ["pure", "can_return"])
+def test_signature_ignores_only_unspecified_inferred_attributes(attribute):
+    import copy
+
+    class Signature:
+        def __init__(self, text="int32_t(int arg)"):
+            self.text = text
+            self.pure = types.SimpleNamespace(value=False, confidence=0)
+            self.can_return = types.SimpleNamespace(value=True, confidence=0)
+
+        def mutable_copy(self):
+            return copy.deepcopy(self)
+
+        def __str__(self):
+            return (
+                self.text
+                + (" __pure" if self.pure.value else "")
+                + (" __noreturn" if not self.can_return.value else "")
+            )
+
+    requested, observed = Signature(), Signature()
+    inferred = getattr(observed, attribute)
+    inferred.value = not inferred.value
+    inferred.confidence = 200
+    matches = endpoints_module.BinaryNinjaEndpoints._signature_types_match
+    assert matches(requested, observed)
+    assert getattr(observed, attribute).confidence == 200  # original untouched
+    getattr(requested, attribute).confidence = 255  # explicit opposite must fail
+    assert not matches(requested, observed)
+    getattr(requested, attribute).confidence = 0
+    observed.text = "int64_t(int arg)"
+    assert not matches(requested, observed)
 
 
 def test_signature_dry_run_only_parses():
@@ -193,7 +238,8 @@ def test_signature_reports_readback_mismatch():
 
     def replace_type_after_wait():
         view.wait_count += 1
-        function.type = _FakeType("void(void)")
+        if view.wait_count == 1:
+            function.type = _FakeType("void(void)")
 
     view.update_analysis_and_wait = replace_type_after_wait
     result = endpoint.edit_function_signature("0x6c562", "int32_t probe(void);")
@@ -237,6 +283,33 @@ def test_signature_preview_verifies_then_restores_type_and_name():
     assert result["committed"] is False
     assert result["rolled_back"] is True
     assert (function.type, function.name) == before
+    assert result["restoration_verified"] is True
+    assert result["restored_user_type"] is True
+
+
+@pytest.mark.parametrize("failure", ["unchanged", "user_status"])
+def test_signature_preview_rejects_silent_or_incomplete_undo(failure):
+    endpoint, function, view, _ = _new_endpoint()
+    revert = view.revert_undo_actions
+
+    def broken_revert(state):
+        if failure == "user_status":
+            revert(state)
+            function.has_user_type = False
+
+    view.revert_undo_actions = broken_revert
+    result = endpoint.edit_function_signature("0x6c562", "void test(void);", preview=True)
+    assert not result["success"] and not result["restoration_verified"]
+    assert result["rolled_back"] and result["state_unknown"]
+
+
+def test_automatic_signature_preview_refuses_before_mutation_but_dry_run_works():
+    endpoint, function, view, _ = _new_endpoint(user_type=False)
+    result = endpoint.edit_function_signature("0x6c562", "void test(void);", preview=True)
+    assert not result["success"] and result["error_code"] == "AUTOMATIC_SIGNATURE_PREVIEW_UNSAFE"
+    assert not result["committed"] and not result["rolled_back"]
+    assert view.undo_events == [] and not function.has_user_type
+    assert endpoint.edit_function_signature("0x6c562", "void test(void);", dry_run=True)["success"]
 
 
 @pytest.mark.parametrize(

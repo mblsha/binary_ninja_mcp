@@ -27,7 +27,18 @@ save user databases as a side effect of verification.
   functions before inspecting their variables.
 - [x] Reject non-function signature declarations before assignment; align
   function-comment deletion with the storage used by setting and reading.
-- [ ] Complete live GUI scratch-view verification after application inspection.
+- [x] Complete live GUI scratch-view verification after application inspection.
+  Eight native scratch groups pass on Binary Ninja 6.1.10608-dev Personal/macOS:
+  undo after injected failure, signature refusal/commit/preview, local edits,
+  structure edits, automatic-type/union previews, read primitives, queries and
+  complete skipped-function-set preservation. Separate real-executor probes
+  preserve all 150 result items and the deliberate exception's worker traceback.
+  No database was saved; zero views remained registered. Native undo cannot
+  fully restore a previously automatic signature's user-type status, so previews
+  of that case now fail before mutation; parse-only dry-run remains available.
+  Native-fix checkpoint: 452 offline tests passed, 19 live tests deselected,
+  8 subtests passed; repository lint, changed-file format, Unicode and diff
+  checks passed. See [native verification](bn-native-verification.md).
 
 Offline correctness checkpoint: 198 tests passed, 19 live tests deselected,
 8 subtests passed. Pinned Ruff lint and Unicode checks pass; changed Python
@@ -109,7 +120,7 @@ locked; the running plugin has not been reloaded and no open database was change
   silent undo failure reports unknown live state. New nested CLI commands,
   protocol/capability preflight, registry entries, and installed-wheel schemas
   pass. Ruff lint, changed-file format, Unicode and diff checks pass.
-  See [annotation-edits.md](annotation-edits.md). Native verification is pending.
+  See [annotation-edits.md](annotation-edits.md) and the native evidence below.
 - [ ] Documentation and CLI ergonomics aligned with actual installed commands.
 - [ ] Resolve the three pre-existing format-only failures separately before
   the final repository-wide CI-equivalent validation.
@@ -120,8 +131,8 @@ Read-interface details and limits are documented in [analysis-reads.md](analysis
 The decoder/compact-info/bundle interfaces have offline coverage for ranges,
 architecture selection, ambiguity, skip-state property traps, selective work,
 alias deduplication, per-section failures and a shared cooperative time budget.
-Real Binary Ninja verification remains outstanding; fake-SDK tests are not
-presented as evidence of live integration.
+Native evidence is recorded in [bn-native-verification.md](bn-native-verification.md);
+fake-SDK tests are not presented as evidence of live integration.
 
 The Mac was locked during initial GUI inspection. A later inspection finds
 Binary Ninja Personal 6.1.10608-dev at its launch screen, no open views in the

@@ -3780,7 +3780,7 @@ class Signature(cli.Application):
     )
     preview = cli.Flag(
         ["--preview"],
-        help="Apply, analyze and verify the signature, then revert without committing",
+        help="Preview an existing user signature and verify undo; automatic signatures require --dry-run",
     )
     no_reanalyze = cli.Flag(
         ["--no-reanalyze"],
