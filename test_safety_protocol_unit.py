@@ -14,6 +14,8 @@ from test_cli_strict_target_unit import _FakeResponse
 
 
 SAFETY_PATHS = (
+    "/edit/local",
+    "/edit/struct-field",
     "/function/signature",
     "/editFunctionSignature",
     "/decompile",
@@ -122,6 +124,26 @@ def test_client_refuses_missing_or_stale_capabilities_before_preview(metadata, c
     assert "no operation was sent" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "path", ["edit/local", "edit/struct-field", "analysis/locals", "analysis/struct"]
+)
+def test_annotation_capability_preflight_refuses_an_old_loaded_server(path, capsys):
+    app = BinaryNinjaCLI("binja-cli")
+    app.server_url = "http://isolated-test:9009"
+    capabilities = {
+        k: v for k, v in REQUIRED_CAPABILITIES.items() if k != "annotation_edits_version"
+    }
+    metadata = {"_api_version": 1, "capability_protocol_version": 1, "capabilities": capabilities}
+    with (
+        patch("binja_cli.cli.requests.get", return_value=_FakeResponse(metadata)),
+        patch("binja_cli.cli.requests.post") as post,
+        pytest.raises(SystemExit),
+    ):
+        app._request("POST", path, data={"preview": True})
+    post.assert_not_called()
+    assert "annotation_edits_version" in capsys.readouterr().err
+
+
 def test_server_diagnostics_report_loaded_capabilities_and_stale_instances():
     module = server_tests._import_http_server()
     # The isolation helper removes imports from sys.modules when its BN mock
@@ -135,6 +157,7 @@ def test_server_diagnostics_report_loaded_capabilities_and_stale_instances():
         module.snapshot_source.__globals__,
         module.expected_api_version.__globals__,
         module.AnalysisOperations.__init__.__globals__,
+        module.AnnotationEdits.__init__.__globals__,
         module.IdentifierResolver.__init__.__globals__,
     ]
     mutation_type = module.BinaryOperations.__init__.__globals__["MutationTransaction"]
@@ -149,6 +172,7 @@ def test_server_diagnostics_report_loaded_capabilities_and_stale_instances():
         metadata = server.instance_metadata()
         assert metadata["capabilities"]["signature_workflow_version"] == 2
         assert metadata["capabilities"]["python_serialization_version"] == 2
+        assert metadata["capabilities"]["annotation_edits_version"] == 1
         assert metadata["runtime"]["stale_bindings"] == []
         assert "mutations" in metadata["runtime"]["sources"]
         assert {"memory_reads", "type_queries"} <= metadata["runtime"]["sources"].keys()

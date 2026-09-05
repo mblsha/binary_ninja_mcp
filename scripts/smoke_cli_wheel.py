@@ -80,6 +80,13 @@ def main():
             "search text",
             "search constant",
             "callsites",
+            "locals list",
+            "locals rename",
+            "locals retype",
+            "struct show",
+            "struct field set",
+            "struct field rename",
+            "struct field delete",
         ):
             scoped = subprocess.run(
                 [str(python), "-m", "binja_cli", "schema", *command.split()],

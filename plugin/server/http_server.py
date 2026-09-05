@@ -12,6 +12,7 @@ import binaryninja as bn
 import threading
 from ..core.binary_operations import BinaryOperations
 from ..core.analysis_operations import AnalysisOperations
+from ..core.annotation_edits import AnnotationEdits
 from ..core.identifiers import AnalysisError, IdentifierResolver
 from ..core.console_capture_adapter import ConsoleCaptureAdapter
 from ..core.config import Config
@@ -610,6 +611,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     params.get("identifier"),
                     include_locals=strict_bool(params.get("locals", False), "locals"),
                 )
+            elif path == "/analysis/locals" and method == "GET":
+                result = AnnotationEdits(view).locals(params.get("identifier"))
+            elif path == "/analysis/struct" and method == "GET":
+                result = AnnotationEdits(view).structure(params.get("name"))
             elif path == "/analysis/il" and method == "GET":
                 result = operations.function_il(
                     params.get("identifier"),
@@ -678,6 +683,44 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             )
             self._send_json_response(
                 {"success": False, "error": str(exc), "details": exc.as_dict(), **context}, status
+            )
+        except ValueError as exc:
+            self._send_json_response({"success": False, "error": str(exc), **context}, 400)
+
+    def _handle_edit_request(self, path, params, view):
+        """New annotation writes always use the already resolved strong view."""
+        context = self._view_context_fields(view)
+        try:
+            edits = AnnotationEdits(view)
+            if path == "/edit/local":
+                result = edits.local(
+                    params.get("identifier"),
+                    params.get("variable"),
+                    params.get("action"),
+                    params.get("value"),
+                    preview=params.get("preview", False),
+                )
+            elif path == "/edit/struct-field":
+                result = edits.field(
+                    params.get("name"),
+                    params.get("action"),
+                    field=params.get("field"),
+                    offset=params.get("offset"),
+                    member_name=params.get("member_name"),
+                    declaration=params.get("type"),
+                    overwrite=params.get("overwrite", False),
+                    preview=params.get("preview", False),
+                )
+            else:
+                self._send_json_response(
+                    {"success": False, "error": "Unknown edit endpoint", **context}, 404
+                )
+                return
+            self._send_json_response({**result, **context})
+        except AnalysisError as exc:
+            self._send_json_response(
+                {"success": False, "error": str(exc), "details": exc.as_dict(), **context},
+                404 if exc.code == "not_found" else 400,
             )
         except ValueError as exc:
             self._send_json_response({"success": False, "error": str(exc), **context}, 400)
@@ -1602,6 +1645,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 if path.startswith("/analysis/"):
                     self._handle_analysis_request(path, params, selected_view, method="POST")
                     return
+                if path.startswith("/edit/"):
+                    self._handle_edit_request(path, params, selected_view)
+                    return
             else:
                 self._maybe_refresh_current_view(params)
 
@@ -2283,6 +2329,7 @@ class MCPServer:
         modules = {
             "http_server": sys.modules.get(__name__),
             "analysis_operations": sys.modules.get(AnalysisOperations.__module__),
+            "annotation_edits": sys.modules.get(AnnotationEdits.__module__),
             "identifiers": sys.modules.get(IdentifierResolver.__module__),
             "binary_operations": sys.modules.get(BinaryOperations.__module__),
             "endpoints": sys.modules.get(BinaryNinjaEndpoints.__module__),
@@ -2301,6 +2348,9 @@ class MCPServer:
             name: getattr(module, "LOADED_SOURCE", None) for name, module in modules.items()
         }
         capabilities = {
+            "annotation_edits_version": getattr(
+                modules["annotation_edits"], "ANNOTATION_EDITS_VERSION", None
+            ),
             "analysis_reads_version": getattr(
                 modules["analysis_operations"], "ANALYSIS_READS_VERSION", None
             ),
@@ -2319,6 +2369,16 @@ class MCPServer:
         }
         runtime = source_diagnostics(snapshots)
         stale_bindings = []
+        edit_globals = AnnotationEdits.__init__.__globals__
+        if AnnotationEdits is not getattr(modules["annotation_edits"], "AnnotationEdits", None):
+            stale_bindings.append("annotation_edits_class")
+        if edit_globals.get("AnalysisOperations") is not AnalysisOperations:
+            stale_bindings.append("annotation_analysis_class")
+        if edit_globals.get("MutationTransaction") is not mutation_type:
+            stale_bindings.append("annotation_mutation_class")
+        for name in ("find_type", "resolve_field"):
+            if edit_globals.get(name) is not getattr(modules["type_queries"], name, None):
+                stale_bindings.append(f"annotation_{name}")
         if AnalysisOperations is not getattr(
             modules["analysis_operations"], "AnalysisOperations", None
         ):

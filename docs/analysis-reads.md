@@ -7,6 +7,9 @@ and reload the plugin together, then check `binja-cli doctor`. The client requir
 the loaded `analysis_reads_version: 1` capability before sending these requests;
 restarting only the HTTP listener is not a code reload.
 
+For stable-ID local edits and structure-field workflows, see
+[Local and structure annotations](annotation-edits.md).
+
 ## CLI arguments
 
 Examples use `VIEW_ID` from `binja-cli views`. All commands support the

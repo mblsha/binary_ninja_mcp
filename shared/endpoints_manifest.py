@@ -89,6 +89,11 @@ ENDPOINT_SPECS: tuple[EndpointSpec, ...] = (
         minimal_params={"identifier": "__ENTRY_ADDRESS__", "count": 2},
     ),
     EndpointSpec("GET", "/analysis/function", True, minimal_params={"identifier": "__FUNCTION__"}),
+    EndpointSpec("GET", "/analysis/locals", True, minimal_params={"identifier": "__FUNCTION__"}),
+    EndpointSpec("GET", "/analysis/struct", True, minimal_params={"name": "__MISSING_TYPE__"}),
+    # Generic endpoint probes exercise prevalidation without mutating a fixture.
+    EndpointSpec("POST", "/edit/local", True),
+    EndpointSpec("POST", "/edit/struct-field", True),
     EndpointSpec(
         "POST",
         "/analysis/bundle",
