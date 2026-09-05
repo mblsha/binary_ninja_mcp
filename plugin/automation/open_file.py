@@ -505,9 +505,7 @@ def open_file_workflow(
     existing_database_choice = normalize_label(existing_database)
     if existing_database_choice not in {"", "yes", "no", "cancel"}:
         result["ok"] = False
-        result["errors"].append(
-            "existing_database must be one of: yes, no, cancel"
-        )
+        result["errors"].append("existing_database must be one of: yes, no, cancel")
         return result
     result["input"]["existing_database"] = existing_database_choice
     result["existing_database_dialog"] = {
@@ -665,8 +663,7 @@ def open_file_workflow(
                 result["state"]["cancelled"] = True
         except Exception as exc:
             result["errors"].append(
-                "failed to answer existing database dialog "
-                f"'{existing_database_choice}': {exc}"
+                f"failed to answer existing database dialog '{existing_database_choice}': {exc}"
             )
             return True
 
