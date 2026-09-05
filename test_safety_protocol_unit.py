@@ -151,6 +151,7 @@ def test_server_diagnostics_report_loaded_capabilities_and_stale_instances():
         assert metadata["capabilities"]["python_serialization_version"] == 2
         assert metadata["runtime"]["stale_bindings"] == []
         assert "mutations" in metadata["runtime"]["sources"]
+        assert {"memory_reads", "type_queries"} <= metadata["runtime"]["sources"].keys()
         operations_module = sys.modules[type(server.binary_ops).__module__]
         replacement = type("ReloadedOperations", (), {})
         with patch.object(operations_module, "BinaryOperations", replacement):

@@ -69,7 +69,7 @@ def main():
         schema = json.loads((root / "schema.json").read_text())
         assert schema["scope"] == ["python"]
         assert json.loads(result.stdout)["artifact_path"] == str(root / "schema.json")
-        for command in ("disasm", "info", "bundle"):
+        for command in ("disasm", "info", "bundle", "il", "read", "xrefs", "refs-from"):
             scoped = subprocess.run(
                 [str(python), "-m", "binja_cli", "schema", command],
                 cwd=root,

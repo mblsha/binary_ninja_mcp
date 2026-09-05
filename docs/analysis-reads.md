@@ -29,6 +29,10 @@ binja-cli schema bundle
 | `disasm IDENTIFIER` | Text, 32 instructions | `-n`/`--count` and exclusive `--end` are mutually exclusive; `--arch` overrides architecture selection. |
 | `info IDENTIFIER` | Compact text metadata/counts | `--locals` includes canonical parameter/local records and stable IDs. |
 | `bundle IDENTIFIER...` | JSON, decompile/disasm/refs_from | `--include` selects comma-separated sections; `--time-budget` is one cooperative budget for the whole request (default 30 seconds). |
+| `il IDENTIFIER` | Text, HLIL | `--level`/`--view` selects hlil/mlil/llil; `--ssa` selects SSA without changing the level. |
+| `read IDENTIFIER` | JSON, 16 bytes | `--type`/`-t` selects decoding, `--count`/`-n` selects elements or a string byte bound; `--endian` overrides auto endianness. |
+| `xrefs IDENTIFIER` | JSON, incoming code/data references | `--field` interprets the identifier as `Type.field` or `Type.0xOFFSET`. |
+| `refs-from IDENTIFIER` | JSON, outgoing function references | Accepts an interior address; does not change legacy incoming `refs` behavior. |
 
 `assembly FUNCTION` remains the existing annotated function-disassembly command.
 `disasm` is a separate linear decoder: it works outside defined functions and
@@ -97,10 +101,51 @@ address, architecture and native identifier. This ID survives renaming within
 that analysis state; reanalysis/rebasing or a different database may change the
 native variable identity.
 
+## IL, typed reads and references
+
+```bash
+binja-cli --view-id VIEW_ID il main --level mlil --ssa --json
+binja-cli --view-id VIEW_ID read table --type u32 --count 8
+binja-cli --view-id VIEW_ID read pointer_slot --type ptr
+binja-cli --view-id VIEW_ID read string_label --type cstr --count 512
+binja-cli --view-id VIEW_ID xrefs table
+binja-cli --view-id VIEW_ID xrefs Widget.flags --field
+binja-cli --view-id VIEW_ID refs-from main
+```
+
+IL results preserve each instruction's actual index, machine address and text.
+Unavailable requested IL/SSA fails instead of silently falling back to another
+representation. Standalone IL and reference commands have the same cooperative
+`--time-budget` semantics as bundles, with explicit partial-result metadata.
+Incoming field references use Binary Ninja's type/offset reference index and
+report access size and incoming type when available. Field selection is for a
+declared structure/union member; ambiguous union offsets require an exact member
+name. The legacy `refs FUNCTION` command keeps its existing code-only response;
+`xrefs` adds address/symbol resolution, data references and field queries.
+
+Memory formats are `bytes`, `u8/u16/u32/u64`, `i8/i16/i32/i64`, `f32/f64`, `ptr`,
+and `cstr`. Count defaults to 16 for bytes, 256 for C strings and 1 otherwise.
+For C strings it is a maximum byte bound, not a string count. Reads are capped
+at 1,000,000 elements and 8,000,000 raw bytes and stop at unmapped/unreadable memory.
+They use the view's native endianness enum (`--endian auto`) and pointer width;
+unknown endianness is an error unless explicitly overridden as little/big.
+
+Every memory result includes exact raw hex. A short scalar read returns complete
+elements plus `trailing_bytes`; `next_address` points to the first incomplete
+element, while `read_end_address` records how far bytes were fetched. A C string
+is complete only when a NUL was found. Invalid UTF-8 uses replacement characters
+with `encoding_errors: true`, retaining original bytes. Non-finite float values
+use explicit `{type: "float", value: "nan"/"inf"/"-inf"}` tags so output remains
+strict JSON; their original bit patterns remain in raw hex. Partial reads exit 1.
+
 ## HTTP surfaces
 
 - `GET /analysis/disasm`: `identifier`, optional `count` or `end`, optional `arch`.
 - `GET /analysis/function`: `identifier`, optional `locals=true`.
+- `GET /analysis/il`: `identifier`, optional `level`, `ssa`, `time_budget`.
+- `GET /analysis/read`: `identifier`, optional `type`, `count`, `endian`.
+- `GET /analysis/refs`: `identifier`, optional `direction` (incoming/outgoing),
+  `field` (incoming only), `time_budget`.
 - `POST /analysis/bundle`: JSON `identifiers` array, optional `include` array or
   comma-separated string, optional `time_budget` (finite, >0, at most 3600 seconds).
 

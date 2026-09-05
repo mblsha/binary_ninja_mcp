@@ -61,6 +61,16 @@ ENDPOINT_SPECS: tuple[EndpointSpec, ...] = (
     EndpointSpec("GET", "/decompile", True, minimal_params={"name": "__FUNCTION__"}),
     EndpointSpec("GET", "/assembly", True, minimal_params={"name": "__FUNCTION__"}),
     EndpointSpec(
+        "GET", "/analysis/il", True, minimal_params={"identifier": "__FUNCTION__", "level": "llil"}
+    ),
+    EndpointSpec(
+        "GET",
+        "/analysis/read",
+        True,
+        minimal_params={"identifier": "__ENTRY_ADDRESS__", "type": "u8", "count": 1},
+    ),
+    EndpointSpec("GET", "/analysis/refs", True, minimal_params={"identifier": "__FUNCTION__"}),
+    EndpointSpec(
         "GET",
         "/analysis/disasm",
         True,
