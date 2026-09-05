@@ -39,12 +39,13 @@ real-GUI or cross-platform verification.
 
 ## Pass 2: daily workflow
 
-- [ ] Common output contract: JSON/NDJSON, file output, text filtering/context,
+- [x] Common output contract: JSON/NDJSON, file output, text filtering/context,
   optional text spill, unique artifacts, optional tokens, complete pipelines.
 - [ ] Linear disassembly by count/exclusive end, independent of function/IL.
 - [ ] Selective multi-function bundles with one pinned target and stable envelope.
-- [ ] Compact function info, optional locals; scoped offline schema and doctor.
-- [ ] Explicit Python code/script sources and compatible `py` alias.
+- [ ] Compact function info, optional locals.
+- [x] Scoped offline schema and doctor with loaded-source and capability checks.
+- [x] Explicit Python code/script sources and compatible `py` alias.
 - [x] Installed `binja-cli` entry point and wheel/install smoke tests. The
   `binja-mcp` alias and source wrapper use the same `binja_cli.cli` module.
   Verified a non-editable wheel in a fresh environment outside the checkout;
@@ -53,6 +54,22 @@ real-GUI or cross-platform verification.
 Packaging checkpoint: 201 offline tests passed (19 live tests deselected,
 8 subtests passed), wheel build and install smoke passed, Ruff lint passed.
 
+Safety-sensitive mutation/decompilation endpoint contracts are now version 2.
+This prevents an older server from ignoring `preview` or analysis-skip guards.
+Update/reload the client and plugin together; doctor identifies older loaded
+code and import-time source fingerprints that no longer match disk.
+
+Output/schema checkpoint: 270 offline tests passed (19 live tests deselected,
+8 subtests passed). The current wheel passes installed help, aliases, offline
+schema and file-output smoke checks outside the checkout. Ruff lint, changed-file
+formatting and Unicode checks pass. A focused three-platform CLI CI job is now
+configured; its remote jobs have not been run or claimed passing. Read-only
+`doctor` against the running server correctly reports that its loaded code
+predates capability diagnostics; no plugin reload or database mutation occurred.
+Safety-sensitive requests additionally preflight the routed server's loaded
+capability, so a partially reloaded version registry cannot make an old handler
+silently accept a preview or omit analysis-skip protection.
+
 ## Pass 3: analysis breadth
 
 - [ ] Ambiguity-aware identifiers and interior addresses/symbol offsets.
@@ -60,6 +77,8 @@ Packaging checkpoint: 201 offline tests passed (19 live tests deselected,
 - [ ] Callsites and bounded text/constant searches with completeness metadata.
 - [ ] Stable local-variable IDs and structure-field edits using transactions.
 - [ ] Documentation and CLI ergonomics aligned with actual installed commands.
+- [ ] Resolve the three pre-existing format-only failures separately before
+  the final repository-wide CI-equivalent validation.
 
 ## Verification precautions
 

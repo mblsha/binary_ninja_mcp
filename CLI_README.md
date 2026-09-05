@@ -25,6 +25,11 @@ For source development, `uv sync` installs an editable client into `.venv`, and
 
 The CLI provides a convenient way to interact with the Binary Ninja MCP server from the terminal.
 
+See [Output, schemas and upgrade safety](docs/cli-output.md) for JSON/NDJSON,
+artifact output, flags accepted after commands, Python source options, and
+`schema`/`doctor`. Safety-sensitive endpoints require matching API-v2 client
+and plugin code; reload the plugin after updating it.
+
 ### Basic Commands
 
 ```bash

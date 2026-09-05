@@ -248,5 +248,5 @@ def test_python_long_inline_code_survives_path_probe_enametoolong():
     ):
         rc = py_cmd.main(inline_code)
 
-    assert rc is None
+    assert rc == 0
     assert request_mock.call_args.kwargs["data"]["command"] == inline_code

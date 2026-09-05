@@ -14,6 +14,10 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List
 import weakref
+from shared.build_info import snapshot_source
+
+LOADED_SOURCE = snapshot_source(__file__)
+SERIALIZATION_VERSION = 2
 
 try:
     import binaryninja as bn
@@ -326,7 +330,7 @@ Examples:
 
         result = {
             "success": False,
-            "serialization_version": 2,
+            "serialization_version": SERIALIZATION_VERSION,
             "stdout": "",
             "stderr": "",
             "return_value": None,

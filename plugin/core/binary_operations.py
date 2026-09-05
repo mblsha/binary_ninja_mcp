@@ -6,6 +6,11 @@ from .config import BinaryNinjaConfig
 from .view_identity import make_logical_view_id, make_public_view_id
 from .mutations import MutationTransaction, MutationVerificationError, MutationRollbackError
 from binaryninja.enums import TypeClass, StructureVariant
+from shared.build_info import snapshot_source
+
+LOADED_SOURCE = snapshot_source(__file__)
+BUILTIN_MUTATIONS_VERSION = 1
+ANALYSIS_SKIP_GUARD_VERSION = 1
 
 
 class BinaryOperations:

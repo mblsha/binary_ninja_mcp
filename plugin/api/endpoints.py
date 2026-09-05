@@ -3,6 +3,10 @@ import binaryninja as bn
 from ..core.annotation_archive import export_user_annotations
 from ..core.binary_operations import BinaryOperations
 from ..core.mutations import MutationTransaction, MutationVerificationError
+from shared.build_info import snapshot_source
+
+LOADED_SOURCE = snapshot_source(__file__)
+SIGNATURE_WORKFLOW_VERSION = 2
 
 
 class FunctionSignatureParseError(ValueError):
