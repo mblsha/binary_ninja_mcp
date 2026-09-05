@@ -20,7 +20,7 @@ jobs:
         run: uv run python scripts/check_unicode_safety.py .
 
       - name: Run offline tests (exclude real-Binja)
-        run: uv run --with pytest pytest -q -m "not binja"
+        run: uv run --frozen --extra search python -m pytest -q -m "not binja"
 
       - name: Ruff check
         run: uv tool run ruff@0.14.10 check --output-format=github .
@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v7
       - name: Test client contracts without Binary Ninja
-        run: uv run --frozen python -m pytest -q test_cli_packaging_unit.py test_cli_output_unit.py test_cli_python_sources_unit.py test_cli_schema_unit.py
+        run: uv run --frozen --extra search python -m pytest -q test_cli_packaging_unit.py test_cli_output_unit.py test_cli_python_sources_unit.py test_cli_schema_unit.py test_analysis_primitives_unit.py test_analysis_queries_unit.py
       - name: Build and smoke-test installed CLI
         run: |
           uv build

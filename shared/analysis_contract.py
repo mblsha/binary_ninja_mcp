@@ -25,6 +25,7 @@ READ_TYPES = (
     "cstr",
 )
 IL_LEVELS = ("hlil", "mlil", "llil")
+SEARCH_LEVELS = (*IL_LEVELS, "disasm")
 BUNDLE_SECTIONS = (
     "decompile",
     "mlil",
@@ -101,3 +102,49 @@ def strict_bool(value, name):
     if str(value).lower() in {"false", "0"}:
         return False
     raise ValueError(f"{name} must be true or false")
+
+
+def query_limit(value):
+    try:
+        result = int(str(value), 10)
+    except (TypeError, ValueError):
+        raise ValueError("Result limit must be an integer") from None
+    if isinstance(value, bool) or not 1 <= result <= 100_000:
+        raise ValueError("Result limit must be between 1 and 100000")
+    return result
+
+
+def query_scope(within):
+    if within is None:
+        return []
+    if not isinstance(within, list) or len(within) > MAX_BUNDLE_FUNCTIONS:
+        raise ValueError(f"Scope must be a list of at most {MAX_BUNDLE_FUNCTIONS} identifiers")
+    if any(
+        isinstance(item, bool) or not isinstance(item, (int, str)) or not str(item).strip()
+        for item in within
+    ):
+        raise ValueError("Scope identifiers must be nonempty names or addresses")
+    return within
+
+
+def constant_value(value):
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError("Constant must be a decimal or hexadecimal integer")
+    try:
+        text = str(value).strip()
+        result = int(text, 16 if text.lower().lstrip("+-").startswith("0x") else 10)
+    except ValueError:
+        raise ValueError("Constant must be a decimal or hexadecimal integer") from None
+    if not -(1 << 63) <= result < (1 << 64):
+        raise ValueError("Constant is outside the signed/unsigned 64-bit range")
+    return result
+
+
+def callsite_context(value):
+    try:
+        result = int(str(value), 10)
+    except (TypeError, ValueError):
+        raise ValueError("Callsite context must be an integer") from None
+    if isinstance(value, bool) or not 0 <= result <= 64:
+        raise ValueError("Callsite context must be between 0 and 64 instructions")
+    return result

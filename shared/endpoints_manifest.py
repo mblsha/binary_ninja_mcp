@@ -61,6 +61,18 @@ ENDPOINT_SPECS: tuple[EndpointSpec, ...] = (
     EndpointSpec("GET", "/decompile", True, minimal_params={"name": "__FUNCTION__"}),
     EndpointSpec("GET", "/assembly", True, minimal_params={"name": "__FUNCTION__"}),
     EndpointSpec(
+        "POST",
+        "/analysis/search",
+        True,
+        minimal_json={"query": "return", "within": ["__FUNCTION__"], "max_results": 2},
+    ),
+    EndpointSpec(
+        "POST",
+        "/analysis/callsites",
+        True,
+        minimal_json={"identifier": "__FUNCTION__", "context": 0, "hlil": False, "max_results": 2},
+    ),
+    EndpointSpec(
         "GET", "/analysis/il", True, minimal_params={"identifier": "__FUNCTION__", "level": "llil"}
     ),
     EndpointSpec(
