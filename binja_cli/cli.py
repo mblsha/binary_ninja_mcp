@@ -3,15 +3,24 @@ Installed command-line client for the Binary Ninja plugin's HTTP API.
 """
 
 import errno
+import ast
+import io
 import json
+import math
 import os
 import subprocess
 import sys
 import time
 from collections import Counter
+from contextlib import redirect_stdout
+from contextvars import ContextVar
 from pathlib import Path
 import requests
 from plumbum import cli, colors
+from .arguments import normalize_output_options
+from .output import OUTPUT_FORMATS, OutputOptions, deliver_output, render_value
+from .schema import command_schema
+from shared.build_info import TOOL_VERSION, CAPABILITY_PROTOCOL_VERSION, assess_compatibility
 
 from shared.api_versions import (
     SUPPORTED_UI_CONTRACT_SCHEMA_VERSIONS,
@@ -25,6 +34,8 @@ from shared.platform import (
     terminate_pid_tree,
 )
 
+_invocation = ContextVar("binja_cli_invocation", default=None)
+
 STARTUP_FATAL_PATTERNS = (
     "could not connect to display",
     "could not load the qt platform plugin",
@@ -36,6 +47,16 @@ STARTUP_FATAL_PATTERNS = (
 DEFAULT_SERVER_URL = "http://localhost:9009"
 DISCOVERY_HOST = "localhost"
 DISCOVERY_PORTS = (9009, 9000, 9001, 9002, 9003, 9004, 9005, 9006, 9007, 9008)
+
+MUTATION_CAPABILITY_PATHS = {
+    "/rename/function",
+    "/renameFunction",
+    "/rename/data",
+    "/renameData",
+    "/defineTypes",
+    "/renameVariable",
+    "/retypeVariable",
+}
 
 
 def _float_env(name: str, default: float) -> float:
@@ -59,8 +80,63 @@ class BinaryNinjaCLI(cli.Application):
     """Binary Ninja MCP command-line interface"""
 
     PROGNAME = "binja-cli"
-    VERSION = "0.2.8"
+    VERSION = TOOL_VERSION
     DESCRIPTION = "Command-line interface for Binary Ninja MCP server"
+
+    def __init__(self, executable):
+        super().__init__(executable)
+        context = _invocation.get()
+        if context is not None and context["root"] is None:
+            context["root"] = self
+            self._live_stdout = context["stdout"]
+
+    @classmethod
+    def run(cls, argv=None, exit=True):
+        """Run one command through a common, complete output delivery layer."""
+        argv, is_meta = normalize_output_options(cls, argv or sys.argv)
+        stdout = sys.stdout
+        captured = io.StringIO()
+        context = {"root": None, "stdout": stdout, "is_meta": is_meta}
+        token = _invocation.set(context)
+        instance = None
+        try:
+            with redirect_stdout(captured):
+                try:
+                    instance, return_code = super().run(argv, exit=False)
+                except SystemExit as exc:
+                    return_code = exc.code if isinstance(exc.code, int) else 1
+        finally:
+            _invocation.reset(token)
+        root = context["root"]
+        instance = instance or root
+        rendered = captured.getvalue()
+        options = getattr(root, "_output_options", None)
+        if getattr(root, "_command_failed", False) and not return_code:
+            return_code = 1
+        try:
+            if return_code == 2:
+                # Plumbum emits parser errors and selected-command help on stdout.
+                sys.stderr.write(rendered)
+            elif is_meta or options is None:
+                stdout.write(rendered)
+            elif rendered or (options.out and not return_code):
+                try:
+                    deliver_output(rendered, options, stdout, sys.stderr)
+                except (OSError, ValueError) as exc:
+                    # Delivery is after execution. Never imply that a committed
+                    # mutation was undone because its output file could not be written.
+                    stdout.write(rendered)
+                    print(
+                        f"Output delivery failed after command execution: {exc}. "
+                        "The result is reproduced on stdout; any committed live changes remain committed.",
+                        file=sys.stderr,
+                    )
+                    return_code = return_code or 1
+        except BrokenPipeError:
+            return_code = return_code or 1
+        if exit:
+            raise SystemExit(return_code)
+        return instance, return_code
 
     server_url = cli.SwitchAttr(
         ["--server", "-s"], str, default=DEFAULT_SERVER_URL, help="MCP server URL"
@@ -103,6 +179,32 @@ class BinaryNinjaCLI(cli.Application):
     )
 
     json_output = cli.Flag(["--json", "-j"], help="Output raw JSON response")
+    output_format = cli.SwitchAttr(
+        ["--format"],
+        cli.Set(*OUTPUT_FORMATS, case_sensitive=True),
+        help="Output format: text, json, ndjson (default: command-specific; output flags work anywhere)",
+    )
+    out = cli.SwitchAttr(
+        ["--out"], str, help="Write output to a client-side file and print its artifact metadata"
+    )
+    overwrite_output = cli.Flag(
+        ["--overwrite-output"], help="Explicitly replace an existing --out file"
+    )
+    match = cli.SwitchAttr(
+        ["--match"],
+        str,
+        help="Filter text output by regular expression (validated before execution)",
+    )
+    before = cli.SwitchAttr(["--before"], int, default=0, help="Text lines before each --match")
+    after = cli.SwitchAttr(["--after"], int, default=0, help="Text lines after each --match")
+    spill = cli.Flag(
+        ["--spill"],
+        help="Allow large output to spill to a unique artifact (including structured output)",
+    )
+    no_spill = cli.Flag(["--no-spill"], help="Never spill; send complete output to stdout")
+    tokens = cli.Flag(
+        ["--tokens"], help="Optionally report token count; requires the tokens package extra"
+    )
 
     verbose = cli.Flag(["--verbose", "-v"], help="Verbose output")
 
@@ -508,6 +610,18 @@ class BinaryNinjaCLI(cli.Application):
                     self._assert_strict_target_selected(timeout=request_timeout)
                 )
 
+            capability = None
+            if endpoint_path in {"/function/signature", "/editFunctionSignature"}:
+                capability = ("signature_workflow_version", 2)
+            elif endpoint_path == "/decompile":
+                capability = ("analysis_skip_guard_version", 1)
+            elif endpoint_path in MUTATION_CAPABILITY_PATHS or (
+                method != "GET" and endpoint_path in {"/comment", "/comment/function"}
+            ):
+                capability = ("builtin_mutations_version", 1)
+            if capability is not None:
+                self._verify_loaded_capability(*capability, timeout=http_timeout)
+
             if method == "GET":
                 response = requests.get(
                     url,
@@ -561,6 +675,8 @@ class BinaryNinjaCLI(cli.Application):
                 )
 
             if isinstance(response_data, dict):
+                if response_data.get("error") or response_data.get("success") is False:
+                    self._command_failed = True
                 observed_filename = (
                     self._extract_observed_filename(response_data) or strict_selected_filename
                 )
@@ -646,11 +762,20 @@ class BinaryNinjaCLI(cli.Application):
             try:
                 error_data = e.response.json()
                 if isinstance(error_data, dict) and "error" in error_data:
+                    if self.json_output:
+                        self._output(error_data)
                     # Display main error
                     print(colors.red | f"Error: {error_data['error']}", file=sys.stderr)
 
                     if "error_code" in error_data:
                         print(f"Code: {error_data['error_code']}", file=sys.stderr)
+                    if "expected_api_version" in error_data:
+                        print(
+                            f"Endpoint versions: client={error_data.get('received_api_version')}, "
+                            f"server={error_data['expected_api_version']}. Update the CLI and reload "
+                            "the plugin together; restarting only its HTTP listener is insufficient.",
+                            file=sys.stderr,
+                        )
 
                     # Display additional context if available
                     if "help" in error_data:
@@ -697,6 +822,45 @@ class BinaryNinjaCLI(cli.Application):
         except Exception as e:
             print(colors.red | f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+
+    def _verify_loaded_capability(self, name, minimum, *, timeout):
+        """Pin safety claims to the routed server, including partial reloads.
+
+        Endpoint versions reject old deployments. This separate preflight also
+        rejects an old handler paired with a newly reloaded version registry.
+        """
+        response = requests.get(
+            f"{self.server_url.rstrip('/')}/meta/instance",
+            params={"_api_version": 1},
+            headers={"X-Binja-MCP-Api-Version": "1"},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        metadata = response.json()
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("_api_version") != 1
+            or response.headers.get("X-Binja-MCP-Api-Version") != "1"
+        ):
+            raise RuntimeError(
+                "Invalid capability handshake; reload matching client/plugin code before this operation"
+            )
+        capabilities = metadata.get("capabilities")
+        value = capabilities.get(name) if isinstance(capabilities, dict) else None
+        runtime = metadata.get("runtime")
+        runtime = runtime if isinstance(runtime, dict) else {}
+        if (
+            type(value) is not int
+            or value < minimum
+            or metadata.get("capability_protocol_version") != CAPABILITY_PROTOCOL_VERSION
+        ):
+            raise RuntimeError(
+                f"Loaded server lacks required {name}>={minimum}; no operation was sent. Reload the plugin, not only its HTTP listener."
+            )
+        if runtime.get("reload_required") or runtime.get("unverifiable_modules"):
+            raise RuntimeError(
+                "Loaded server code is stale or unverifiable; no operation was sent. Reload the plugin before safety-sensitive operations."
+            )
 
     @staticmethod
     def _print_target_views_hint(error_data: dict) -> None:
@@ -1712,28 +1876,35 @@ class BinaryNinjaCLI(cli.Application):
 
     def _output(self, data: dict):
         """Output data in JSON or formatted text"""
+        self._last_payload = data
+        if isinstance(data, dict) and (data.get("error") or data.get("success") is False):
+            self._command_failed = True
         if self.json_output:
-            print(json.dumps(data, indent=2))
+            fmt = "ndjson" if self.output_format == "ndjson" else "json"
+            print(render_value(data, fmt), end="")
         else:
             # Custom formatting based on data type
-            if "error" in data:
-                print(colors.red | f"Error: {data['error']}")
+            if isinstance(data, dict) and data.get("error"):
+                print(colors.red | f"Error: {data['error']}", file=sys.stderr)
                 # Display additional error context if available
                 if isinstance(data, dict):
                     if "help" in data:
-                        print(colors.yellow | f"Help: {data['help']}")
+                        print(colors.yellow | f"Help: {data['help']}", file=sys.stderr)
                     if "received" in data:
-                        print(f"Received: {data['received']}")
+                        print(f"Received: {data['received']}", file=sys.stderr)
                     if "requested_name" in data:
-                        print(f"Requested: {data['requested_name']}")
+                        print(f"Requested: {data['requested_name']}", file=sys.stderr)
                     if "available_functions" in data and data["available_functions"]:
                         funcs = data["available_functions"][:5]
-                        print("\nAvailable functions:")
+                        print("\nAvailable functions:", file=sys.stderr)
                         for func in funcs:
-                            print(f"  • {func}")
+                            print(f"  • {func}", file=sys.stderr)
                         if len(data["available_functions"]) > 5:
-                            print(f"  ... and {len(data['available_functions']) - 5} more")
-            elif "success" in data and data.get("success"):
+                            print(
+                                f"  ... and {len(data['available_functions']) - 5} more",
+                                file=sys.stderr,
+                            )
+            elif isinstance(data, dict) and data.get("success"):
                 print(colors.green | "Success!")
                 if "message" in data:
                     print(data["message"])
@@ -1742,11 +1913,102 @@ class BinaryNinjaCLI(cli.Application):
                 print(json.dumps(data, indent=2))
 
     def main(self):
-        """Show help if no subcommand is provided"""
-        if len(sys.argv) == 1:
+        """Validate shared arguments before any child command can perform work."""
+        if not self.nested_command:
             self.help()
             return 1
+        context = _invocation.get()
+        if context is not None and context["is_meta"]:
+            return 0
+        try:
+            if self.spill and self.no_spill:
+                raise ValueError("Choose --spill or --no-spill, not both")
+            if self.json_output and self.output_format not in {None, "json"}:
+                raise ValueError("--json cannot be combined with a different --format")
+            fmt = (
+                "json"
+                if self.json_output
+                else self.output_format or getattr(self.nested_command[0], "OUTPUT_FORMAT", "text")
+            )
+            options = OutputOptions(
+                format=fmt,
+                out=self.out,
+                overwrite=self.overwrite_output,
+                match=self.match,
+                before=self.before,
+                after=self.after,
+                spill=False if self.no_spill else True if self.spill else None,
+                tokens=self.tokens,
+            )
+            for name, value in (
+                ("--request-timeout", self.request_timeout),
+                ("--connect-timeout", self.connect_timeout),
+            ):
+                if not math.isfinite(value) or value <= 0:
+                    raise ValueError(f"{name} must be finite and positive")
+            if self.error_probe_count < 1:
+                raise ValueError("--error-probe-count must be positive")
+            options.validate()
+            self._output_options = options
+            self.output_format = fmt
+            self.json_output = fmt in {"json", "ndjson"}
+        except (ValueError, OSError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
         return 0
+
+
+@BinaryNinjaCLI.subcommand("schema")
+class Schema(cli.Application):
+    """Describe all commands or a scoped command path; works without a server."""
+
+    OUTPUT_FORMAT = "json"
+
+    def main(self, *command_path):
+        try:
+            data = command_schema(BinaryNinjaCLI, command_path)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        self.parent._output(data)
+        return 0
+
+
+@BinaryNinjaCLI.subcommand("doctor")
+class Doctor(cli.Application):
+    """Inspect loaded server versions, capabilities and reload requirements."""
+
+    OUTPUT_FORMAT = "json"
+
+    def main(self):
+        root = self.parent
+        if root.target_view_id:
+            root._route_discovered_target(timeout=root.request_timeout)
+        if root._discovery_enabled() and not root.target_view_id and not root.target_filename:
+            servers = root._discover_servers(timeout=min(root.connect_timeout, 0.5))
+        else:
+            servers = [root._request("GET", "meta/instance")]
+        instances = [
+            {**server, "compatibility": assess_compatibility(server)} for server in servers
+        ]
+        success = bool(instances) and all(item["compatibility"]["compatible"] for item in instances)
+        result = {
+            "success": success,
+            "client": {
+                "version": TOOL_VERSION,
+                "capability_protocol_version": CAPABILITY_PROTOCOL_VERSION,
+            },
+            "instances": instances,
+        }
+        if not instances:
+            result["error"] = (
+                "No Binary Ninja HTTP instances found; start Plugins > MCP Server > Start MCP Server"
+            )
+        if root.json_output:
+            root._output(result)
+        else:
+            print(render_value(result), end="")
+        return 0 if success else 1
 
 
 @BinaryNinjaCLI.subcommand("status")
@@ -3041,8 +3303,8 @@ class Signature(cli.Application):
                 file=sys.stderr,
             )
             return 2
-        if not self.analysis_timeout > 0:
-            print("--analysis-timeout must be positive", file=sys.stderr)
+        if not math.isfinite(self.analysis_timeout) or self.analysis_timeout <= 0:
+            print("--analysis-timeout must be finite and positive", file=sys.stderr)
             return 2
         signature = self._read_signature(signature_parts)
         if signature is None:
@@ -3468,6 +3730,7 @@ class AnnotationsExport(cli.Application):
             print("  Counts: no user annotations")
 
 
+@BinaryNinjaCLI.subcommand("py")
 @BinaryNinjaCLI.subcommand("python")
 class Python(cli.Application):
     """Execute Python code in Binary Ninja context
@@ -3482,7 +3745,16 @@ class Python(cli.Application):
         echo "2+2" | python -            # Pipe code to execute
     """
 
-    file = cli.SwitchAttr(["-f", "--file"], cli.ExistingFile, help="Execute Python code from file")
+    file = cli.SwitchAttr(
+        ["-f", "--file", "--script"], cli.ExistingFile, help="Execute Python code from file"
+    )
+    source_code = cli.SwitchAttr(
+        ["--code"], str, help="Execute explicit inline Python, without probing the filesystem"
+    )
+    no_syntax_check = cli.Flag(
+        ["--no-syntax-check"],
+        help="Defer syntax validation to embedded Python (for differing Python versions)",
+    )
 
     interactive = cli.Flag(["-i", "--interactive"], help="Start interactive Python session")
 
@@ -3500,6 +3772,27 @@ class Python(cli.Application):
 
     def main(self, *args):
         code = None
+        source_filename = "<console>"
+        positional_stdin = args == ("-",)
+        source_count = (
+            int(self.source_code is not None)
+            + int(bool(self.file))
+            + int(bool(self.stdin or positional_stdin))
+            + int(bool(args) and not positional_stdin)
+        )
+        if (
+            source_count > 1
+            or (self.interactive and source_count)
+            or (self.complete is not None and (source_count or self.interactive))
+        ):
+            print(
+                "Choose one Python mode/source: --code, --script/--file, stdin, positional input, --interactive, or --complete",
+                file=sys.stderr,
+            )
+            return 2
+        if not math.isfinite(self.exec_timeout) or self.exec_timeout <= 0:
+            print("--exec-timeout must be finite and positive", file=sys.stderr)
+            return 2
 
         # Handle completion request
         if self.complete is not None:
@@ -3533,32 +3826,47 @@ class Python(cli.Application):
 
         # Determine source of code
         if self.interactive:
-            # Interactive mode
-            self._interactive_mode()
+            options = getattr(self.parent, "_output_options", None)
+            if options and (
+                options.format != "text"
+                or options.out
+                or options.match is not None
+                or options.spill is True
+                or options.tokens
+            ):
+                print(
+                    "Interactive Python requires text stdout without filtering, artifacts, or token counting",
+                    file=sys.stderr,
+                )
+                return 2
+            # Prompts must remain live instead of entering the buffered output layer.
+            with redirect_stdout(getattr(self.parent, "_live_stdout", sys.stdout)):
+                self._interactive_mode()
             return 0
 
+        elif self.source_code is not None:
+            code = self.source_code
         elif self.file:
             # Explicit file flag
             try:
                 code = self.file.read()
+                source_filename = str(self.file)
             except Exception as e:
-                print(colors.red | f"Error reading file: {e}")
+                print(colors.red | f"Error reading file: {e}", file=sys.stderr)
                 return 1
 
         elif self.stdin or (args and args[0] == "-"):
             # Read from stdin
             try:
-                import sys
-
                 code = sys.stdin.read()
                 if not code.strip():
-                    print(colors.red | "No input received from stdin")
+                    print(colors.red | "No input received from stdin", file=sys.stderr)
                     return 1
             except KeyboardInterrupt:
                 print("\nCancelled")
                 return 1
             except Exception as e:
-                print(colors.red | f"Error reading stdin: {e}")
+                print(colors.red | f"Error reading stdin: {e}", file=sys.stderr)
                 return 1
 
         elif args:
@@ -3579,8 +3887,9 @@ class Python(cli.Application):
                     # It's a file, read it
                     try:
                         code = file_path.read_text()
+                        source_filename = str(file_path)
                     except Exception as e:
-                        print(colors.red | f"Error reading file '{args[0]}': {e}")
+                        print(colors.red | f"Error reading file '{args[0]}': {e}", file=sys.stderr)
                         return 1
                 else:
                     # Not a file, treat as inline code
@@ -3591,8 +3900,6 @@ class Python(cli.Application):
 
         else:
             # No arguments, check if stdin is piped
-            import sys
-
             # Check if stdin has data (works on Unix-like systems)
             if sys.stdin.isatty():
                 # No piped input, show usage
@@ -3609,12 +3916,26 @@ class Python(cli.Application):
                 try:
                     code = sys.stdin.read()
                 except Exception as e:
-                    print(colors.red | f"Error reading piped input: {e}")
+                    print(colors.red | f"Error reading piped input: {e}", file=sys.stderr)
                     return 1
 
         if not code:
-            print(colors.red | "No code to execute")
+            print("No code to execute", file=sys.stderr)
             return 1
+
+        if not self.no_syntax_check:
+            try:
+                # Compile only: never execute client-side. Match the executor's
+                # parse/compile boundary so bad syntax cannot reach side effects.
+                tree = ast.parse(code, filename=source_filename, mode="exec")
+                compile(tree, source_filename, "exec")
+            except (SyntaxError, ValueError) as exc:
+                print(
+                    f"Python syntax error: {source_filename}:{getattr(exc, 'lineno', '?')}: "
+                    f"{getattr(exc, 'msg', str(exc))}. If embedded Python is newer, use --no-syntax-check.",
+                    file=sys.stderr,
+                )
+                return 2
 
         # Execute the code
         error_snapshot = self.parent._capture_error_snapshot()
@@ -3672,6 +3993,8 @@ class Python(cli.Application):
             )
             if should_fail:
                 return 1
+
+        return 0 if data.get("success") else 1
 
     def _interactive_mode(self):
         """Interactive Python session"""

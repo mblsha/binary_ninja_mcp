@@ -2,6 +2,7 @@
 """Install a built wheel in a disposable environment and test outside the repo."""
 
 import argparse
+import glob
 import os
 from pathlib import Path
 import subprocess
@@ -13,7 +14,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wheel", type=Path)
     args = parser.parse_args()
-    wheel = args.wheel.resolve(strict=True)
+    matches = glob.glob(str(args.wheel))
+    if len(matches) != 1:
+        parser.error("Expected exactly one wheel file")
+    wheel = Path(matches[0]).resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="binja-wheel-smoke-") as directory:
         root = Path(directory)
         environment = root / "venv"
@@ -44,6 +48,27 @@ def main():
             env=env,
             check=True,
         )
+        result = subprocess.run(
+            [
+                str(python),
+                "-m",
+                "binja_cli",
+                "schema",
+                "python",
+                "--out",
+                str(root / "schema.json"),
+            ],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        import json
+
+        schema = json.loads((root / "schema.json").read_text())
+        assert schema["scope"] == ["python"]
+        assert json.loads(result.stdout)["artifact_path"] == str(root / "schema.json")
         print("Wheel smoke passed: both entry points run outside the checkout without the BN SDK")
 
 

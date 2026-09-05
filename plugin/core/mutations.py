@@ -5,6 +5,9 @@ user edits are outside this helper's coordination boundary.
 """
 
 from threading import RLock
+from shared.build_info import snapshot_source
+
+LOADED_SOURCE = snapshot_source(__file__)
 
 
 _mutation_lock = RLock()

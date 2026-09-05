@@ -5,6 +5,8 @@ import errno
 import os
 import time
 import uuid
+import sys
+import platform
 from typing import Dict, Any, Optional
 import binaryninja as bn
 import threading
@@ -37,6 +39,14 @@ from .view_sync import (
     select_preferred_view,
 )
 from ..utils.string_utils import parse_int_or_default
+from shared.build_info import (
+    TOOL_VERSION,
+    CAPABILITY_PROTOCOL_VERSION,
+    snapshot_source,
+    source_diagnostics,
+)
+
+LOADED_SOURCE = snapshot_source(__file__)
 
 try:
     from ..core.log_capture import get_log_capture
@@ -304,6 +314,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     "endpoint": endpoint_path,
                     "expected_api_version": expected,
                     "received_api_version": received,
+                    "help": "Update the CLI and reload the plugin together; restarting only the HTTP listener does not reload server code.",
                 },
                 409,
             )
@@ -2165,6 +2176,53 @@ class MCPServer:
     def instance_metadata(self) -> Dict[str, Any]:
         host = str(self.config.server.host)
         port = int(self.config.server.port)
+        modules = {
+            "http_server": sys.modules.get(__name__),
+            "binary_operations": sys.modules.get(BinaryOperations.__module__),
+            "endpoints": sys.modules.get(BinaryNinjaEndpoints.__module__),
+            "python_executor": sys.modules.get(get_console_capture.__module__),
+            "build_info": sys.modules.get(snapshot_source.__module__),
+            "api_versions": sys.modules.get(expected_api_version.__module__),
+        }
+        mutation_type = getattr(modules["binary_operations"], "MutationTransaction", None)
+        modules["mutations"] = sys.modules.get(getattr(mutation_type, "__module__", ""))
+        snapshots = {
+            name: getattr(module, "LOADED_SOURCE", None) for name, module in modules.items()
+        }
+        capabilities = {
+            "builtin_mutations_version": getattr(
+                modules["binary_operations"], "BUILTIN_MUTATIONS_VERSION", None
+            ),
+            "signature_workflow_version": getattr(
+                modules["endpoints"], "SIGNATURE_WORKFLOW_VERSION", None
+            ),
+            "python_serialization_version": getattr(
+                modules["python_executor"], "SERIALIZATION_VERSION", None
+            ),
+            "analysis_skip_guard_version": getattr(
+                modules["binary_operations"], "ANALYSIS_SKIP_GUARD_VERSION", None
+            ),
+        }
+        runtime = source_diagnostics(snapshots)
+        stale_bindings = []
+        if type(self) is not MCPServer:
+            stale_bindings.append("server_instance")
+        if type(self.binary_ops) is not getattr(
+            modules["binary_operations"], "BinaryOperations", None
+        ):
+            stale_bindings.append("binary_operations_instance")
+        if BinaryNinjaEndpoints is not getattr(modules["endpoints"], "BinaryNinjaEndpoints", None):
+            stale_bindings.append("endpoints_class")
+        if get_console_capture is not getattr(
+            modules["python_executor"], "get_console_capture", None
+        ):
+            stale_bindings.append("python_executor_factory")
+        if self.server is not None and not issubclass(
+            self.server.RequestHandlerClass, MCPRequestHandler
+        ):
+            stale_bindings.append("http_handler")
+        runtime["stale_bindings"] = stale_bindings
+        runtime["reload_required"] = runtime["reload_required"] or bool(stale_bindings)
         return {
             "service": "binary_ninja_mcp",
             "instance_id": self.instance_id,
@@ -2173,6 +2231,12 @@ class MCPServer:
             "base_url": f"http://{host}:{port}",
             "pid": os.getpid(),
             "started_at": self.started_at,
+            "plugin_version": TOOL_VERSION,
+            "capability_protocol_version": CAPABILITY_PROTOCOL_VERSION,
+            "capabilities": capabilities,
+            "runtime": runtime,
+            "python_version": platform.python_version(),
+            "binary_ninja_version": str(bn.core_version()) if hasattr(bn, "core_version") else None,
         }
 
     def is_running(self) -> bool:

@@ -1,9 +1,26 @@
 """Shared API version and contract constants."""
 
 from __future__ import annotations
+from .build_info import snapshot_source
+
+LOADED_SOURCE = snapshot_source(__file__)
 
 DEFAULT_ENDPOINT_API_VERSION = 1
 ENDPOINT_API_VERSION_OVERRIDES = {
+    # Safety semantics changed: old servers must reject these requests rather
+    # than silently ignore preview/skip protection or omit rollback guarantees.
+    "/function/signature": 2,
+    "/editFunctionSignature": 2,
+    "/decompile": 2,
+    "/rename/function": 2,
+    "/renameFunction": 2,
+    "/rename/data": 2,
+    "/renameData": 2,
+    "/comment": 2,
+    "/comment/function": 2,
+    "/defineTypes": 2,
+    "/renameVariable": 2,
+    "/retypeVariable": 2,
     "/ui/open": 2,
     "/ui/close": 2,
     "/ui/quit": 2,

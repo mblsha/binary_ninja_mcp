@@ -96,7 +96,14 @@ uv run python scripts/binja-cli.py close --all --except-view-id <id> --decision 
 
 - **Cannot connect to server**: ensure Binary Ninja is running and the server is started; check `uv run python scripts/binja-cli.py --server http://localhost:9009 status`.
 - **“No binary loaded”**: open a binary and wait for initial analysis; then re-run `status`.
-- **Wrong file when multiple tabs are open**: click the desired Binary Ninja tab and re-run the CLI command.
+- **Explicit target required**: run `binja-cli views`, then pass the returned
+  process-qualified ID with `binja-cli --view-id INSTANCE:VIEW <command>`.
+- **Client/server mismatch or stale code**: run `binja-cli doctor`; update the
+  client and reload the plugin together. Restarting only the listener does not
+  reload Python modules.
+
+See [Output, schemas and upgrade safety](docs/cli-output.md) for the complete
+output contract, `schema`, explicit Python inputs, and API-v2 safety requirements.
 
 ## Repository Layout
 
