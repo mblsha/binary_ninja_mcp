@@ -637,6 +637,28 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     include=params.get("include"),
                     time_budget=params.get("time_budget", 30.0),
                 )
+            elif path == "/analysis/search" and method == "POST":
+                mode = params.get("mode", "text")
+                result = operations.search(
+                    params.get("query"),
+                    mode=mode,
+                    level=params.get("level", "llil" if mode == "constant" else "hlil"),
+                    within=params.get("within"),
+                    regex=params.get("regex", False),
+                    case_sensitive=params.get("case_sensitive", False),
+                    max_results=params.get("max_results", 100),
+                    time_budget=params.get("time_budget", 5.0),
+                )
+            elif path == "/analysis/callsites" and method == "POST":
+                result = operations.callsites(
+                    params.get("identifier"),
+                    within=params.get("within"),
+                    context=params.get("context", 3),
+                    include_tailcalls=params.get("include_tailcalls", False),
+                    hlil=params.get("hlil", True),
+                    max_results=params.get("max_results", 100),
+                    time_budget=params.get("time_budget", 30.0),
+                )
             else:
                 self._send_json_response(
                     {"error": "Unknown analysis endpoint or method", **context}, 404
@@ -2269,7 +2291,7 @@ class MCPServer:
             "api_versions": sys.modules.get(expected_api_version.__module__),
         }
         analysis_globals = AnalysisOperations.__init__.__globals__
-        for name in ("memory_reads", "type_queries"):
+        for name in ("memory_reads", "type_queries", "analysis_queries", "callsite_queries"):
             modules[name] = analysis_globals.get(name)
         sections_function = analysis_globals.get("bundle_sections")
         modules["analysis_contract"] = sys.modules.get(getattr(sections_function, "__module__", ""))

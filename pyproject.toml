@@ -22,6 +22,7 @@ include = ["binja_cli*", "shared*"]
 
 [project.optional-dependencies]
 tokens = ["tiktoken>=0.7"]
+search = ["regex>=2024.5.15"]
 
 [tool.ruff]
 target-version = "py312"

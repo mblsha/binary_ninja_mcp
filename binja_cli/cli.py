@@ -29,6 +29,11 @@ from shared.analysis_contract import (
     IL_LEVELS,
     READ_TYPES,
     read_arguments,
+    SEARCH_LEVELS,
+    query_limit,
+    query_scope,
+    constant_value,
+    callsite_context,
 )
 
 from shared.api_versions import (
@@ -3221,9 +3226,16 @@ class Assembly(cli.Application):
 
 
 class _AnalysisCommand(cli.Application):
+    @property
+    def client(self):
+        application = self.parent
+        while not isinstance(application, BinaryNinjaCLI):
+            application = application.parent
+        return application
+
     def _emit(self, data, text=None):
-        if self.parent.json_output or data.get("error"):
-            self.parent._output(data)
+        if self.client.json_output or data.get("error"):
+            self.client._output(data)
         else:
             print(text if text is not None else json.dumps(data, indent=2))
             for warning in data.get("warnings", []):
@@ -3344,6 +3356,7 @@ class _BudgetedAnalysisCommand(_AnalysisCommand):
         ["--time-budget"],
         float,
         default=30.0,
+        overridable=True,
         help="Cooperative budget in seconds; cannot interrupt an SDK call",
     )
 
@@ -3353,11 +3366,26 @@ class _BudgetedAnalysisCommand(_AnalysisCommand):
         except ValueError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return None
-        return self.parent._request(
+        return self.client._request(
             "GET",
             endpoint,
             {**params, "time_budget": budget},
-            timeout=max(self.parent.request_timeout, budget + 5.0),
+            timeout=max(self.client.request_timeout, budget + 5.0),
+        )
+
+    def _query(self, endpoint, params):
+        try:
+            budget = analysis_time_budget(self.time_budget)
+            limit = query_limit(self.max_results)
+            within = query_scope(self.within)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return None
+        return self.client._request(
+            "POST",
+            endpoint,
+            data={**params, "time_budget": budget, "max_results": limit, "within": within},
+            timeout=max(self.client.request_timeout, budget + 5.0),
         )
 
 
@@ -3458,6 +3486,126 @@ class ReferencesFrom(_BudgetedAnalysisCommand):
 
     def main(self, identifier: str):
         data = self._read("analysis/refs", {"identifier": identifier, "direction": "outgoing"})
+        return 2 if data is None else self._emit(data)
+
+
+class _ScopedQueryCommand(_BudgetedAnalysisCommand):
+    OUTPUT_FORMAT = "json"
+    within = cli.SwitchAttr(
+        ["--within"], str, list=True, help="Scope to this function; repeat for multiple functions"
+    )
+    max_results = cli.SwitchAttr(
+        ["--max-results", "--limit"],
+        int,
+        default=100,
+        help="Stop after this many results (1-100000)",
+    )
+
+
+@BinaryNinjaCLI.subcommand("search")
+class Search(cli.Application):
+    """Bounded analysis search; use 'functions --search' to search function names."""
+
+    OUTPUT_FORMAT = "json"
+
+
+class _SearchQueryCommand(_ScopedQueryCommand):
+    time_budget = cli.SwitchAttr(
+        ["--time-budget"],
+        float,
+        default=5.0,
+        help="Cooperative deadline for the whole search in seconds",
+    )
+
+
+@Search.subcommand("text")
+class SearchText(_SearchQueryCommand):
+    """Search rendered analysis text; skipped functions and failures make results incomplete."""
+
+    level = cli.SwitchAttr(
+        ["--level", "--view"],
+        cli.Set(*SEARCH_LEVELS),
+        default="hlil",
+        help="Search hlil, mlil, llil or analyzed disassembly",
+    )
+    regex = cli.Flag(
+        ["--regex"],
+        help="Use a timeout-capable regex; requires regex in Binary Ninja's Python environment",
+    )
+    case_sensitive = cli.Flag(
+        ["--case-sensitive"], help="Match case exactly; default is case-insensitive"
+    )
+
+    def main(self, query: str):
+        if not query or len(query) > 4096:
+            print("Error: Search text must contain 1 to 4096 characters", file=sys.stderr)
+            return 2
+        data = self._query(
+            "analysis/search",
+            {
+                "mode": "text",
+                "query": query,
+                "level": self.level,
+                "regex": bool(self.regex),
+                "case_sensitive": bool(self.case_sensitive),
+            },
+        )
+        return 2 if data is None else self._emit(data)
+
+
+@Search.subcommand("constant")
+class SearchConstant(_SearchQueryCommand):
+    """Search exact integer constants in IL expression trees or numeric disassembly tokens."""
+
+    level = cli.SwitchAttr(
+        ["--level", "--view"],
+        cli.Set(*SEARCH_LEVELS),
+        default="llil",
+        help="Default LLIL; raw integer operands such as SSA indices are not constants",
+    )
+
+    def main(self, value: str):
+        try:
+            value = constant_value(value)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        data = self._query(
+            "analysis/search", {"mode": "constant", "query": value, "level": self.level}
+        )
+        return 2 if data is None else self._emit(data)
+
+
+@BinaryNinjaCLI.subcommand("callsites")
+class Callsites(_ScopedQueryCommand):
+    """Direct calls to a symbol/address, with instruction and optional HLIL context."""
+
+    context = cli.SwitchAttr(
+        ["--context"], int, default=3, help="Nearby disassembly instructions on each side (0-64)"
+    )
+    include_tailcalls = cli.Flag(
+        ["--include-tailcalls"],
+        help="Include direct tail calls, which have no static return address",
+    )
+    no_hlil = cli.Flag(
+        ["--no-hlil"], help="Skip HLIL mapping/structural conditions; retain LLIL and disassembly"
+    )
+
+    def main(self, identifier: str):
+        try:
+            context = callsite_context(self.context)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        data = self._query(
+            "analysis/callsites",
+            {
+                "identifier": identifier,
+                "context": context,
+                "include_tailcalls": bool(self.include_tailcalls),
+                "hlil": not self.no_hlil,
+            },
+        )
         return 2 if data is None else self._emit(data)
 
 

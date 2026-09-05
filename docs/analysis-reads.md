@@ -33,6 +33,9 @@ binja-cli schema bundle
 | `read IDENTIFIER` | JSON, 16 bytes | `--type`/`-t` selects decoding, `--count`/`-n` selects elements or a string byte bound; `--endian` overrides auto endianness. |
 | `xrefs IDENTIFIER` | JSON, incoming code/data references | `--field` interprets the identifier as `Type.field` or `Type.0xOFFSET`. |
 | `refs-from IDENTIFIER` | JSON, outgoing function references | Accepts an interior address; does not change legacy incoming `refs` behavior. |
+| `search text QUERY` | JSON, case-insensitive HLIL search | `--level`/`--view`, `--regex`, `--case-sensitive`; repeat `--within` to scope functions. |
+| `search constant INTEGER` | JSON, exact LLIL constants | Decimal/hex integers; optional level and repeated `--within`. |
+| `callsites IDENTIFIER` | JSON, direct ordinary calls | `--context` (default 3), `--no-hlil`, `--include-tailcalls`, repeated `--within`. |
 
 `assembly FUNCTION` remains the existing annotated function-disassembly command.
 `disasm` is a separate linear decoder: it works outside defined functions and
@@ -138,6 +141,63 @@ with `encoding_errors: true`, retaining original bytes. Non-finite float values
 use explicit `{type: "float", value: "nan"/"inf"/"-inf"}` tags so output remains
 strict JSON; their original bit patterns remain in raw hex. Partial reads exit 1.
 
+## Bounded searches and callsites
+
+```bash
+binja-cli --view-id VIEW_ID search text malloc --level hlil --max-results 50
+binja-cli --view-id VIEW_ID search text 'load.*key' --regex --within decrypt
+binja-cli --view-id VIEW_ID search constant 0xdeadbeef --within main --within helper
+binja-cli --view-id VIEW_ID callsites malloc --context 2 --no-hlil
+binja-cli --view-id VIEW_ID callsites exit --include-tailcalls --time-budget 20
+```
+
+Search covers existing function analysis, not every raw byte/string in a binary.
+Use `functions --search QUERY` for function-name search. Analysis queries use
+`--max-results`/`--limit` (default 100, maximum 100,000) and one `--time-budget`
+(search default 5 seconds; callsites default 30). `--within` is repeatable and
+uses the ambiguity-aware resolver. Without it, search visits all known functions,
+while callsites visits callers indexed by Binary Ninja. Aliases are deduplicated.
+Scoping does not give each function a fresh time budget.
+
+Results include `complete`, `stopped_reason`, `incomplete_reasons`,
+`functions_total`, `functions_scanned`, `skipped_functions`, `errors` and
+`elapsed_seconds`. A limit/timeout, skipped analysis or per-function failure makes
+the overall result incomplete and exits 1, preserving matches already found.
+Hitting the result limit conservatively reports incomplete even if that match
+happened to be the last one. Zero results only establish absence within a complete
+reported scope. IL search checks skip state before accessing IL; disassembly
+search can inspect a skipped function's existing instructions but still reports
+the skip state as incomplete coverage. SDK calls remain non-preemptible.
+
+Text results retain native instruction indices, machine addresses and a zero-based
+line within that rendered instruction. Constant search traverses actual integer
+constant/constant-pointer expression nodes; numeric SSA/register/operand indices
+are not treated as constants. `--level disasm` matches numeric/address token kinds,
+not every token's numeric metadata. Values are compared exactly as returned by
+Binary Ninja, without signed/unsigned reinterpretation.
+
+Regex mode requires the optional `regex` package in the Python environment used
+by Binary Ninja. It validates the pattern and timeout API before analysis and
+applies the remaining search budget to each match. There is no fallback to an
+unbounded regex engine. See the package's
+[timeout documentation](https://github.com/mrabarnett/mrab-regex#timeout).
+`uv sync --extra search` enables it in this repository's test environment; installing
+an isolated CLI extra does not necessarily install it into the GUI's embedded
+Python. Literal and constant search require no additional package.
+
+Callsites confirms direct LLIL call destinations; indirect calls/jumps are outside
+its reported scope. Direct tail calls are opt-in. Each result includes the call
+address, LLIL index/text, decoded instruction, nearby instructions in address
+order, and optional mapped HLIL statements with enclosing structural conditions.
+An `if` condition includes its true/false branch when identifiable. These are
+syntax relationships, not proven runtime path predicates (especially for loops).
+
+`static_return_address` is the sequential continuation after the decoded call
+and its declared delay-slot instructions, not an observed dynamic return address.
+Tail calls and unavailable/unsupported delay information return null with a
+reason. Decode/context/mapping errors retain the basic callsite and report the
+failed phase. `--context 0 --no-hlil` skips both optional context expansions.
+
 ## HTTP surfaces
 
 - `GET /analysis/disasm`: `identifier`, optional `count` or `end`, optional `arch`.
@@ -148,6 +208,10 @@ strict JSON; their original bit patterns remain in raw hex. Partial reads exit 1
   `field` (incoming only), `time_budget`.
 - `POST /analysis/bundle`: JSON `identifiers` array, optional `include` array or
   comma-separated string, optional `time_budget` (finite, >0, at most 3600 seconds).
+- `POST /analysis/search`: `query`, `mode` (text/constant), optional `level`,
+  `within` array, `regex`, `case_sensitive`, `max_results`, `time_budget`.
+- `POST /analysis/callsites`: `identifier`, optional `within` array, `context`,
+  `include_tailcalls`, `hlil`, `max_results`, `time_budget`.
 
 Requests require explicit target parameters and endpoint API version 1. Target
 context is included in successful and structured validation-error responses.

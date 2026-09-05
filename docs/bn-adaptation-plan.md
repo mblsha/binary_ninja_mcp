@@ -88,7 +88,18 @@ locked; the running plugin has not been reloaded and no open database was change
   IL tests cover all levels/SSA and pre-property skip guards. New HTTP routes,
   CLI short flags/aliases, schemas and installed-wheel commands were verified.
   Ruff lint, changed-file formatting, Unicode safety and diff checks pass.
-- [ ] Callsites and bounded text/constant searches with completeness metadata.
+- [x] Callsites and bounded text/constant searches with completeness metadata.
+  Queries preserve partial results, guard skipped IL, share one time budget and
+  use explicit repeated function scopes. Regex matching uses an optional
+  timeout-capable engine; ordinary searches require no new package. Callsite
+  context distinguishes structural conditions and static delay-slot-aware
+  continuations from observed runtime behavior.
+  Query checkpoint: 399 offline tests passed (19 live tests deselected,
+  8 subtests passed), including real optional-regex matching and pathological
+  pattern timeout tests. New POST routes, nested CLI options, repeated scopes,
+  schemas and installed-wheel command discovery pass. Ruff lint, changed-file
+  formatting, Unicode safety and diff checks pass. CI now exercises query tests
+  on all three configured platforms; remote runs remain unverified.
 - [ ] Stable local-variable IDs and structure-field edits using transactions.
 - [ ] Documentation and CLI ergonomics aligned with actual installed commands.
 - [ ] Resolve the three pre-existing format-only failures separately before

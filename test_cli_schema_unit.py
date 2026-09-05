@@ -84,6 +84,19 @@ def test_primitive_schema_exposes_actual_il_and_read_type_choices():
     assert {"bytes", "ptr", "cstr", "f64", "i64"} <= set(kind["choices"])
 
 
+def test_query_schema_has_repeatable_scope_and_distinct_time_budgets():
+    for scope, budget in [
+        (["search", "text"], 5.0),
+        (["search", "constant"], 5.0),
+        (["callsites"], 30.0),
+    ]:
+        command = command_schema(BinaryNinjaCLI, scope)["commands"][0]
+        switches = {name: option for option in command["arguments"] for name in option["names"]}
+        assert switches["--within"]["repeatable"]
+        assert switches["--time-budget"]["default"] == budget
+        assert command["command_defaults"]["format"] == "json"
+
+
 def test_runtime_diagnostics_compare_import_snapshot_with_disk(tmp_path):
     path = tmp_path / "server.py"
     path.write_text("before")

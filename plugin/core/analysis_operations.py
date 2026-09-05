@@ -18,7 +18,7 @@ from shared.analysis_contract import (
 )
 from shared.build_info import snapshot_source
 from .identifiers import AnalysisError, IdentifierResolver, function_identity, function_key
-from . import memory_reads, type_queries
+from . import memory_reads, type_queries, analysis_queries, callsite_queries
 
 LOADED_SOURCE = snapshot_source(__file__)
 ANALYSIS_READS_VERSION = 1
@@ -233,6 +233,12 @@ class AnalysisOperations:
 
     def read(self, identifier, **options):
         return memory_reads.read_memory(self.view, self.resolver, identifier, **options)
+
+    def search(self, query, **options):
+        return analysis_queries.search(self, query, **options)
+
+    def callsites(self, identifier, **options):
+        return callsite_queries.callsites(self, identifier, **options)
 
     def references(self, identifier, *, direction="incoming", field=False, time_budget=30.0):
         if direction not in {"incoming", "outgoing"} or (field and direction != "incoming"):
