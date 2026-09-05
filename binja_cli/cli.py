@@ -21,6 +21,12 @@ from .arguments import normalize_output_options
 from .output import OUTPUT_FORMATS, OutputOptions, deliver_output, render_value
 from .schema import command_schema
 from shared.build_info import TOOL_VERSION, CAPABILITY_PROTOCOL_VERSION, assess_compatibility
+from shared.analysis_contract import (
+    MAX_BUNDLE_FUNCTIONS,
+    bundle_sections,
+    instruction_count,
+    analysis_time_budget,
+)
 
 from shared.api_versions import (
     SUPPORTED_UI_CONTRACT_SCHEMA_VERSIONS,
@@ -611,7 +617,9 @@ class BinaryNinjaCLI(cli.Application):
                 )
 
             capability = None
-            if endpoint_path in {"/function/signature", "/editFunctionSignature"}:
+            if endpoint_path.startswith("/analysis/"):
+                capability = ("analysis_reads_version", 1)
+            elif endpoint_path in {"/function/signature", "/editFunctionSignature"}:
                 capability = ("signature_workflow_version", 2)
             elif endpoint_path == "/decompile":
                 capability = ("analysis_skip_guard_version", 1)
@@ -3207,6 +3215,125 @@ class Assembly(cli.Application):
             )
             if should_fail:
                 return 1
+
+
+class _AnalysisCommand(cli.Application):
+    def _emit(self, data, text=None):
+        if self.parent.json_output or data.get("error"):
+            self.parent._output(data)
+        else:
+            print(text if text is not None else json.dumps(data, indent=2))
+            for warning in data.get("warnings", []):
+                print(f"Warning: {warning}", file=sys.stderr)
+        return 1 if data.get("success") is False or data.get("error") else 0
+
+
+@BinaryNinjaCLI.subcommand("disasm")
+class Disasm(_AnalysisCommand):
+    """Linear disassembly of mapped bytes; no function or IL required.
+
+    Names, interior addresses and symbol+offset expressions are accepted.
+    Defaults to 32 instructions. --end is exclusive; partial output exits 1.
+    Use assembly FUNCTION for the existing annotated function presentation.
+    """
+
+    count = cli.SwitchAttr(["--count", "-n"], int, help="Decode this many instructions (1-100000)")
+    end = cli.SwitchAttr(["--end"], str, help="Decode up to this exclusive address or symbol")
+    arch = cli.SwitchAttr(["--arch"], str, help="Explicit Binary Ninja architecture (e.g. thumb2)")
+
+    def main(self, identifier: str):
+        try:
+            if self.count is not None and self.end is not None:
+                raise ValueError("Choose --count or --end, not both")
+            count = (
+                instruction_count(self.count)
+                if self.count is not None
+                else (32 if self.end is None else None)
+            )
+            if self.end is not None and not self.end.strip():
+                raise ValueError("Exclusive end must not be empty")
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        params = {"identifier": identifier}
+        params.update(
+            {
+                key: value
+                for key, value in {"count": count, "end": self.end, "arch": self.arch}.items()
+                if value is not None
+            }
+        )
+        data = self.parent._request("GET", "analysis/disasm", params)
+        text = data.get("text", "")
+        if data.get("stopped_reason"):
+            text += f"\nStopped at {data.get('next_address')}: {data['stopped_reason']}"
+        return self._emit(data, text)
+
+
+@BinaryNinjaCLI.subcommand("info")
+class FunctionInfo(_AnalysisCommand):
+    """Compact function metadata and counts; add --locals for variable details."""
+
+    include_locals = cli.Flag(["--locals"], help="Include parameter/local details with stable IDs")
+
+    def main(self, identifier: str):
+        data = self.parent._request(
+            "GET",
+            "analysis/function",
+            {"identifier": identifier, "locals": bool(self.include_locals)},
+        )
+        function = data.get("function", {})
+        text = None
+        if function and not self.include_locals:
+            text = (
+                f"{function['address']} {function['name']} ({function['architecture']})\n"
+                f"{data.get('prototype', '')}\n"
+                f"Size: {data.get('size')} bytes; parameters: {data.get('parameter_count')}; locals: {data.get('local_count')}\n"
+                f"Analysis skipped: {data.get('analysis_skipped')}"
+            )
+        return self._emit(data, text)
+
+
+@BinaryNinjaCLI.subcommand("bundle")
+class Bundle(_AnalysisCommand):
+    """Read selected sections for one or more functions in one pinned view.
+
+    Always returns a functions array. Aliases resolving to the same function
+    share one entry. Section/identifier failures preserve other results and exit 1.
+    Sections: decompile, mlil, llil, disasm, locals, comments, xrefs, refs_from, all.
+    refs aliases incoming xrefs; refs_from is outgoing.
+    """
+
+    OUTPUT_FORMAT = "json"
+    include = cli.SwitchAttr(
+        ["--include"], str, help="Comma-separated sections; default: decompile,disasm,refs_from"
+    )
+    time_budget = cli.SwitchAttr(
+        ["--time-budget"],
+        float,
+        default=30.0,
+        help="Cooperative budget for the whole bundle in seconds; cannot interrupt an SDK call",
+    )
+
+    def main(self, identifier: str, *more_identifiers):
+        try:
+            sections = bundle_sections(self.include)
+            budget = analysis_time_budget(self.time_budget)
+            identifiers = [identifier, *more_identifiers]
+            if len(identifiers) > MAX_BUNDLE_FUNCTIONS or any(not i.strip() for i in identifiers):
+                raise ValueError(
+                    f"Provide 1 to {MAX_BUNDLE_FUNCTIONS} nonempty function identifiers"
+                )
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        data = self.parent._request(
+            "POST",
+            "analysis/bundle",
+            data={"identifiers": identifiers, "include": sections, "time_budget": budget},
+            timeout=max(self.parent.request_timeout, budget + 5.0),
+        )
+        return self._emit(data)
 
 
 @BinaryNinjaCLI.subcommand("signature")

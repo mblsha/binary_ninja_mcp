@@ -41,9 +41,9 @@ real-GUI or cross-platform verification.
 
 - [x] Common output contract: JSON/NDJSON, file output, text filtering/context,
   optional text spill, unique artifacts, optional tokens, complete pipelines.
-- [ ] Linear disassembly by count/exclusive end, independent of function/IL.
-- [ ] Selective multi-function bundles with one pinned target and stable envelope.
-- [ ] Compact function info, optional locals.
+- [x] Linear disassembly by count/exclusive end, independent of function/IL.
+- [x] Selective multi-function bundles with one pinned target and stable envelope.
+- [x] Compact function info, optional locals.
 - [x] Scoped offline schema and doctor with loaded-source and capability checks.
 - [x] Explicit Python code/script sources and compatible `py` alias.
 - [x] Installed `binja-cli` entry point and wheel/install smoke tests. The
@@ -72,7 +72,15 @@ silently accept a preview or omit analysis-skip protection.
 
 ## Pass 3: analysis breadth
 
-- [ ] Ambiguity-aware identifiers and interior addresses/symbol offsets.
+Read-interface checkpoint: 307 offline tests passed (19 live tests deselected,
+8 subtests passed), including decoder/bundle/identifier and scoped-schema tests.
+The rebuilt wheel passes installed `disasm`, `info`, and `bundle` schema smoke
+checks outside the checkout. Ruff lint, changed-file formatting, Unicode safety
+and `git diff --check` pass. GUI inspection was retried and the Mac is still
+locked; the running plugin has not been reloaded and no open database was changed.
+
+- [x] Ambiguity-aware identifiers and interior addresses/symbol offsets for new
+  read interfaces; legacy mutation resolution deliberately remains unchanged.
 - [ ] IL levels/SSA, typed reads, incoming/outgoing and field references.
 - [ ] Callsites and bounded text/constant searches with completeness metadata.
 - [ ] Stable local-variable IDs and structure-field edits using transactions.
@@ -81,6 +89,13 @@ silently accept a preview or omit analysis-skip protection.
   the final repository-wide CI-equivalent validation.
 
 ## Verification precautions
+
+Read-interface details and limits are documented in [analysis-reads.md](analysis-reads.md).
+The decoder/compact-info/bundle interfaces have offline coverage for ranges,
+architecture selection, ambiguity, skip-state property traps, selective work,
+alias deduplication, per-section failures and a shared cooperative time budget.
+Real Binary Ninja verification remains outstanding; fake-SDK tests are not
+presented as evidence of live integration.
 
 The Mac was locked during initial GUI inspection. The HTTP service is reachable
 outside the sandbox and has three unrelated user databases open, one analyzing.

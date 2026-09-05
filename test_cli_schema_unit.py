@@ -62,6 +62,18 @@ def test_root_schema_defines_common_arguments_only_once():
     assert result["common_arguments"]
 
 
+def test_analysis_command_schema_includes_selection_and_budget_arguments():
+    bundle = command_schema(BinaryNinjaCLI, ["bundle"])["commands"][0]
+    switches = {name: option for option in bundle["arguments"] for name in option["names"]}
+    assert switches["--time-budget"]["default"] == 30.0
+    assert "--include" in switches
+    assert bundle["positionals"][0]["required"]
+    assert bundle["positionals"][1]["variadic"]
+    disasm = command_schema(BinaryNinjaCLI, ["disasm"])["commands"][0]
+    names = {name for option in disasm["arguments"] for name in option["names"]}
+    assert {"--count", "-n", "--end", "--arch"} <= names
+
+
 def test_runtime_diagnostics_compare_import_snapshot_with_disk(tmp_path):
     path = tmp_path / "server.py"
     path.write_text("before")
