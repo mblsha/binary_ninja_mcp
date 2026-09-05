@@ -625,7 +625,12 @@ class BinaryNinjaCLI(cli.Application):
                 )
 
             capability = None
-            if endpoint_path.startswith("/analysis/"):
+            if endpoint_path.startswith("/edit/") or endpoint_path in {
+                "/analysis/locals",
+                "/analysis/struct",
+            }:
+                capability = ("annotation_edits_version", 1)
+            elif endpoint_path.startswith("/analysis/"):
                 capability = ("analysis_reads_version", 1)
             elif endpoint_path in {"/function/signature", "/editFunctionSignature"}:
                 capability = ("signature_workflow_version", 2)
@@ -3607,6 +3612,139 @@ class Callsites(_ScopedQueryCommand):
             },
         )
         return 2 if data is None else self._emit(data)
+
+
+class _AnnotationCommand(_AnalysisCommand):
+    OUTPUT_FORMAT = "json"
+    preview = cli.Flag(
+        ["--preview"], help="Apply, verify, undo, then verify restoration; never save"
+    )
+
+    def _edit(self, endpoint, data):
+        return self._emit(
+            self.client._request(
+                "POST",
+                endpoint,
+                data={**data, "preview": bool(self.preview)},
+                timeout=max(self.client.request_timeout, 1800.0),
+            )
+        )
+
+
+@BinaryNinjaCLI.subcommand("locals")
+class Locals(cli.Application):
+    """List or edit locals/parameters by stable full ID or unambiguous exact name."""
+
+    OUTPUT_FORMAT = "json"
+
+    def main(self):
+        if not self.nested_command:
+            self.help()
+
+
+@Locals.subcommand("list")
+class LocalsList(_AnalysisCommand):
+    """List native variable IDs without changing analysis-skip state."""
+
+    OUTPUT_FORMAT = "json"
+
+    def main(self, function: str):
+        return self._emit(self.client._request("GET", "analysis/locals", {"identifier": function}))
+
+
+@Locals.subcommand("rename")
+class LocalsRename(_AnnotationCommand):
+    """Rename one local or parameter; full IDs avoid duplicate-name ambiguity."""
+
+    def main(self, function: str, variable: str, new_name: str):
+        return self._edit(
+            "edit/local",
+            {"identifier": function, "variable": variable, "action": "rename", "value": new_name},
+        )
+
+
+@Locals.subcommand("retype")
+class LocalsRetype(_AnnotationCommand):
+    """Parse a type, annotate one native variable, wait for analysis and verify."""
+
+    def main(self, function: str, variable: str, type: str):
+        return self._edit(
+            "edit/local",
+            {"identifier": function, "variable": variable, "action": "retype", "value": type},
+        )
+
+
+@BinaryNinjaCLI.subcommand("struct")
+class Structure(cli.Application):
+    """Inspect existing structures/unions and safely edit declared fields."""
+
+    OUTPUT_FORMAT = "json"
+
+    def main(self):
+        if not self.nested_command:
+            self.help()
+
+
+@Structure.subcommand("show")
+class StructureShow(_AnalysisCommand):
+    """Show complete declared layout, inherited bases, and auto/user type status."""
+
+    OUTPUT_FORMAT = "json"
+
+    def main(self, name: str):
+        return self._emit(self.client._request("GET", "analysis/struct", {"name": name}))
+
+
+@Structure.subcommand("field")
+class StructureField(cli.Application):
+    """Set, rename or delete a field in an existing structure/union."""
+
+    OUTPUT_FORMAT = "json"
+
+    def main(self):
+        if not self.nested_command:
+            self.help()
+
+
+@StructureField.subcommand("set")
+class StructureFieldSet(_AnnotationCommand):
+    """Insert a field at a decimal/hex offset; overlap requires --overwrite."""
+
+    overwrite = cli.Flag(["--overwrite"], help="Explicitly replace overlapping declared fields")
+
+    def main(self, structure: str, offset: str, name: str, type: str):
+        return self._edit(
+            "edit/struct-field",
+            {
+                "name": structure,
+                "action": "set",
+                "offset": offset,
+                "member_name": name,
+                "type": type,
+                "overwrite": bool(self.overwrite),
+            },
+        )
+
+
+@StructureField.subcommand("rename")
+class StructureFieldRename(_AnnotationCommand):
+    """Rename a field selected by name or an unambiguous decimal/hex offset."""
+
+    def main(self, structure: str, field: str, new_name: str):
+        return self._edit(
+            "edit/struct-field",
+            {"name": structure, "action": "rename", "field": field, "member_name": new_name},
+        )
+
+
+@StructureField.subcommand("delete")
+class StructureFieldDelete(_AnnotationCommand):
+    """Delete a declared field without shrinking structure width or alignment."""
+
+    def main(self, structure: str, field: str):
+        return self._edit(
+            "edit/struct-field", {"name": structure, "action": "delete", "field": field}
+        )
 
 
 @BinaryNinjaCLI.subcommand("signature")

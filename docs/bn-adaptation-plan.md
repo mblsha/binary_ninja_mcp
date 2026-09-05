@@ -100,7 +100,16 @@ locked; the running plugin has not been reloaded and no open database was change
   schemas and installed-wheel command discovery pass. Ruff lint, changed-file
   formatting, Unicode safety and diff checks pass. CI now exercises query tests
   on all three configured platforms; remote runs remain unverified.
-- [ ] Stable local-variable IDs and structure-field edits using transactions.
+- [x] Stable local-variable IDs and structure-field edits using transactions.
+  Annotation checkpoint: 444 offline tests passed (19 live tests deselected,
+  8 subtests passed). Local edits reject duplicate names and check original
+  function/native-variable identity after analysis. Structure edits prevalidate
+  complete declared layouts, preserve metadata, and require explicit overwrite
+  for replacement. Preview and error rollback verify observed restoration;
+  silent undo failure reports unknown live state. New nested CLI commands,
+  protocol/capability preflight, registry entries, and installed-wheel schemas
+  pass. Ruff lint, changed-file format, Unicode and diff checks pass.
+  See [annotation-edits.md](annotation-edits.md). Native verification is pending.
 - [ ] Documentation and CLI ergonomics aligned with actual installed commands.
 - [ ] Resolve the three pre-existing format-only failures separately before
   the final repository-wide CI-equivalent validation.
@@ -114,9 +123,10 @@ alias deduplication, per-section failures and a shared cooperative time budget.
 Real Binary Ninja verification remains outstanding; fake-SDK tests are not
 presented as evidence of live integration.
 
-The Mac was locked during initial GUI inspection. The HTTP service is reachable
-outside the sandbox and has three unrelated user databases open, one analyzing.
-Do not restart it or mutate those databases for tests. Inspect the GUI once
-unlocked and use isolated, disposable in-memory test views. New server modules
-must be loaded before testing their behavior; old endpoints are not evidence
-that the edited source is running.
+The Mac was locked during initial GUI inspection. A later inspection finds
+Binary Ninja Personal 6.1.10608-dev at its launch screen, no open views in the
+current instance inventory, and matching loaded source/capability diagnostics.
+This is a different instance from the earlier three-database session. Continue
+with isolated, disposable in-memory test views; do not mutate unrelated user
+databases. New server modules must be loaded before testing their behavior;
+old endpoints are not evidence that edited source is running.

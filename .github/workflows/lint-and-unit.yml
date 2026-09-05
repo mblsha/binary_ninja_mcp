@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v7
       - name: Test client contracts without Binary Ninja
-        run: uv run --frozen --extra search python -m pytest -q test_cli_packaging_unit.py test_cli_output_unit.py test_cli_python_sources_unit.py test_cli_schema_unit.py test_analysis_primitives_unit.py test_analysis_queries_unit.py
+        run: uv run --frozen --extra search python -m pytest -q test_cli_packaging_unit.py test_cli_output_unit.py test_cli_python_sources_unit.py test_cli_schema_unit.py test_analysis_primitives_unit.py test_analysis_queries_unit.py test_annotation_edits_unit.py
       - name: Build and smoke-test installed CLI
         run: |
           uv build

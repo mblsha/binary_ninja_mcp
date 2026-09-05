@@ -7,6 +7,8 @@ LOADED_SOURCE = snapshot_source(__file__)
 
 DEFAULT_ENDPOINT_API_VERSION = 1
 ENDPOINT_API_VERSION_OVERRIDES = {
+    "/edit/local": 2,
+    "/edit/struct-field": 2,
     # Safety semantics changed: old servers must reject these requests rather
     # than silently ignore preview/skip protection or omit rollback guarantees.
     "/function/signature": 2,

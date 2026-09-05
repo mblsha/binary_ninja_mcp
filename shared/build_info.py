@@ -7,6 +7,7 @@ from pathlib import Path
 TOOL_VERSION = "0.2.8"
 CAPABILITY_PROTOCOL_VERSION = 1
 REQUIRED_CAPABILITIES = {
+    "annotation_edits_version": 1,
     "analysis_reads_version": 1,
     "builtin_mutations_version": 1,
     "signature_workflow_version": 2,
