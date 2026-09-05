@@ -121,9 +121,16 @@ locked; the running plugin has not been reloaded and no open database was change
   protocol/capability preflight, registry entries, and installed-wheel schemas
   pass. Ruff lint, changed-file format, Unicode and diff checks pass.
   See [annotation-edits.md](annotation-edits.md) and the native evidence below.
-- [ ] Documentation and CLI ergonomics aligned with actual installed commands.
-- [ ] Resolve the three pre-existing format-only failures separately before
+- [x] Documentation and CLI ergonomics aligned with actual installed commands.
+  README/CLI/Python guides and contributor instructions now describe installed
+  executables, explicit targets, scoped argument meanings, actual pytest/Ruff
+  gates, native preview limits and database persistence boundaries. Root plugin
+  metadata matches version 0.2.8 and this fork's URLs; attribution is preserved.
+  Parser tests exercise documented analysis examples without a server.
+- [x] Resolve the three pre-existing format-only failures separately before
   the final repository-wide CI-equivalent validation.
+  `5032e9d` changes formatting only; before/after Python AST hashes match for all
+  three files. Repository-wide Ruff lint and formatting now pass.
 
 ## Verification precautions
 
@@ -141,3 +148,14 @@ This is a different instance from the earlier three-database session. Continue
 with isolated, disposable in-memory test views; do not mutate unrelated user
 databases. New server modules must be loaded before testing their behavior;
 old endpoints are not evidence that edited source is running.
+
+## Final local gates
+
+All three passes are implemented with the explicit native limitations recorded
+in [the completion audit](bn-completion-audit.md). The final frozen, optional-
+regex-enabled offline suite passes: 476 tests, 19 live tests deselected, 8
+subtests. Full-repository Ruff lint/format, Unicode and diff checks pass. A fresh
+non-editable wheel install outside the checkout passes both entry points and
+all new command schemas. Native scratch verification passes all eight groups,
+with zero remaining registered views and no saved database. No remote CI run,
+push or PR is implied by these local check-ins.

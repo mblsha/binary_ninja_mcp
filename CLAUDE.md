@@ -1,201 +1,75 @@
-# CLAUDE.md
+# Contributor notes
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Read [AGENTS.md](AGENTS.md) for repository rules and safety requirements.
+This project provides a GUI-process Binary Ninja plugin with a custom HTTP API,
+plus an installed terminal client. It is not a standard MCP JSON-RPC server and
+is separate from Binary Ninja's built-in MCP server.
 
-## Project Overview
+## Development
 
-This is a Binary Ninja plugin that exposes binary analysis functionality through a local HTTP API and a terminal CLI.
-- **Plugin** (`/plugin/`): Runs inside Binary Ninja and provides the HTTP API on localhost ports
-- **CLI** (`/scripts/binja-cli.py`): Discovers running plugin servers and drives analysis from the terminal
-
-## Development Commands
-
-```bash
-# Create/sync local environment (creates `.venv/`)
+```sh
 uv sync
-
-# Run the CLI (after starting server in Binary Ninja)
-uv run python scripts/binja-cli.py status
+uv run binja-cli --help
+uv run binja-cli schema struct field set
+uv run --frozen --extra search python -m pytest -q -m 'not binja'
+uv tool run ruff@0.14.10 check .
+uv tool run ruff@0.14.10 format --check .
+uv run --frozen python scripts/check_unicode_safety.py .
+uv build
+uv run --frozen python scripts/smoke_cli_wheel.py 'dist/*.whl'
 ```
 
-## Architecture
+The wheel contains `binja_cli` and `shared`, not the GUI plugin or SDK.
+Install the plugin separately. `uv tool install .` installs `binja-cli` and
+`binja-mcp`; the source wrapper `scripts/binja-cli.py` remains supported.
 
-### Plugin Structure (`/plugin/`)
-- `core/`: Core binary operations (`binary_operations.py`), configuration (`config.py`)
-  - `log_capture.py`: Binary Ninja LogListener implementation
-  - `console_capture.py`: ScriptingOutputListener for Python console
-- `api/`: HTTP endpoint handlers for each operation
-- `server/`: HTTP server implementation (`http_server.py`)
-- `utils/`: Helper utilities
+## Architecture and changes
 
-### Key Architectural Decisions
-1. **Stateful HTTP Server**: Server maintains reference to current binary view
-2. **RESTful API**: Simple GET/POST endpoints for all operations
-3. **CLI Client**: `binja-cli` discovers running plugin servers and calls the HTTP API directly
-4. **In-Memory Log Storage**: Uses thread-safe deques with configurable size limits (default 10k entries)
-5. **Listener Pattern**: Captures logs/console at the source, not from UI components
+- `plugin/server/http_server.py` dispatches GET/POST requests; the server uses a
+  single HTTP request thread. New analysis/edit handlers retain a strong resolved
+  view instead of consulting a changing global target during the operation.
+- `plugin/core/analysis_operations.py` composes identifier resolution, disassembly,
+  IL/SSA, typed memory, references, bundles, searches and callsites.
+- `plugin/core/annotation_edits.py` implements stable-ID local and declared-field
+  edits. `mutations.py` provides scoped undo coordination for built-in writes.
+- `plugin/api/endpoints.py` contains signature and legacy endpoint operations.
+- `plugin/core/python_executor_v2.py` provides persistent Python context,
+  complete structured serialization and execution-site tracebacks. Arbitrary
+  Python does not inherit built-in mutation transactions or cancellation.
+- `plugin/automation/` handles GUI workflows. Use main-thread calls for UI work;
+  do not run blocking analysis waits on the UI thread.
+- `shared/endpoints_manifest.py` is the endpoint inventory; `api_versions.py`
+  and `build_info.py` define version/capability checks and loaded-source evidence.
+- `binja_cli/cli.py` defines commands; `arguments.py`, `output.py` and `schema.py`
+  provide common argument normalization, output delivery and offline discovery.
 
-### API Endpoints
-All endpoints are on `http://localhost:9009/`:
-- `/status` - Check if binary is loaded
-- `/methods`, `/functions` - List functions
-- `/decompile` - Get decompiled code
-- `/assembly` - Get assembly code
-- `/renameFunction`, `/retypeVariable`, `/renameVariable` - Modify binary
-- `/comment`, `/addressComment` - Manage comments
-- Read operations: `/imports`, `/exports`, `/segments`, `/strings`, etc.
-- **Log endpoints** (NEW):
-  - `/logs` - Get Binary Ninja logs with filtering
-  - `/logs/stats` - Get log statistics
-  - `/logs/errors`, `/logs/warnings` - Get recent errors/warnings
-  - `/logs/clear` - Clear log buffer
-- **Console endpoints** (NEW):
-  - `/console` - Get Python console output
-  - `/console/stats` - Get console statistics
-  - `/console/errors` - Get console errors
-  - `/console/execute` - Execute Python commands
-  - `/console/clear` - Clear console buffer
+When adding a command, implement/test its core operation, register its route and
+manifest entry, add capability checks where needed, then update CLI/help/schema
+tests and installed-wheel smoke coverage. Keep new writes POST-only; existing
+GET mutation aliases remain compatible with their version contracts. Do not
+invent endpoints from stale documentation: use the manifest and live metadata.
 
-### Development Notes
-- No test suite exists - when adding features, test manually in Binary Ninja
-- No linting configuration - follow existing code style
-- Plugin loads automatically from Binary Ninja's plugins directory
-- Server must be started from Binary Ninja's plugin menu before using `binja-cli`
-- Binary view state is managed by the HTTP server
-- PRs for this workspace should target `mblsha/binary_ninja_mcp` unless explicitly instructed otherwise
+## Safety and verification
 
-### Important Implementation Details
+Use `views` and a returned process-qualified ID before live scoped operations.
+The custom server uses local HTTP (default 9009 plus discovery ports), not the
+official Binary Ninja `/mcp` endpoint. Help/schema need no running application.
+Run `doctor` after changes; restarting a listener is not a Python module reload.
 
-**Log and Console Capture:**
-- Uses Binary Ninja's `LogListener` API - do NOT try to redirect stdout/stderr
-- Console capture requires `ScriptingOutputListener` - Binary Ninja already redirects Python output
-- Both run on separate threads - ensure thread safety with locks
-- Console runs on non-main thread - use `mainthread.execute_on_main_thread_and_wait()` for UI operations
+Never bypass the `BinaryView.save` guard. Database persistence requires explicit
+authorization; a successful mutation or undo commit does not save a BNDB.
+Do not clear skipped analysis implicitly or fetch IL/variables before checking it.
+Preserve the full skipped-address set, not merely a count. Signature preview on
+an automatic function is refused due to native undo's user-type promotion;
+`--dry-run` is parse-only. See [native verification](docs/bn-native-verification.md).
 
-**API Design Principles:**
-- No direct UI component access - Binary Ninja enforces separation between core and UI
-- Use listeners/callbacks for data capture, not UI scraping
-- All operations must work in both headless and UI modes
+Offline tests cover mocks/contracts; GUI tests require a licensed running app.
+The opt-in `scripts/verify_bn_adaptations_live.py` refuses open user views and
+uses disposable in-memory data. Test failures and HTTP timeouts are not authority
+to restart a busy application. Do not retry timed-out mutations blindly.
 
-**Error Handling Patterns:**
-- Always check if binary is loaded before operations (except `/status`)
-- Return available functions/types when something is not found
-- Log errors to Binary Ninja console for debugging
-
-**Parameter Handling:**
-- Support multiple parameter names (e.g., `name` or `functionName`)
-- Accept addresses in multiple formats (hex string `0x...` or decimal)
-- Use `parse_int_or_default` for safe integer parsing
-
-### Common Tasks
-
-**Adding a new API endpoint:**
-1. Create handler in `/plugin/api/handlers/`
-2. Implement operation in `/plugin/core/binary_operations.py` if needed
-3. Register endpoint in `/plugin/server/http_server.py`
-4. Update CLI command support in `/scripts/binja-cli.py` when the endpoint should be user-facing
-
-**Debugging:**
-- Binary Ninja logs: Check Binary Ninja's console/log view
-- CLI output: Run `uv run python scripts/binja-cli.py --help` or the specific command with `--help`
-- HTTP traffic: Server logs requests to Binary Ninja's console
-
-**Version Updates:**
-- Update version in `/plugin/plugin.json`
-- Update version in git tag for releases
-
-### Testing Considerations
-
-**Current State:**
-- No unit tests exist for MCP plugin components
-- Binary Ninja API tests exist only for architecture modules
-- Manual testing required for all new features
-
-**Testing Challenges:**
-- Binary Ninja plugins require a licensed Binary Ninja instance
-- Headless testing needs special setup
-- Mock objects difficult due to complex Binary Ninja object model
-
-**Recommended Testing Approach:**
-1. Test HTTP endpoints with curl/httpie during development
-2. Create test binaries for common scenarios
-3. Use Binary Ninja's scripting console for component testing
-4. Consider integration tests over unit tests
-
-### Platform-Specific Notes
-
-**macOS Users:**
-- Can use Peekaboo MCP server for visual debugging (screenshot analysis)
-- Combine with binary_ninja_mcp for comprehensive state inspection
-
-**Cross-Platform:**
-- All core functionality works on Windows, Linux, and macOS
-- Avoid platform-specific features in core implementation
-- Use Binary Ninja's APIs for file paths (handles platform differences)
-
-### Python Code Execution (NEW)
-
-**Enhanced Python Executor V2:**
-- Implemented in `/plugin/core/python_executor_v2.py` (with V1 fallback)
-- Provides reliable Python code execution with automatic binary view injection
-- Solves the "bv is None" issue through smart context management
-- Direct access to Binary Ninja's Python API with helper functions
-
-**Key V2 Enhancements:**
-- **Automatic Binary View Injection**: `bv` is always available
-- **Global Registry**: Manages binary views across contexts
-- **Helper Functions**:
-  - `get_current_view()` - Get current binary view
-  - `get_func(name_or_addr)` - Get function by name or address
-  - `find_functions(pattern)` - Find functions matching pattern
-  - `get_strings(min_length)` - Get strings from binary
-  - `hex_dump(addr, size)` - Get hex dump at address
-  - `info()` or `quick_info()` - Get binary overview
-- **Smart Error Messages**: Suggestions for typos and common mistakes
-- **Context-Aware Help**: `help()` shows current binary state
-
-**Core Features (V1 & V2):**
-- Comprehensive result capture:
-  - Return values (last expression or `_result` variable)
-  - Standard output/error streams
-  - Created/modified variables
-  - Execution time tracking
-  - Binary context information (V2)
-- JSON serialization of all Python objects for integration
-- Thread-safe execution with 30-second timeout
-- Maintains execution history and context between calls
-
-**Usage:**
-```python
-# Execute via HTTP API
-POST /console/execute
-{"command": "len(list(bv.functions))"}
-
-# V2 Returns (with context):
-{
-    "success": true,
-    "stdout": "",
-    "stderr": "",
-    "return_value": 150,
-    "return_type": "int",
-    "variables": {},
-    "execution_time": 0.002,
-    "context": {
-        "binary_loaded": true,
-        "binary_name": "example.exe"
-    }
-}
-
-# Helper function example
-POST /console/execute  
-{"command": "find_functions('crypt')"}
-
-# Interactive help
-POST /console/execute
-{"command": "help()"}
-```
-
-**Testing:**
-- Run `test_python_v2.py` to verify V2 functionality
-- Check `PYTHON_V2_IMPLEMENTATION_REPORT.md` for implementation details
-- See `/docs/PYTHON_EXECUTOR.md` for general documentation
+Keep macOS/Linux/Windows compatibility. Remote client CI is configured separately
+from live Binary Ninja tests; do not claim unexecuted platform checks passed.
+Update version metadata in root `plugin.json`, `pyproject.toml`, and
+`shared/build_info.py` together. Preserve original license/author attribution.
+PRs target `mblsha/binary_ninja_mcp` unless explicitly directed otherwise.

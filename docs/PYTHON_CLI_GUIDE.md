@@ -1,272 +1,77 @@
-# Python CLI Guide
+# Python CLI guide
 
-The Binary Ninja MCP CLI provides powerful Python execution capabilities with multiple input methods, making it easy to work with complex scripts without worrying about shell escaping.
+`python` and `py` run code inside the selected Binary Ninja GUI process, not on
+the client. Install/run the client as described in the [README](../README.md).
+Use a process-qualified `VIEW_ID` from `binja-cli views` for live analysis.
 
-## Features
-
-- **Multiple input methods**: inline, file, stdin
-- **No escaping needed**: Use files or stdin for complex strings
-- **Code completion**: Get suggestions for partial code
-- **Interactive mode**: REPL-like experience
-- **JSON output**: Machine-readable results
-
-## Usage Examples
-
-### 1. Inline Code Execution
-Simple one-liners can be executed directly:
-```bash
-./cli.py python "print('Hello, Binary Ninja!')"
-./cli.py python "len(list(bv.functions))"
+```sh
+binja-cli --view-id VIEW_ID python --code 'len(bv.functions)'
+binja-cli --view-id VIEW_ID py --script analysis.py
+binja-cli --view-id VIEW_ID python --stdin < analysis.py
+binja-cli --view-id VIEW_ID python -i
+binja-cli --view-id VIEW_ID python -c 'bv.get_'
 ```
 
-### 2. Execute Python Files
-Run scripts from files - the recommended way for complex code:
-```bash
-# Direct file argument (auto-detected)
-./cli.py python script.py
+Positional code, an existing file path, `--file`/`-f`, `-` and automatically piped
+stdin remain compatible. Prefer explicit `--code`/`--script` to avoid ambiguity.
+`-c` means completion, not code. Choose one input source/mode. Code is
+syntax-checked locally before sending; `--no-syntax-check` defers validation to
+embedded Python when versions differ. No client-side execution occurs.
 
-# Explicit file flag
-./cli.py python -f script.py
+## Multi-line code and quoting
 
-# With path
-./cli.py python /path/to/script.py
+Use a file or quoted heredoc for code containing shell metacharacters. A quoted
+heredoc delimiter preserves backticks, dollar signs and backslashes literally.
+
+```sh
+binja-cli --view-id VIEW_ID python --stdin <<'PY'
+functions = [f for f in bv.functions if "crypt" in f.name.lower()]
+_result = [{"name": f.name, "address": hex(f.start)} for f in functions]
+PY
 ```
 
-### 3. Standard Input (stdin)
-Perfect for generated code or piping:
-```bash
-# Pipe from echo
-echo "print('Hello')" | ./cli.py python
+Context persists between requests to the executor. `bv` is the selected
+BinaryView (or `None` for a no-view execution); `bn` is the SDK. Helpers include
+`get_func`, `find_functions`, `get_strings`, `hex_dump`, `info` and
+`get_current_view`. Do not assume `bv` exists or that a helper safety-checks
+arbitrary operations you write. Client shell environment variables are not
+automatically forwarded into the already-running GUI process.
 
-# Using --stdin flag
-echo "2 + 2" | ./cli.py python --stdin
+## Results and pipelines
 
-# Here document for multi-line code
-cat << 'EOF' | ./cli.py python
-for i in range(5):
-    print(f"Number {i}")
-EOF
+The final expression or `_result` supplies a return value. JSON responses include
+stdout, stderr, return value, variables, context and timing. Serialization version
+2 preserves full containers, represents cycles explicitly, and uses dictionary
+entries for non-string keys so distinct keys cannot collide. SDK objects may
+be descriptive records/reprs, not round-trippable native objects.
 
-# From another command
-generate_code.py | ./cli.py python
+```sh
+binja-cli --view-id VIEW_ID python --code '[f.name for f in bv.functions]' --json \
+  | jq -r '.return_value.items[]'
+binja-cli --view-id VIEW_ID python --script analysis.py --json --out result.json
 ```
 
-### 4. Complex Strings Without Escaping
-When using files or stdin, you don't need to escape quotes or special characters:
+JSON/NDJSON is complete by default; it is buffered, not incremental streaming.
+Text may spill above 40,000 bytes; use `--no-spill` for full text stdout. Output
+files live on the client and refuse overwrite without `--overwrite-output`.
+Runtime exceptions preserve their worker traceback under `error.traceback` and
+return a failing CLI status. Interactive mode does not support artifacts,
+structured output, filtering or tokens. See [output contracts](cli-output.md).
 
-```python
-# Save as complex_strings.py
-print('''This works perfectly:
-- Single quotes: 'no problem'
-- Double quotes: "also fine"
-- Backslashes: C:\Windows\System32
-- Unicode: 🎉 ✨ 🚀
-- JSON: {"key": "value"}
-''')
-```
+## Safety
 
-Then run:
-```bash
-./cli.py python complex_strings.py
-```
+Arbitrary Python can mutate the live process and bypass built-in transactions.
+Prefer dedicated signature/local/structure commands for edits. Check
+`func.analysis_skipped` before fetching HLIL, MLIL, LLIL or locals; do not clear
+it without an explicit decision. `hasattr(func, "hlil")` also invokes the property
+and is not a safe precheck. Full skip-state preservation requires comparing
+addresses, not counts.
 
-### 5. Code Completion
-Get suggestions for partial code:
-```bash
-# Get completions
-./cli.py python -c "find_f"
-# Output:
-# find_funcs
-# find_functions
+The default execution timeout is 30 seconds; `--exec-timeout` controls the worker
+wait (the server caps it at 3600 seconds), while root `--request-timeout` controls
+HTTP. A timeout does not terminate the worker or cancel native analysis. Do not
+repeat a mutation just because the request timed out.
 
-# Use with JSON for programmatic access
-./cli.py --json python -c "bv.get_"
-```
-
-### 6. Interactive Mode
-Start an interactive Python session:
-```bash
-./cli.py python -i
-# Binary Ninja Python Console (type 'exit()' to quit)
-# >>> bv.file.filename
-# '/bin/ls'
-# >>> len(list(bv.functions))
-# 141
-```
-
-### 7. JSON Output Mode
-Get structured output for integration with other tools:
-```bash
-# Use --json flag before the subcommand
-./cli.py --json python "{'functions': len(list(bv.functions))}"
-
-# Pretty print with jq
-./cli.py --json python "info()" | jq .
-
-# Extract specific fields
-./cli.py --json python "2+2" | jq -r .return_value
-```
-
-## Binary Ninja Integration
-
-### Available Objects
-When executing Python code, these objects are automatically available:
-- `bv` - Current BinaryView
-- `bn` - Binary Ninja module
-- `info()` - Get binary information
-- `find_functions(pattern)` - Search functions
-- `get_func(name)` - Get function by name
-- `hex_dump(addr, size)` - Display hex dump
-
-### Example: Binary Analysis Script
-```python
-# analysis.py
-print(f"Analyzing: {bv.file.filename if bv else 'No binary'}")
-
-if bv:
-    # Count functions by type
-    funcs = list(bv.functions)
-    print(f"Total functions: {len(funcs)}")
-    
-    # Find interesting functions
-    crypto = find_functions('crypt')
-    print(f"Crypto functions: {len(crypto)}")
-    
-    # Get strings
-    strings = [s for s in bv.strings if len(s.value) > 20]
-    print(f"Long strings: {len(strings)}")
-    
-    # Check entry point
-    if bv.entry_function:
-        print(f"Entry: {bv.entry_function.name} @ {hex(bv.entry_point)}")
-```
-
-Run with:
-```bash
-./cli.py python analysis.py
-```
-
-## Tips and Tricks
-
-### 1. Shebang for Python Scripts
-Make scripts directly executable:
-```python
-#!/usr/bin/env binja-mcp python
-# my_script.py
-print("Direct execution!")
-```
-
-Then:
-```bash
-chmod +x my_script.py
-./my_script.py  # Requires binja-mcp in PATH
-```
-
-### 2. Pipeline Integration
-Chain with other Unix tools:
-```bash
-# Find all function names
-./cli.py --json python "[f.name for f in bv.functions]" | jq -r '.return_value.items[]' | sort
-
-# Count function sizes
-./cli.py python "for f in bv.functions: print(f'{f.name},{f.total_bytes}')" | awk -F, '{sum+=$2} END {print "Average:", sum/NR}'
-```
-
-### 3. Template Scripts
-Use environment variables in scripts:
-```bash
-PATTERN="main" ./cli.py python -f find_template.py
-```
-
-Where `find_template.py`:
-```python
-import os
-pattern = os.environ.get('PATTERN', 'test')
-results = find_functions(pattern)
-for f in results:
-    print(f"{f.name} @ {hex(f.start)}")
-```
-
-### 4. Error Handling
-The CLI provides clear error messages:
-```bash
-./cli.py python "undefined_variable"
-# Error: NameError: name 'undefined_variable' is not defined
-
-# With verbose mode for full traceback
-./cli.py -v python "1/0"
-```
-
-## Common Use Cases
-
-### Quick Binary Inspection
-```bash
-# Function count
-./cli.py python "len(list(bv.functions))"
-
-# Entry point
-./cli.py python "hex(bv.entry_point) if bv else 'No binary'"
-
-# Architecture
-./cli.py python "str(bv.arch) if bv else 'No binary'"
-```
-
-### Batch Processing
-```bash
-# Process multiple binaries
-for binary in *.exe; do
-    echo "=== $binary ==="
-    # Load binary first via HTTP API, then analyze
-    ./cli.py python "print(f'Functions: {len(list(bv.functions))}')"
-done
-```
-
-### Integration with External Tools
-```python
-# export_data.py
-import json
-
-data = {
-    'binary': bv.file.filename if bv else None,
-    'functions': [
-        {
-            'name': f.name,
-            'address': f.start,
-            'size': f.total_bytes
-        }
-        for f in (bv.functions if bv else [])
-    ]
-}
-
-print(json.dumps(data, indent=2))
-```
-
-Run and save:
-```bash
-./cli.py python export_data.py > binary_data.json
-```
-
-## Troubleshooting
-
-### Binary Not Loaded
-If `bv` is None, ensure:
-1. Binary Ninja is running
-2. A binary is loaded in the UI
-3. The MCP server is running (`http://localhost:9009`)
-
-### Import Errors
-The execution environment includes Binary Ninja's Python environment. Standard library imports work, but external packages may not be available.
-
-### Performance
-For large operations, use files instead of inline code to avoid shell processing overhead.
-
-## Summary
-
-The Python CLI provides flexible ways to execute code in Binary Ninja's context:
-- Use **inline** for quick one-liners
-- Use **files** for complex scripts (recommended)
-- Use **stdin** for generated code or pipelines
-- Use **--json** for programmatic access
-- No escaping needed with files or stdin!
-
-This makes it easy to integrate Binary Ninja analysis into larger workflows and automation pipelines.
+Never call `bv.save(...)`: the plugin deliberately blocks that raw-byte API.
+BNDB persistence requires explicit authorization and the correct native snapshot
+or database-creation API. A mutation/undo commit is not a disk save.

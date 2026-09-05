@@ -1,120 +1,98 @@
-# Binary Ninja MCP <img src="images/binja.png" height="24" style="margin-left: 5px; vertical-align: middle;">
+# Binary Ninja MCP
 
-This repository provides a Binary Ninja plugin that starts a local HTTP server and a CLI to drive analysis from your terminal. The CLI is the preferred interface.
+A Binary Ninja GUI plugin with a local HTTP API and an installed CLI for analysis,
+annotations, Python execution and GUI workflows. The CLI is the preferred
+interface. Despite the historical name, this is a custom HTTP API, not the
+standard MCP protocol or Binary Ninja's separate built-in MCP server.
 
-## Quickstart (CLI)
+## Install
 
-### 0) Clone into your Binary Ninja plugins directory (recommended)
+Copy or symlink [this repository](https://github.com/mblsha/binary_ninja_mcp)
+into your Binary Ninja plugins directory:
 
-```bash
-cd "$HOME/Library/Application Support/Binary Ninja/plugins"  # macOS
-git clone https://github.com/mblsha/binary_ninja_mcp.git
-cd binary_ninja_mcp
-```
+- macOS: `~/Library/Application Support/Binary Ninja/plugins/`
+- Linux: `~/.binaryninja/plugins/`
+- Windows: `%APPDATA%\Binary Ninja\plugins\`
 
-On Linux/Windows, use the plugins directory paths listed below.
+Restart/reload the plugin after installing. Auto-start is configurable; the
+manual command is `Plugins > MCP Server > Start MCP Server`.
 
-### 1) Install the Binary Ninja plugin
+From the repository directory, install the client separately:
 
-- Preferred: install via Binary Ninja Plugin Manager (`Plugins → Manage Plugins`).
-- Manual: copy (or symlink) this repo into your Binary Ninja plugins directory.
-  - macOS: `~/Library/Application Support/Binary Ninja/plugins/`
-  - Linux: `~/.binaryninja/plugins/`
-  - Windows: `%APPDATA%\\Binary Ninja\\plugins\\`
-
-Restart Binary Ninja after installing.
-
-### 2) Install the CLI (uv)
-
-```bash
+```sh
 uv tool install .
+binja-cli --help
+binja-cli doctor
+binja-cli views
 ```
 
-This installs `binja-cli` (and the compatible `binja-mcp` alias) without the
-Binary Ninja Python SDK. Plugin installation remains separate. For development,
-use `uv sync` and `uv run binja-cli`; the existing
-`uv run python scripts/binja-cli.py` source invocation also remains supported.
+`binja-mcp` is an executable alias. For development use `uv sync` and
+`uv run binja-cli`; `uv run python scripts/binja-cli.py` remains supported.
+The client does not require the Binary Ninja SDK. The wheel does not install
+the GUI plugin. Python 3.12+ is required for the client; embedded GUI Python is
+independent and is reported by `doctor`.
 
-### 3) Start the server in Binary Ninja
+## Analyze an explicit target
 
-1. Open a binary in Binary Ninja and wait for analysis to finish.
-2. Start the server: `Plugins → MCP Server → Start MCP Server`
+Copy a process-qualified `view_id` from `views` and replace `VIEW_ID` below.
+Root target options precede the command; common output flags also work after it.
 
-Verify from your terminal:
-
-```bash
-uv run python scripts/binja-cli.py status
+```sh
+binja-cli --view-id VIEW_ID functions --search crypt --limit 50
+binja-cli --view-id VIEW_ID info main --locals
+binja-cli --view-id VIEW_ID decompile main --json
+binja-cli --view-id VIEW_ID disasm 'main+0x10' --count 24
+binja-cli --view-id VIEW_ID il main --level mlil --ssa
+binja-cli --view-id VIEW_ID read 0x1000 --type u32 --count 8 --endian little
+binja-cli --view-id VIEW_ID bundle main helper --include decompile,comments,xrefs
+binja-cli --view-id VIEW_ID search text malloc --within main
+binja-cli --view-id VIEW_ID callsites malloc --context 3
+binja-cli schema struct field set
 ```
 
-### 4) Use the CLI
+## Edit or automate deliberately
 
-```bash
-# List functions
-uv run python scripts/binja-cli.py functions --limit 50
-
-# Decompile a function
-uv run python scripts/binja-cli.py decompile main
-
-# Get annotated assembly
-uv run python scripts/binja-cli.py assembly main
-
-# Count functions (via in-process Python)
-uv run python scripts/binja-cli.py python "len(list(bv.functions))"
-
-# View recent errors from Binary Ninja logs
-uv run python scripts/binja-cli.py logs --errors --count 50
-
-# Open a file and answer a sibling-database prompt explicitly when it appears
-uv run python scripts/binja-cli.py open /path/to/binary --existing-database no
-
-# "Open with Options" view/platform selection remains automatic
-uv run python scripts/binja-cli.py open /path/to/binary --view-type Mapped --platform x86_16
-
-# Close Binary Ninja and auto-answer save confirmation dialogs
-uv run python scripts/binja-cli.py quit
-
-# Close one dirty tab without saving, or close all tabs except one
-uv run python scripts/binja-cli.py close --view-id <id> --decision dont-save
-uv run python scripts/binja-cli.py close --all --except-view-id <id> --decision dont-save
+```sh
+binja-cli --view-id VIEW_ID signature main --file declaration.c --dry-run
+binja-cli --view-id VIEW_ID signature main --file declaration.c
+binja-cli --view-id VIEW_ID locals list main
+binja-cli --view-id VIEW_ID locals rename main VARIABLE_ID input --preview
+binja-cli --view-id VIEW_ID struct field set Packet 0x10 count uint32_t --preview
+binja-cli --view-id VIEW_ID python --script analysis.py
+binja-cli --view-id VIEW_ID annotations export /absolute/path/annotations.json
 ```
 
-## Common Tasks
+Built-in edits use scoped undo and readback; previews apply temporarily and
+verify rollback. Signature previews require an existing user signature because
+native undo cannot fully restore an automatic signature's annotation status.
+Raw Python is unrestricted in-process execution and is not transaction-wrapped.
+None of these edit commands saves a database. `BinaryView.save(...)` is blocked
+because it writes raw bytes, not a BNDB save. Use authorized native database
+saving only; never remove the guard.
 
-- Rename a function: `uv run python scripts/binja-cli.py rename function <old> <new>`
-- Safely set and verify a function signature: `uv run python scripts/binja-cli.py signature <function> --file <declaration.c>`
-- Explicitly reanalyze one function: `uv run python scripts/binja-cli.py reanalyze <function>`
-- Add a comment: `uv run python scripts/binja-cli.py comment <addr> "text"`
-- Work in Python: `uv run python scripts/binja-cli.py python -i` (interactive), or `... python -f script.py`
-- Open a binary robustly: `uv run python scripts/binja-cli.py open <path> [--view-type Mapped] [--platform x86_16]`
-  - On Linux, `open` auto-launches Binary Ninja with Wayland defaults when MCP is not reachable.
-  - Auto-launch preserves existing Binary Ninja instances by default. Set `BINJA_FORCE_RESTART_ON_OPEN=1` to terminate matching instances before launch.
-- Close visible UI tabs safely: `uv run python scripts/binja-cli.py close --view-id <id> --decision dont-save`
-  - To verify dirty-tab handling manually: open a BNDB, make a small change, run `views`, then run `close --view-id <id> --decision dont-save` and confirm the tab disappears without a save prompt left behind.
-- Close safely without modal prompt stalls: `uv run python scripts/binja-cli.py quit [--decision auto|save|dont-save|cancel]` (auto pre-saves when the loaded target is `.bndb`)
+Skipped-analysis functions are not lifted implicitly. Use `disasm` for mapped
+bytes without IL. Timeouts do not cancel native analysis or Python workers;
+inspect state before retrying a timed-out mutation.
 
-## Troubleshooting
+GUI `open`, `close`, `quit`, status-bar inspection, log capture, multi-instance
+routing and portable JSON/BNTL annotation export remain available. `close` and
+`quit` may save/discard data according to their decision policy—read their help
+before use. Automatic launch preserves existing instances by default.
 
-- **Cannot connect to server**: ensure Binary Ninja is running and the server is started; check `uv run python scripts/binja-cli.py --server http://localhost:9009 status`.
-- **“No binary loaded”**: open a binary and wait for initial analysis; then re-run `status`.
-- **Explicit target required**: run `binja-cli views`, then pass the returned
-  process-qualified ID with `binja-cli --view-id INSTANCE:VIEW <command>`.
-- **Client/server mismatch or stale code**: run `binja-cli doctor`; update the
-  client and reload the plugin together. Restarting only the listener does not
-  reload Python modules.
+## Guides
 
-See [Output, schemas and upgrade safety](docs/cli-output.md) for the complete
-output contract, `schema`, explicit Python inputs, and API-v2 safety requirements.
+- [CLI workflow and command map](CLI_README.md)
+- [Analysis reads, searches and callsites](docs/analysis-reads.md)
+- [Local and structure annotations](docs/annotation-edits.md)
+- [Output, argument placement and upgrade safety](docs/cli-output.md)
+- [Python execution guide](docs/PYTHON_CLI_GUIDE.md)
+- [bn v0.15.0 adaptation checkpoints](docs/bn-adaptation-plan.md)
+- [Original release comparison and CLI ergonomics audit](docs/bn-comparison.md)
+- [Implemented adaptations and completion evidence](docs/bn-completion-audit.md)
+- [Native verification and known limitations](docs/bn-native-verification.md)
+- [Development and tests](AGENTS.md)
 
-## Repository Layout
-
-```
-binary_ninja_mcp/
-├── plugin/    # Binary Ninja plugin (HTTP server + analysis operations)
-├── scripts/   # CLI entrypoints (recommended: scripts/binja-cli.py)
-├── docs/      # Additional documentation
-└── examples/  # Example scripts
-```
-
-## Contributing
-
+If connection fails, check `binja-cli --server http://localhost:9009 status` and
+the plugin menu. If updated commands are refused, run `doctor` and reload matching
+client/plugin code; a listener restart alone does not reload Python modules.
 Open PRs against `mblsha/binary_ninja_mcp`.
